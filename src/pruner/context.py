@@ -10,9 +10,22 @@ from .query import QueryResult
 
 
 def generate_context(query_result: QueryResult, db: IndexDB, repo_path: str | Path,
-                     max_snippet_lines: int = 50) -> dict:
-    """Generate a context package from a query result."""
+                     max_snippet_lines: int = 50, brief: bool = False) -> dict:
+    """Generate a context package from a query result.
+
+    If brief=True, caps output for LLM consumption: max 10 key files, 20 symbols,
+    5 execution paths, 15 snippets (10 lines each), and omits per-file symbol lists.
+    """
     repo = Path(repo_path).resolve()
+
+    # Brief mode limits
+    max_files = 10 if brief else 999
+    max_symbols = 20 if brief else 999
+    max_paths = 5 if brief else 999
+    max_snippets = 15 if brief else 999
+    if brief:
+        max_snippet_lines = min(max_snippet_lines, 10)
+
     ctx = {
         "ask": query_result.ask,
         "keywords": query_result.keywords,
@@ -24,8 +37,8 @@ def generate_context(query_result: QueryResult, db: IndexDB, repo_path: str | Pa
         "snippets": [],
     }
 
-    # Execution paths
-    for path in query_result.execution_paths:
+    # Execution paths (capped)
+    for path in query_result.execution_paths[:max_paths]:
         ep = []
         for step in path:
             f = db.get_file_by_id(step["file_id"])
@@ -39,24 +52,29 @@ def generate_context(query_result: QueryResult, db: IndexDB, repo_path: str | Pa
         if ep:
             ctx["execution_paths"].append(ep)
 
-    # Key files
+    # Key files (capped)
     seen_files = set()
     for f in query_result.matching_files:
+        if len(ctx["key_files"]) >= max_files:
+            break
         if f["id"] not in seen_files:
             seen_files.add(f["id"])
-            symbols = db.get_symbols_in_file(f["id"])
             imports = db.get_imports_for_file(f["id"])
-            ctx["key_files"].append({
+            file_info = {
                 "path": f["path"],
                 "language": f["language"],
                 "lines": f["line_count"],
                 "is_test": bool(f["is_test"]),
-                "symbols": [{"name": s["name"], "kind": s["kind"], "line": s["line_start"]} for s in symbols],
                 "imports": [imp["module"] for imp in imports],
-            })
+            }
+            if not brief:
+                symbols = db.get_symbols_in_file(f["id"])
+                file_info["symbols"] = [{"name": s["name"], "kind": s["kind"], "line": s["line_start"]} for s in symbols]
+            ctx["key_files"].append(file_info)
 
-    # Key symbols with snippets
-    for s in query_result.matching_symbols:
+    # Key symbols with snippets (capped)
+    snippet_count = 0
+    for s in query_result.matching_symbols[:max_symbols]:
         f = db.get_file_by_id(s["file_id"])
         if not f:
             continue
@@ -72,24 +90,26 @@ def generate_context(query_result: QueryResult, db: IndexDB, repo_path: str | Pa
 
         # Get calls from this symbol
         calls = db.get_calls_for_symbol(s["id"])
-        sym_info["calls"] = [c["callee_name"] for c in calls]
+        sym_info["calls"] = [c["callee_name"] for c in calls[:10]]
 
         # Get callers of this symbol
         callers = db.get_callers_of(s["name"])
-        sym_info["called_by"] = list(set(c["caller_name"] for c in callers))
+        sym_info["called_by"] = list(set(c["caller_name"] for c in callers))[:10]
 
         ctx["key_symbols"].append(sym_info)
 
-        # Extract code snippet
-        snippet = _extract_snippet(repo, f["path"], s["line_start"], s["line_end"], max_snippet_lines)
-        if snippet:
-            ctx["snippets"].append({
-                "file": f["path"],
-                "symbol": s["name"],
-                "line_start": s["line_start"],
-                "line_end": min(s["line_end"], s["line_start"] + max_snippet_lines - 1),
-                "code": snippet,
-            })
+        # Extract code snippet (capped)
+        if snippet_count < max_snippets:
+            snippet = _extract_snippet(repo, f["path"], s["line_start"], s["line_end"], max_snippet_lines)
+            if snippet:
+                ctx["snippets"].append({
+                    "file": f["path"],
+                    "symbol": s["name"],
+                    "line_start": s["line_start"],
+                    "line_end": min(s["line_end"], s["line_start"] + max_snippet_lines - 1),
+                    "code": snippet,
+                })
+                snippet_count += 1
 
     # Relevant tests
     for t in query_result.related_tests:
@@ -133,7 +153,7 @@ def format_context_text(ctx: dict) -> str:
             test_marker = " [TEST]" if f["is_test"] else ""
             lines.append(f"### {f['path']}{test_marker}")
             lines.append(f"Language: {f['language'] or 'unknown'} | Lines: {f['lines']}")
-            if f["symbols"]:
+            if f.get("symbols"):
                 lines.append("Symbols:")
                 for s in f["symbols"]:
                     lines.append(f"  - {s['name']} ({s['kind']}) L{s['line']}")
@@ -173,6 +193,53 @@ def format_context_text(ctx: dict) -> str:
             lines.append(snip["code"])
             lines.append("```")
             lines.append("")
+
+    return "\n".join(lines)
+
+
+def format_context_summary(ctx: dict) -> str:
+    """Format a compact summary — just file list, symbol list, and test list.
+
+    Designed to be printed to stdout while the full context is written to a file.
+    The LLM can then Grep/Read into the full file for details.
+    """
+    lines = []
+    lines.append(f"# Context for: {ctx['ask']}")
+    lines.append("")
+
+    if ctx["keywords"]:
+        lines.append(f"Keywords: {', '.join(ctx['keywords'])}")
+    if ctx["subsystems"]:
+        lines.append(f"Subsystems: {', '.join(ctx['subsystems'])}")
+    lines.append("")
+
+    if ctx["key_files"]:
+        lines.append(f"## Key Files ({len(ctx['key_files'])})")
+        for f in ctx["key_files"]:
+            test_marker = " [TEST]" if f["is_test"] else ""
+            lines.append(f"  {f['path']}{test_marker} ({f['language'] or '?'}, {f['lines']}L)")
+
+    lines.append("")
+
+    if ctx["key_symbols"]:
+        lines.append(f"## Key Symbols ({len(ctx['key_symbols'])})")
+        for s in ctx["key_symbols"]:
+            lines.append(f"  {s['name']} ({s['kind']}) in {s['file']}:{s['line_start']}")
+
+    lines.append("")
+
+    if ctx["execution_paths"]:
+        lines.append(f"## Execution Paths ({len(ctx['execution_paths'])})")
+        for i, path in enumerate(ctx["execution_paths"], 1):
+            chain = " → ".join(step["symbol"] for step in path)
+            lines.append(f"  {i}. {chain}")
+
+    lines.append("")
+
+    if ctx["relevant_tests"]:
+        lines.append(f"## Tests ({len(ctx['relevant_tests'])})")
+        for t in ctx["relevant_tests"]:
+            lines.append(f"  {t['path']}")
 
     return "\n".join(lines)
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import click
 
-from .context import format_context_json, format_context_text, generate_context
+from .context import format_context_json, format_context_summary, format_context_text, generate_context
 from .db import IndexDB
 from .indexer import index_repo
 from .query import analyze_query
@@ -109,37 +110,70 @@ def query(repo: str, ask: str, json_out: bool):
 @click.option("--format", "fmt", type=click.Choice(["text", "json", "both"]), default="text",
               help="Output format")
 @click.option("--max-snippet-lines", default=50, help="Max lines per code snippet")
+@click.option("--brief", is_flag=True, help="Compact output: fewer files, shorter snippets, no per-file symbol lists")
 @click.option("-o", "--output", "output_path", help="Write output to file")
-def context(repo: str, ask: str, fmt: str, max_snippet_lines: int, output_path: str | None):
+def context(repo: str, ask: str, fmt: str, max_snippet_lines: int, brief: bool, output_path: str | None):
     """Generate LLM-ready context package for an ask."""
-    db = _get_db(repo)
     repo_path = Path(repo).resolve()
+    db_path = repo_path / INDEX_DIR / DB_NAME
+    if not db_path.exists():
+        # Auto-index if no index exists
+        click.echo(f"No index found. Indexing {repo_path}...", err=True)
+        _ensure_index_dir(repo)
+        db = IndexDB(db_path)
+        index_repo(repo_path, db)
+    else:
+        db = IndexDB(db_path)
 
     result = analyze_query(ask, db)
-    ctx = generate_context(result, db, repo_path, max_snippet_lines=max_snippet_lines)
+    ctx = generate_context(result, db, repo_path, max_snippet_lines=max_snippet_lines, brief=brief)
 
-    outputs = {}
-    if fmt in ("text", "both"):
-        outputs["text"] = format_context_text(ctx)
-    if fmt in ("json", "both"):
-        outputs["json"] = format_context_json(ctx)
-
-    if output_path:
-        out = Path(output_path)
-        if fmt == "both":
-            out.with_suffix(".txt").write_text(outputs["text"])
-            out.with_suffix(".json").write_text(outputs["json"])
-            click.echo(f"Written to {out.with_suffix('.txt')} and {out.with_suffix('.json')}")
+    if brief and not output_path:
+        # Brief mode: write full context to .pruner/context.md, print summary to stdout
+        context_file = repo_path / INDEX_DIR / "context.md"
+        context_file.parent.mkdir(exist_ok=True)
+        full_text = format_context_text(ctx)
+        context_file.write_text(full_text)
+        summary = format_context_summary(ctx)
+        click.echo(summary)
+        click.echo("")
+        # Show index age
+        index_mtime = (repo_path / INDEX_DIR / DB_NAME).stat().st_mtime
+        age_secs = time.time() - index_mtime
+        if age_secs < 60:
+            age_str = f"{int(age_secs)}s ago"
+        elif age_secs < 3600:
+            age_str = f"{int(age_secs / 60)}m ago"
+        elif age_secs < 86400:
+            age_str = f"{age_secs / 3600:.1f}h ago"
         else:
-            out.write_text(outputs.get("text", outputs.get("json", "")))
-            click.echo(f"Written to {out}")
+            age_str = f"{age_secs / 86400:.1f}d ago"
+        click.echo(f"Index updated: {age_str}")
+        click.echo(f"Full context: {context_file} ({len(full_text):,} chars)")
+        click.echo("Use Read/Grep on that file for snippets, call graphs, and imports.")
     else:
-        if "text" in outputs:
-            click.echo(outputs["text"])
-        if "json" in outputs:
+        outputs = {}
+        if fmt in ("text", "both"):
+            outputs["text"] = format_context_text(ctx)
+        if fmt in ("json", "both"):
+            outputs["json"] = format_context_json(ctx)
+
+        if output_path:
+            out = Path(output_path)
+            if fmt == "both":
+                out.with_suffix(".txt").write_text(outputs["text"])
+                out.with_suffix(".json").write_text(outputs["json"])
+                click.echo(f"Written to {out.with_suffix('.txt')} and {out.with_suffix('.json')}")
+            else:
+                out.write_text(outputs.get("text", outputs.get("json", "")))
+                click.echo(f"Written to {out}")
+        else:
             if "text" in outputs:
-                click.echo("\n---JSON---\n")
-            click.echo(outputs["json"])
+                click.echo(outputs["text"])
+            if "json" in outputs:
+                if "text" in outputs:
+                    click.echo("\n---JSON---\n")
+                click.echo(outputs["json"])
 
     db.close()
 
