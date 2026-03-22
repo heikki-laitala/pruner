@@ -15,3 +15,6 @@ Thumbs.db
 
 # Pruner index (generated per-repo)
 .pruner/
+
+# Benchmark results (regenerated each run, baseline is tracked)
+tests/bench_results.json
