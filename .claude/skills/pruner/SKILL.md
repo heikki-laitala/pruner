@@ -13,15 +13,17 @@ user-invocable: false
 ### Step 1: Run one command
 
 ```bash
-pruner context . "<the user's ask>" --brief
+pruner context /absolute/path/to/repo "<the user's ask>" --brief
 ```
 
-This auto-indexes if needed, prints a compact summary to stdout, and writes full context to `.pruner/context.md`.
+IMPORTANT: Always pass the repo as an absolute path argument. Do NOT use `cd <repo> && pruner context .` — the shell sandbox may reset the working directory. Use the actual project root path (e.g., `/Users/foo/dev/myproject`).
+
+This auto-indexes if needed, prints a compact summary to stdout, and writes full context to `<repo>/.pruner/context.md`.
 
 ### Step 2: Read only what pruner identified
 
 - **Read the key files** listed in the summary.
-- If you need more detail (snippets, call graphs, imports), **Read or Grep `.pruner/context.md`** for that symbol name.
+- If you need more detail (snippets, call graphs, imports), **Read or Grep `<repo>/.pruner/context.md`** for that symbol name.
 - **Do NOT Glob** to explore directory structure — pruner already identified relevant files.
 - **Do NOT Grep the codebase** for keywords — pruner already searched the index.
 - Only Glob/Grep the codebase to verify a specific detail not in pruner's output (e.g., checking package.json for a dependency).
