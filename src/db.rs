@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct IndexDb {
@@ -40,6 +41,7 @@ impl IndexDb {
                 size        INTEGER NOT NULL DEFAULT 0,
                 line_count  INTEGER NOT NULL DEFAULT 0,
                 is_test     INTEGER NOT NULL DEFAULT 0,
+                mtime       INTEGER NOT NULL DEFAULT 0,
                 indexed_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -111,13 +113,40 @@ impl IndexDb {
         size: i64,
         line_count: i64,
         is_test: bool,
+        mtime: i64,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO files (path, language, size, line_count, is_test)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![path, language, size, line_count, is_test as i32],
+            "INSERT INTO files (path, language, size, line_count, is_test, mtime)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![path, language, size, line_count, is_test as i32, mtime],
         )?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Delete a file and all its associated data (CASCADE handles symbols, imports, calls, edges).
+    pub fn delete_file(&self, file_id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+        Ok(())
+    }
+
+    /// Get all file paths and their stored mtimes.
+    pub fn all_file_mtimes(&self) -> Result<HashMap<String, (i64, i64)>> {
+        let mut stmt = self.conn.prepare("SELECT id, path, mtime FROM files")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, (row.get::<_, i64>(0)?, row.get::<_, i64>(2)?)))
+        })?;
+        let mut map = HashMap::new();
+        for row in rows {
+            let (path, id_mtime) = row?;
+            map.insert(path, id_mtime);
+        }
+        Ok(map)
+    }
+
+    /// Delete all edges (used before rebuilding call/test edges during incremental index).
+    pub fn clear_edges(&self) -> Result<()> {
+        self.conn.execute_batch("DELETE FROM edges; DELETE FROM calls;")?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -450,7 +479,7 @@ mod tests {
     #[test]
     fn test_create_and_query_file() -> Result<()> {
         let db = IndexDb::open_memory()?;
-        let id = db.insert_file("src/main.rs", Some("rust"), 100, 10, false)?;
+        let id = db.insert_file("src/main.rs", Some("rust"), 100, 10, false, 0)?;
         assert_eq!(db.file_count()?, 1);
 
         let file = db.get_file_by_path("src/main.rs")?.unwrap();
@@ -463,7 +492,7 @@ mod tests {
     #[test]
     fn test_insert_symbol_and_search() -> Result<()> {
         let db = IndexDb::open_memory()?;
-        let file_id = db.insert_file("src/lib.rs", Some("rust"), 200, 20, false)?;
+        let file_id = db.insert_file("src/lib.rs", Some("rust"), 200, 20, false, 0)?;
         db.insert_symbol(file_id, "parse_file", "function", 10, 30, None, Some("fn parse_file(path: &Path)"))?;
         db.insert_symbol(file_id, "detect_language", "function", 35, 50, None, None)?;
 
@@ -478,7 +507,7 @@ mod tests {
     #[test]
     fn test_calls_and_callers() -> Result<()> {
         let db = IndexDb::open_memory()?;
-        let file_id = db.insert_file("src/lib.rs", Some("rust"), 200, 20, false)?;
+        let file_id = db.insert_file("src/lib.rs", Some("rust"), 200, 20, false, 0)?;
         let caller_id = db.insert_symbol(file_id, "index_repo", "function", 1, 10, None, None)?;
         let _callee_id = db.insert_symbol(file_id, "parse_file", "function", 15, 30, None, None)?;
         db.insert_call(caller_id, "parse_file", 5)?;
@@ -496,8 +525,8 @@ mod tests {
     #[test]
     fn test_edges() -> Result<()> {
         let db = IndexDb::open_memory()?;
-        let f1 = db.insert_file("src/a.py", Some("python"), 100, 10, false)?;
-        let f2 = db.insert_file("tests/test_a.py", Some("python"), 50, 5, true)?;
+        let f1 = db.insert_file("src/a.py", Some("python"), 100, 10, false, 0)?;
+        let f2 = db.insert_file("tests/test_a.py", Some("python"), 50, 5, true, 0)?;
         db.insert_edge("tests", Some(f2), None, Some(f1), None, None)?;
 
         let edges = db.edges_to_file(f1, "tests")?;
@@ -509,7 +538,7 @@ mod tests {
     #[test]
     fn test_clear() -> Result<()> {
         let db = IndexDb::open_memory()?;
-        db.insert_file("a.py", Some("python"), 10, 1, false)?;
+        db.insert_file("a.py", Some("python"), 10, 1, false, 0)?;
         assert_eq!(db.file_count()?, 1);
         db.clear()?;
         assert_eq!(db.file_count()?, 0);

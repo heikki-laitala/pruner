@@ -161,7 +161,6 @@ Basic indexing (files, metadata):
 - Call graph is best-effort — dynamic dispatch, string-based lookups, and indirect calls are not tracked
 - Query analysis uses keyword matching, not semantic understanding
 - Import resolution is heuristic (module name -> file path mapping)
-- No incremental re-indexing yet (full re-index on each run)
 - Token savings are inconsistent on code-change tasks where full file reads are needed regardless
 
 ## Claude Code integration
@@ -248,7 +247,6 @@ Several tools tackle the same problem. The key difference is **how** they delive
 
 ## Future work
 
-- Incremental indexing (only re-parse changed files)
 - More language parsers (Go, Java, Ruby)
 - Smarter query heuristics (TF-IDF, path-based weighting)
 - Optional tiktoken integration for exact token counts

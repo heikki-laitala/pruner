@@ -5,9 +5,10 @@ use crate::db::IndexDb;
 use crate::languages;
 use crate::parser;
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::time::SystemTime;
 use walkdir::WalkDir;
 
 /// Stats returned after indexing.
@@ -19,19 +20,104 @@ pub struct IndexStats {
     pub calls: usize,
     pub edges: usize,
     pub skipped: usize,
+    pub unchanged: usize,
+    pub deleted: usize,
 }
 
-/// Index a repository into the database.
+/// Get the mtime of a file as seconds since UNIX epoch.
+fn file_mtime(path: &Path) -> i64 {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Full re-index: clears the database and indexes everything.
 pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<IndexStats> {
     db.clear()?;
-    let mut stats = IndexStats::default();
+    index_files(repo_path, db, verbose, None)
+}
 
-    // symbol_name -> Vec<(symbol_db_id, file_db_id)> for call resolution
-    let mut symbol_map: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
-    // (caller_symbol_db_id, callee_name, line) for deferred call resolution
-    let mut pending_calls: Vec<(i64, String, usize)> = Vec::new();
+/// Incremental index: only re-parses new/modified files, removes deleted ones.
+/// Returns None if nothing changed, Some(stats) if re-indexing happened.
+pub fn index_repo_incremental(
+    repo_path: &Path,
+    db: &IndexDb,
+    verbose: bool,
+) -> Result<Option<IndexStats>> {
+    let existing = db.all_file_mtimes()?;
+    let mut seen_paths = HashSet::new();
+    let mut changed_paths = HashSet::new();
+    let mut has_changes = false;
 
-    for entry in WalkDir::new(repo_path)
+    // Walk repo to find new/modified/deleted files
+    for entry in walk_repo(repo_path) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if languages::is_ignored_file(path) {
+            continue;
+        }
+        let rel_path = path
+            .strip_prefix(repo_path)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        seen_paths.insert(rel_path.clone());
+        let current_mtime = file_mtime(path);
+
+        match existing.get(&rel_path) {
+            Some((_id, stored_mtime)) if *stored_mtime == current_mtime => {
+                // Unchanged — skip
+            }
+            Some((id, _)) => {
+                // Modified — delete old data, will re-index
+                db.delete_file(*id)?;
+                changed_paths.insert(rel_path);
+                has_changes = true;
+            }
+            None => {
+                // New file
+                changed_paths.insert(rel_path);
+                has_changes = true;
+            }
+        }
+    }
+
+    // Delete removed files
+    for (path, (id, _)) in &existing {
+        if !seen_paths.contains(path) {
+            db.delete_file(*id)?;
+            has_changes = true;
+        }
+    }
+
+    if !has_changes {
+        return Ok(None);
+    }
+
+    let deleted_count = existing
+        .keys()
+        .filter(|p| !seen_paths.contains(*p))
+        .count();
+
+    // Re-index only changed files, then rebuild all edges
+    let mut stats = index_files(repo_path, db, verbose, Some(&changed_paths))?;
+
+    stats.unchanged = seen_paths.len() - stats.files;
+    stats.deleted = deleted_count;
+
+    Ok(Some(stats))
+}
+
+/// Walk the repo, filtering ignored directories.
+fn walk_repo(repo_path: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
+    WalkDir::new(repo_path)
         .into_iter()
         .filter_entry(|e| {
             if e.file_type().is_dir() {
@@ -40,7 +126,24 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
             }
             true
         })
-    {
+}
+
+/// Index files into the DB. If `only_paths` is Some, only index those relative paths
+/// (but still rebuild all edges from the full symbol set). None means index all files.
+fn index_files(
+    repo_path: &Path,
+    db: &IndexDb,
+    verbose: bool,
+    only_paths: Option<&HashSet<String>>,
+) -> Result<IndexStats> {
+    let mut stats = IndexStats::default();
+
+    // symbol_name -> Vec<(symbol_db_id, file_db_id)> for call resolution
+    let mut symbol_map: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
+    // (caller_symbol_db_id, callee_name, line) for deferred call resolution
+    let mut pending_calls: Vec<(i64, String, usize)> = Vec::new();
+
+    for entry in walk_repo(repo_path) {
         let entry = entry?;
         if !entry.file_type().is_file() {
             continue;
@@ -58,8 +161,25 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
             .to_string_lossy()
             .to_string();
 
+        // In incremental mode, skip files that don't need re-indexing
+        // but still collect their symbols for edge resolution
+        if only_paths.is_some_and(|paths| !paths.contains(&rel_path)) {
+            // Collect existing symbols for call resolution
+            if let Some(f) = db.get_file_by_path(&rel_path)? {
+                for sym in db.symbols_for_file(f.id)? {
+                    symbol_map
+                        .entry(sym.name.clone())
+                        .or_default()
+                        .push((sym.id, f.id));
+                }
+            }
+            stats.unchanged += 1;
+            continue;
+        }
+
         let language = languages::detect_language(path);
         let is_test = languages::is_test_file(path);
+        let mtime = file_mtime(path);
 
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -79,12 +199,9 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
             size,
             line_count,
             is_test,
+            mtime,
         )?;
         stats.files += 1;
-
-        // Add contains edge
-        db.insert_edge("contains", None, None, Some(file_id), None, None)?;
-        stats.edges += 1;
 
         if verbose {
             eprintln!("  {rel_path} ({} lines)", line_count);
@@ -102,7 +219,6 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
                 }
             };
 
-            // Map from parser index -> db id
             let mut symbol_id_map: Vec<i64> = Vec::new();
 
             for sym in &parse_result.symbols {
@@ -137,9 +253,26 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
         }
     }
 
+    // In incremental mode, collect calls from unchanged files before clearing edges
+    if let Some(paths) = only_paths {
+        for f in db.all_files()? {
+            if paths.contains(&f.path) {
+                continue; // Already collected from fresh parse above
+            }
+            for sym in db.symbols_for_file(f.id)? {
+                for call in db.calls_by_symbol(sym.id)? {
+                    pending_calls.push((sym.id, call.callee_name.clone(), call.line as usize));
+                }
+            }
+        }
+    }
+
+    // Clear old edges and rebuild
+    db.clear_edges()?;
+
     // Resolve calls to edges
-    for (caller_id, callee_name, _line) in &pending_calls {
-        db.insert_call(*caller_id, callee_name, *_line as i64)?;
+    for (caller_id, callee_name, line) in &pending_calls {
+        db.insert_call(*caller_id, callee_name, *line as i64)?;
 
         if let Some(targets) = symbol_map.get(callee_name.as_str()) {
             for (target_sym_id, target_file_id) in targets {
@@ -154,10 +287,15 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
                 stats.edges += 1;
             }
         } else {
-            // Unresolved call
             db.insert_edge("calls", None, Some(*caller_id), None, None, Some(callee_name))?;
             stats.edges += 1;
         }
+    }
+
+    // Add contains edges for new files
+    for f in db.all_files()? {
+        db.insert_edge("contains", None, None, Some(f.id), None, None)?;
+        stats.edges += 1;
     }
 
     // Build test edges

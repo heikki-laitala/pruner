@@ -166,10 +166,19 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
             "Indexed {} files, {} symbols, {} imports, {} calls, {} edges ({} skipped)",
             stats.files, stats.symbols, stats.imports, stats.calls, stats.edges, stats.skipped
         );
-        Ok(db)
-    } else {
-        IndexDb::open(&path)
+        return Ok(db);
     }
+
+    // Try incremental update
+    let db = IndexDb::open(&path)?;
+    let repo_path = repo.canonicalize()?;
+    if let Some(stats) = indexer::index_repo_incremental(&repo_path, &db, verbose)? {
+        eprintln!(
+            "Incremental update: {} new/modified, {} unchanged, {} deleted ({} skipped)",
+            stats.files, stats.unchanged, stats.deleted, stats.skipped
+        );
+    }
+    Ok(db)
 }
 
 fn format_index_age(repo: &Path) -> String {
