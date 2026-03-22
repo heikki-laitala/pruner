@@ -39,3 +39,8 @@ Thumbs.db
 
 # uv
 uv.lock
+
+
+# Rust
+/target
+Cargo.lock
