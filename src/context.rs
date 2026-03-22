@@ -1,6 +1,5 @@
 //! Context package generation (text + JSON).
 //!
-//! Python reference: src/pruner/context.py
 
 use crate::db::IndexDb;
 use crate::query::QueryResult;

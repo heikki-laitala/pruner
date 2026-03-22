@@ -1,6 +1,5 @@
 //! Token estimation and usage measurement.
 //!
-//! Python reference: src/pruner/tokens.py
 
 use crate::context::{self, format_context_text, generate_context};
 use crate::db::IndexDb;

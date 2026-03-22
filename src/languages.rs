@@ -1,6 +1,5 @@
 //! Language detection, test/config classification, and ignore patterns.
 //!
-//! Python reference: src/pruner/languages.py
 #![allow(dead_code)]
 
 use std::collections::HashSet;

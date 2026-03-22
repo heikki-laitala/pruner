@@ -1,6 +1,5 @@
 //! Keyword extraction + heuristic relevance matching.
 //!
-//! Python reference: src/pruner/query.py
 #![allow(dead_code)]
 
 use crate::db::{FileRow, IndexDb, SymbolRow};

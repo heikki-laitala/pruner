@@ -1,6 +1,5 @@
 //! Tree-sitter based symbol, import, and call extraction.
 //!
-//! Python reference: src/pruner/parser.py
 
 use crate::languages::Language;
 use anyhow::Result;

@@ -1,6 +1,5 @@
 //! SQLite schema and data access layer.
 //!
-//! Python reference: src/pruner/db.py
 
 // Row structs include all DB columns for completeness even if not all fields
 // are read yet. Methods mirror the Python API for feature parity.

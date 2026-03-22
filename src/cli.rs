@@ -1,6 +1,5 @@
 //! CLI interface.
 //!
-//! Python reference: src/pruner/cli.py
 
 use crate::context::{self, format_context_json, format_context_summary, format_context_text};
 use crate::db::IndexDb;

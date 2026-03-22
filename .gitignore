@@ -1,27 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*.so
-build/
-dist/
-wheels/
-*.egg-info/
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-coverage.xml
-
-# Linting / formatting
-.ruff_cache/
-.mypy_cache/
+# Rust
+/target
+Cargo.lock
 
 # IDE
 .vscode/
@@ -36,11 +15,3 @@ Thumbs.db
 
 # Pruner index (generated per-repo)
 .pruner/
-
-# uv
-uv.lock
-
-
-# Rust
-/target
-Cargo.lock

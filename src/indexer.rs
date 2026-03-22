@@ -1,6 +1,5 @@
 //! Repository walker + tree-sitter parsing -> DB.
 //!
-//! Python reference: src/pruner/indexer.py
 
 use crate::db::IndexDb;
 use crate::languages;
