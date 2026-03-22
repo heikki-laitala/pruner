@@ -1,6 +1,5 @@
-//! Language detection, test/config classification, and ignore patterns.
+//! Language detection, test classification, and ignore patterns.
 //!
-#![allow(dead_code)]
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -56,16 +55,6 @@ pub fn is_test_file(path: &Path) -> bool {
     path_str.contains("/tests/") || path_str.contains("/test/") || path_str.contains("/__tests__/")
 }
 
-/// Check if a file is a config file.
-pub fn is_config_file(path: &Path) -> bool {
-    let name = match path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n.to_lowercase(),
-        None => return false,
-    };
-
-    CONFIG_PATTERNS.iter().any(|p| name.contains(p))
-}
-
 /// Check if a directory should be skipped during indexing.
 pub fn is_ignored_dir(name: &str) -> bool {
     IGNORED_DIRS.contains(name)
@@ -85,13 +74,6 @@ static TEST_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         .into_iter()
         .collect()
 });
-
-static CONFIG_PATTERNS: &[&str] = &[
-    "config", "settings", ".env", "docker-compose", "dockerfile", "makefile",
-    "cmakelists", "setup.py", "setup.cfg", "pyproject.toml", "package.json",
-    "tsconfig", "webpack", "babel", ".eslint", ".prettier", "cargo.toml",
-    "go.mod", "gemfile", "requirements", "pipfile",
-];
 
 static IGNORED_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [

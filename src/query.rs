@@ -1,6 +1,5 @@
 //! Keyword extraction + heuristic relevance matching.
 //!
-#![allow(dead_code)]
 
 use crate::db::{FileRow, IndexDb, SymbolRow};
 use anyhow::Result;
@@ -21,6 +20,7 @@ pub struct QueryResult {
 
 #[derive(Debug, Clone)]
 pub struct PathStep {
+    #[allow(dead_code)]
     pub symbol_id: i64,
     pub name: String,
     pub kind: String,
@@ -121,7 +121,7 @@ pub fn extract_keywords(ask: &str) -> Vec<String> {
             continue;
         }
         if seen.insert(lower.clone()) {
-            keywords.push(lower.clone());
+            keywords.push(lower);
         }
 
         // Split camelCase / snake_case
@@ -154,8 +154,7 @@ fn split_identifier(s: &str) -> Vec<String> {
     let mut current = String::new();
     for ch in s.chars() {
         if ch.is_uppercase() && !current.is_empty() {
-            parts.push(current.clone());
-            current.clear();
+            parts.push(std::mem::take(&mut current));
         }
         current.push(ch);
     }
