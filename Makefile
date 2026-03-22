@@ -1,4 +1,4 @@
-.PHONY: build release test test-quick test-unit test-integration bench lint format check clean index
+.PHONY: build release run test test-quick test-unit test-integration bench lint format check clean index
 
 build:
 	cargo build
@@ -33,6 +33,9 @@ check: lint test
 clean:
 	cargo clean
 	rm -rf .pruner/
+
+run:
+	cargo run -- $(ARGS)
 
 index:
 	cargo run -- index . -v
