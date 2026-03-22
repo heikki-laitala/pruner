@@ -29,3 +29,7 @@ Write tests first. Red → Green → Refactor. New features and bug fixes start 
 ### Secure by Default
 
 Never log secrets or tokens. Validate at system boundaries. Keep network/filesystem/shell scope narrow.
+
+## Conventions
+
+- **Git**: Conventional commits (`feat:`, `fix:`, `chore:`, `refactor:`, `test:`, `ci:`). No Co-Authored-By trailer. No "Generated with Claude Code" footer in PR descriptions.
