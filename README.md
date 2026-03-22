@@ -195,6 +195,42 @@ Two mechanisms work together:
 - **CLAUDE.md** — project-level instructions that Claude reads at the start of every conversation. Tells Claude to run `pruner context` before making changes.
 - **SKILL.md** — teaches Claude the full pruner API (all commands, workflow, options). Claude auto-loads this when it needs to use pruner. Set to `user-invocable: false` so it triggers automatically, not as a slash command.
 
+## Similar projects
+
+Several tools tackle the same problem — reducing LLM token waste when working with large codebases. Most use tree-sitter for structural parsing. The key difference is **how** they deliver context to the LLM.
+
+### MCP server approach (interactive exploration)
+
+These run as persistent servers that the LLM queries during conversation:
+
+| Project | Lang | Description |
+|---------|------|-------------|
+| [CodeRLM](https://github.com/JaredStewart/coderlm) | Rust | Tree-sitter indexing with `search`, `impl`, `callers`, `tests` API. LLM explores iteratively. File watching, Go/Java/Scala support. Multi-platform (Cursor, Windsurf, Copilot). |
+| [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) | Go | Knowledge graph with tree-sitter + SQLite. 64 languages, 14 MCP tools, call chains. |
+| [AiDex](https://github.com/CSCSoftware/AiDex) | ? | Tree-sitter + SQLite MCP server. Claims 50x less context than grep. |
+| [Srclight](https://github.com/srclight/srclight) | ? | Tree-sitter + SQLite FTS5, call graphs, optional embeddings. 25+ tools, 10 languages. |
+| [jCodeMunch-MCP](https://github.com/jgravelle/jcodemunch-mcp) | ? | Tree-sitter AST parsing MCP server. Claims 95%+ token reduction. |
+| [code-index-mcp](https://github.com/johnhuang316/code-index-mcp) | ? | General code indexing MCP server. |
+
+### Batch/CLI approach (pre-packaged context)
+
+These generate context upfront — no server needed:
+
+| Project | Lang | Description |
+|---------|------|-------------|
+| **Pruner** | Python | Tree-sitter + SQLite, NL query → execution paths + key files + snippets. One command, no server. |
+| [Aider repo-map](https://github.com/Aider-AI/aider) | Python | Tree-sitter + PageRank to select most-referenced symbols. Embedded in Aider, not standalone. |
+| [Repomix](https://github.com/yamadashy/repomix) | JS | Packs entire repo into one file. No structural parsing — brute-force inclusion. |
+| [code2prompt](https://github.com/mufeedvh/code2prompt) | Rust | Converts codebase to single LLM prompt with templating. No structural parsing. |
+
+### How pruner differs
+
+- **Standalone CLI, no server** — `pruner context . "task" --brief` and done. No daemon, no MCP protocol, no hooks.
+- **Natural language → context package** — takes a task description, infers execution paths, returns a complete package. Most MCP tools expose individual query primitives that the LLM must chain together.
+- **Automatic execution path inference** — traces through the call graph to show how code flows (A → B → C). Most tools leave path-tracing to the LLM.
+- **No LLM for indexing** — purely structural. Some tools (code-graph-rag, ctx-sys) use embeddings during indexing.
+- **Tradeoff** — MCP servers are more flexible (LLM can ask follow-up queries), but cost more LLM turns. Pruner is simpler and cheaper per query.
+
 ## Future work
 
 - Incremental indexing (only re-parse changed files)
