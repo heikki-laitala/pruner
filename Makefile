@@ -1,4 +1,4 @@
-.PHONY: build test test-quick lint format check clean index
+.PHONY: build test test-quick test-unit test-integration bench lint format check clean index
 
 build:
 	cargo build
@@ -6,8 +6,18 @@ build:
 test:
 	cargo test
 
+test-unit:
+	cargo test --lib
+
+test-integration:
+	cargo test --test integration
+
 test-quick:
 	cargo test -- --quiet
+
+bench:
+	cargo build --release
+	cargo test --test bench -- --nocapture
 
 lint:
 	cargo clippy -- -D warnings
