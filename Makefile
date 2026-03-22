@@ -4,7 +4,7 @@ build:
 	cargo build
 
 test:
-	cargo test
+	cargo test --bin pruner --test integration
 
 test-unit:
 	cargo test --lib
