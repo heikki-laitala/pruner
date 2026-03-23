@@ -2,8 +2,8 @@
 # Pruner installer — downloads pre-built binary and sets up project integration.
 #
 # Usage:
-#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh
-#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --hook
+#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash
+#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --hook
 #
 # Options (pass after --):
 #   --hook      Install Claude Code prompt-submit hook (better performance)
