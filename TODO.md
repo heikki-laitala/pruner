@@ -8,21 +8,7 @@ A/B test baseline (implement scenario on OpenClaw, 9.8K files):
 - Without pruner: $0.66 / 48 tools / 122.6s
 - With pruner (auto mode): $0.70 / 23 tools / 80.7s (+6% cost, -52% tools, -34% time)
 
-## 1. Prompt-submit hook (zero tool calls)
-
-Install pruner as a Claude Code `prompt_submit` hook instead of a skill. When the user submits a prompt, the hook runs `pruner context` and injects the output into the conversation before Claude starts thinking.
-
-**Why this matters:**
-- Eliminates the tool call that runs pruner (saves one opus round-trip)
-- Context is present from turn 1, gets cached by the API on all subsequent turns (cheap)
-- Claude never spends opus tokens deciding whether/how to use pruner
-
-**Implementation:**
-- Add a hook config to `.claude/settings.json` that runs `pruner context . "$PROMPT"` on prompt_submit
-- Hook output appears as user-context, not as tool-call result
-- Need to figure out how hook output is injected (env var? stdin? appended to prompt?)
-
-## 2. Complete code slices (zero follow-up reads)
+## 1. Complete code slices (zero follow-up reads) — platform-agnostic
 
 Current snippets are 30-line truncations that often require Claude to Read the full file anyway. Since tree-sitter knows exact symbol boundaries, pruner should extract complete function/method bodies.
 
@@ -36,19 +22,34 @@ Current snippets are 30-line truncations that often require Claude to Read the f
 - Cap individual function bodies at reasonable size (e.g., 100 lines)
 - For the implementation scenario, include the function where new code should be added (e.g., the route registration function)
 
-## 3. Edit-location hints
+## 2. Edit-location hints — platform-agnostic
 
 For implementation tasks, pruner can analyze the call graph to suggest exactly where to make changes, not just which files are relevant.
 
 **Why this matters:**
 - Turns "here are 10 relevant files" into "add your code at `src/routes.ts:45` inside `registerRoutes()`"
-- Claude skips the "figure out where to put it" phase entirely
+- Any agent (Claude Code, Copilot, Codex) skips the "figure out where to put it" phase entirely
 - Biggest win for implementation tasks (currently our weakest scenario)
 
 **Implementation:**
 - Detect "implement" / "add" / "create" keywords in the query
 - Find insertion points: functions that register similar things (routes, handlers, tests)
 - Output a "suggested edit location" section with file:line and surrounding context
+
+## 3. Prompt-submit hook (zero tool calls) — Claude Code only
+
+Install pruner as a Claude Code `prompt_submit` hook instead of a skill. When the user submits a prompt, the hook runs `pruner context` and injects the output into the conversation before Claude starts thinking.
+
+**Why this matters:**
+- Eliminates the tool call that runs pruner (saves one opus round-trip)
+- Context is present from turn 1, gets cached by the API on all subsequent turns (cheap)
+- Claude never spends opus tokens deciding whether/how to use pruner
+- Platform-locked to Claude Code — does not help Copilot or Codex users
+
+**Implementation:**
+- Add a hook config to `.claude/settings.json` that runs `pruner context . "$PROMPT"` on prompt_submit
+- Hook output appears as user-context, not as tool-call result
+- Need to figure out how hook output is injected (env var? stdin? appended to prompt?)
 
 ## 4. Explored but rejected
 
