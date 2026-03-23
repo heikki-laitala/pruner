@@ -117,8 +117,12 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         .map(|(sym, _)| sym.clone())
         .collect();
 
-    // Cap matching files and tests
-    matching_files.truncate(MAX_RESULT_FILES);
+    // Score and rank files, then cap results
+    let matching_files: Vec<FileRow> = score_and_rank_files(&matching_files, &keywords)
+        .into_iter()
+        .take(MAX_RESULT_FILES)
+        .map(|(f, _)| f.clone())
+        .collect();
     related_tests.truncate(MAX_RESULT_TESTS);
 
     // Trace execution paths with time budget
@@ -243,6 +247,72 @@ fn score_and_rank_symbols<'a>(
     let mut scored: Vec<(&SymbolRow, i32)> = symbols
         .iter()
         .map(|s| (s, score_symbol(s, keywords)))
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored
+}
+
+/// Score a file's relevance to the query keywords.
+/// Higher score = more relevant.
+fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
+    let path_lower = file.path.to_lowercase();
+    let mut score: i32 = 0;
+
+    // Extract filename (last path component without extension)
+    let filename = path_lower
+        .rsplit('/')
+        .next()
+        .unwrap_or(&path_lower);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename);
+
+    for kw in keywords {
+        // Filename matches are most valuable
+        if stem == *kw {
+            score += 100; // exact filename match
+        } else if stem.contains(kw.as_str()) {
+            score += 40; // filename contains keyword
+        } else if path_lower.contains(kw.as_str()) {
+            score += 10; // keyword somewhere in path
+        }
+    }
+
+    // Penalize non-source directories
+    for segment in path_lower.split('/') {
+        match segment {
+            "docs" | "doc" | "documentation" => score -= 30,
+            "zh-cn" | "zh-tw" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "ru"
+            | "locale" | "locales" | "i18n" | "translations" | "l10n" => score -= 50,
+            "vendor" | "node_modules" | "third_party" | "third-party" => score -= 40,
+            "examples" | "example" | "samples" | "sample" => score -= 15,
+            _ => {}
+        }
+    }
+
+    // Bonus for source code files (have a recognized language)
+    if file.language.is_some() {
+        score += 15;
+    }
+
+    // Small bonus for test files when query might be about testing
+    // (otherwise neutral — tests are useful context)
+    if file.is_test {
+        score -= 5;
+    }
+
+    score
+}
+
+/// Score and rank files by relevance, returning (file, score) pairs sorted descending.
+fn score_and_rank_files<'a>(
+    files: &'a [FileRow],
+    keywords: &[String],
+) -> Vec<(&'a FileRow, i32)> {
+    let mut scored: Vec<(&FileRow, i32)> = files
+        .iter()
+        .map(|f| (f, score_file(f, keywords)))
         .collect();
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored
@@ -540,6 +610,80 @@ mod tests {
         };
         let ids = result.all_relevant_file_ids();
         assert_eq!(ids.len(), 1); // same file_id deduped
+    }
+
+    #[test]
+    fn test_score_file_exact_filename_match() {
+        let file = FileRow {
+            id: 1, path: "src/auth/websocket.rs".into(),
+            language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
+        };
+        let score = score_file(&file, &["websocket".to_string()]);
+        // 100 exact filename + 15 language bonus = 115
+        assert_eq!(score, 115);
+    }
+
+    #[test]
+    fn test_score_file_docs_penalty() {
+        let file = FileRow {
+            id: 1, path: "docs/api/websocket.md".into(),
+            language: None, size: 500, line_count: 100, is_test: false,
+        };
+        let score = score_file(&file, &["websocket".to_string()]);
+        // 100 exact filename - 30 docs penalty = 70
+        assert_eq!(score, 70);
+    }
+
+    #[test]
+    fn test_score_file_locale_penalty() {
+        let file = FileRow {
+            id: 1, path: "docs/zh-CN/api/websocket.md".into(),
+            language: None, size: 500, line_count: 100, is_test: false,
+        };
+        let score = score_file(&file, &["websocket".to_string()]);
+        // 100 exact filename - 30 docs - 50 zh-cn = 20
+        assert_eq!(score, 20);
+    }
+
+    #[test]
+    fn test_score_file_source_beats_docs() {
+        let src = FileRow {
+            id: 1, path: "src/net/websocket.rs".into(),
+            language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
+        };
+        let doc = FileRow {
+            id: 2, path: "docs/api/websocket.md".into(),
+            language: None, size: 500, line_count: 100, is_test: false,
+        };
+        let src_score = score_file(&src, &["websocket".to_string()]);
+        let doc_score = score_file(&doc, &["websocket".to_string()]);
+        assert!(src_score > doc_score, "source ({src_score}) should beat doc ({doc_score})");
+    }
+
+    #[test]
+    fn test_score_file_multiple_keywords() {
+        let file = FileRow {
+            id: 1, path: "src/auth/token_validator.rs".into(),
+            language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
+        };
+        let score = score_file(&file, &["auth".to_string(), "token".to_string(), "validator".to_string()]);
+        // "token_validator" stem contains "token" (40) and "validator" (40)
+        // "auth" in path (10)
+        // + 15 language
+        assert_eq!(score, 105);
+    }
+
+    #[test]
+    fn test_score_and_rank_files_ordering() {
+        let files = vec![
+            FileRow { id: 1, path: "docs/zh-CN/websocket.md".into(), language: None, size: 500, line_count: 100, is_test: false },
+            FileRow { id: 2, path: "src/net/websocket.rs".into(), language: Some("rust".into()), size: 200, line_count: 50, is_test: false },
+            FileRow { id: 3, path: "docs/websocket.md".into(), language: None, size: 300, line_count: 60, is_test: false },
+        ];
+        let ranked = score_and_rank_files(&files, &["websocket".to_string()]);
+        assert_eq!(ranked[0].0.id, 2, "source file should rank first");
+        assert_eq!(ranked[1].0.id, 3, "docs should rank second");
+        assert_eq!(ranked[2].0.id, 1, "zh-CN docs should rank last");
     }
 
     #[test]

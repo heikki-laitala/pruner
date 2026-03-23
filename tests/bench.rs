@@ -264,6 +264,96 @@ fn bench_real_repo() {
     }
 }
 
+/// Relevance quality test: asserts that scored/ranked results surface the right
+/// files and symbols, not just the first N from the database.
+///
+/// These assertions should FAIL before relevance scoring is implemented for files
+/// and PASS after. This is the TDD "red" test.
+#[test]
+fn relevance_quality() {
+    let repo_path = get_repo_path();
+    let repo_str = repo_path.to_str().unwrap();
+    let bin = pruner_bin();
+
+    // Ensure indexed
+    let status = Command::new(&bin)
+        .args(["index", repo_str])
+        .status()
+        .expect("pruner index failed");
+    assert!(status.success());
+
+    // --- Query: "fix WebSocket reconnection timeout" ---
+    let json = run_query_json(&bin, repo_str, "fix WebSocket reconnection timeout");
+
+    let files: Vec<String> = json["key_files"]
+        .as_array().unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_string())
+        .collect();
+
+    // 1) Source files with "websocket" in path should appear in top 10
+    let top10_files = &files[..files.len().min(10)];
+    let ws_in_top10 = top10_files.iter()
+        .filter(|p| p.to_lowercase().contains("websocket"))
+        .count();
+    assert!(ws_in_top10 >= 2,
+        "Expected >=2 websocket files in top 10, got {ws_in_top10}. Top 10: {top10_files:?}");
+
+    // 2) Docs should not dominate — less than half of results should be docs
+    let docs_count = files.iter().filter(|p| p.starts_with("docs/")).count();
+    assert!(docs_count < files.len() / 2,
+        "Docs dominate results: {docs_count}/{} are docs. \
+         Source files should rank above docs.", files.len());
+
+    // 3) Duplicate locale docs shouldn't both appear (zh-CN mirrors)
+    let zh_docs = files.iter().filter(|p| p.contains("zh-CN")).count();
+    assert!(zh_docs <= 2,
+        "Too many zh-CN doc mirrors: {zh_docs}. Dedup or deprioritize translated docs.");
+
+    // --- Query: "how does authentication token validation work" ---
+    let json = run_query_json(&bin, repo_str, "how does authentication token validation work");
+
+    let files: Vec<String> = json["key_files"]
+        .as_array().unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_string())
+        .collect();
+
+    // 4) Files with "auth" in path should appear in top 15
+    let top15_files = &files[..files.len().min(15)];
+    let auth_in_top15 = top15_files.iter()
+        .filter(|p| p.to_lowercase().contains("auth"))
+        .count();
+    assert!(auth_in_top15 >= 3,
+        "Expected >=3 auth files in top 15, got {auth_in_top15}. Top 15: {top15_files:?}");
+
+    // 5) Files with "token" in path should appear in top 15
+    let token_in_top15 = top15_files.iter()
+        .filter(|p| p.to_lowercase().contains("token"))
+        .count();
+    assert!(token_in_top15 >= 3,
+        "Expected >=3 token files in top 15, got {token_in_top15}. Top 15: {token_in_top15:?}");
+
+    eprintln!("=== Relevance quality checks passed ===");
+}
+
+fn run_query_json(bin: &Path, repo: &str, query: &str) -> serde_json::Value {
+    let child = Command::new(bin)
+        .args(["context", repo, query, "--format", "json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn pruner");
+
+    let output = wait_with_timeout(child, QUERY_TIMEOUT)
+        .expect("query timed out");
+    assert!(output.status.success(), "query failed: {}",
+        String::from_utf8_lossy(&output.stderr));
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).expect("failed to parse JSON")
+}
+
 fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Option<std::process::Output> {
     // Read stdout/stderr in background threads to avoid pipe deadlock
     // (large JSON output can exceed the OS pipe buffer, blocking the child).
