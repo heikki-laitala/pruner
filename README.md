@@ -90,7 +90,11 @@ pruner index .              # current directory
 pruner index . -v           # verbose output
 ```
 
-This creates a `.pruner/index.db` SQLite database inside the repo.
+This creates a `.pruner/` directory inside the repo containing the SQLite index database. Add it to your `.gitignore`:
+
+```bash
+echo '.pruner/' >> .gitignore
+```
 
 **Indexing is automatic.** You don't need to run `pruner index` manually — `pruner context` auto-indexes on first run if no index exists. After that, it runs incremental updates when the index is older than 5 minutes (checks for new, modified, and deleted files). Override with `PRUNER_RECHECK_SECS=0` to force a check every time.
 
