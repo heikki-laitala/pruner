@@ -294,8 +294,25 @@ fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
         println!("Updated settings -> {}", settings_path.display());
     }
 
-    // Append CLAUDE.md instructions (project-local only)
     if !global {
+        // Add .pruner/ to .gitignore
+        let gitignore = repo.join(".gitignore");
+        let gitignore_content = if gitignore.exists() {
+            fs::read_to_string(&gitignore)?
+        } else {
+            String::new()
+        };
+        if !gitignore_content.lines().any(|l| l.trim() == ".pruner/" || l.trim() == ".pruner") {
+            let mut f = fs::OpenOptions::new().create(true).append(true).open(&gitignore)?;
+            use std::io::Write;
+            if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
+                writeln!(f)?;
+            }
+            writeln!(f, ".pruner/")?;
+            println!("Updated .gitignore -> added .pruner/");
+        }
+
+        // Append CLAUDE.md instructions
         let claude_md = repo.join("CLAUDE.md");
         let current = if claude_md.exists() {
             fs::read_to_string(&claude_md)?
