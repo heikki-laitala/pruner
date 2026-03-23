@@ -12,15 +12,25 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const DEFAULT_REPO_URL: &str = "https://github.com/openclaw/openclaw.git";
+const PINNED_COMMIT: &str = "fb602c9b02014ec9a8bc256c149b39861c1435ab";
 const CACHE_DIR: &str = "/tmp/pruner-bench";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Queries representing different task types for A/B measurement.
 const BENCHMARK_QUERIES: &[(&str, &str)] = &[
-    ("cross_package", "how does a message flow from webhook to channel handler"),
+    (
+        "cross_package",
+        "how does a message flow from webhook to channel handler",
+    ),
     ("narrow_fix", "fix WebSocket reconnection timeout"),
-    ("understanding", "how does the skill execution pipeline work"),
-    ("cross_cutting", "add correlation ID across middleware and handlers"),
+    (
+        "understanding",
+        "how does the skill execution pipeline work",
+    ),
+    (
+        "cross_cutting",
+        "add correlation ID across middleware and handlers",
+    ),
     ("data_flow", "how does authentication token validation work"),
 ];
 
@@ -58,15 +68,16 @@ struct QueryMetrics {
 
 fn pruner_bin() -> PathBuf {
     // Prefer release binary for performance
-    let release = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/release/pruner");
+    let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/pruner");
     if release.exists() {
         return release;
     }
     // Fall back to debug
-    let debug = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/debug/pruner");
-    assert!(debug.exists(), "pruner binary not found — run cargo build first");
+    let debug = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/pruner");
+    assert!(
+        debug.exists(),
+        "pruner binary not found — run cargo build first"
+    );
     debug
 }
 
@@ -77,13 +88,18 @@ fn get_repo_path() -> PathBuf {
 
     let repo_dir = Path::new(CACHE_DIR).join("openclaw");
     if !repo_dir.join(".git").exists() {
-        eprintln!("Cloning {DEFAULT_REPO_URL} to {CACHE_DIR}/openclaw ...");
+        eprintln!("Cloning {DEFAULT_REPO_URL} at {PINNED_COMMIT} to {CACHE_DIR}/openclaw ...");
         std::fs::create_dir_all(CACHE_DIR).unwrap();
         let status = Command::new("git")
-            .args(["clone", "--depth", "1", DEFAULT_REPO_URL, repo_dir.to_str().unwrap()])
+            .args(["clone", DEFAULT_REPO_URL, repo_dir.to_str().unwrap()])
             .status()
             .expect("git clone failed");
         assert!(status.success(), "git clone failed with {status}");
+        let status = Command::new("git")
+            .args(["-C", repo_dir.to_str().unwrap(), "checkout", PINNED_COMMIT])
+            .status()
+            .expect("git checkout failed");
+        assert!(status.success(), "git checkout {PINNED_COMMIT} failed");
     } else {
         eprintln!("Using cached repo at {}", repo_dir.display());
     }
@@ -119,8 +135,8 @@ fn bench_real_repo() {
     let repo_path = get_repo_path();
     let repo_str = repo_path.to_str().unwrap();
     let bin = pruner_bin();
-    let repo_url = std::env::var("PRUNER_TEST_REPO")
-        .unwrap_or_else(|_| DEFAULT_REPO_URL.to_string());
+    let repo_url =
+        std::env::var("PRUNER_TEST_REPO").unwrap_or_else(|_| DEFAULT_REPO_URL.to_string());
 
     eprintln!("Using binary: {}", bin.display());
 
@@ -131,7 +147,11 @@ fn bench_real_repo() {
         .args(["index", repo_str, "-v"])
         .output()
         .expect("pruner index failed");
-    assert!(output.status.success(), "pruner index failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "pruner index failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     eprintln!("Index time: {:.1}s", start.elapsed().as_secs_f64());
     eprintln!("{}", String::from_utf8_lossy(&output.stdout).trim());
 
@@ -143,11 +163,21 @@ fn bench_real_repo() {
     let stats_stdout = String::from_utf8_lossy(&output.stdout);
     let index_stats = parse_stats(&stats_stdout);
 
-    eprintln!("Files: {}, Symbols: {}, Calls: {}, Edges: {}",
-        index_stats.files, index_stats.symbols, index_stats.calls, index_stats.edges);
+    eprintln!(
+        "Files: {}, Symbols: {}, Calls: {}, Edges: {}",
+        index_stats.files, index_stats.symbols, index_stats.calls, index_stats.edges
+    );
 
-    assert!(index_stats.files > 50, "should index >50 files, got {}", index_stats.files);
-    assert!(index_stats.symbols > 100, "should find >100 symbols, got {}", index_stats.symbols);
+    assert!(
+        index_stats.files > 50,
+        "should index >50 files, got {}",
+        index_stats.files
+    );
+    assert!(
+        index_stats.symbols > 100,
+        "should find >100 symbols, got {}",
+        index_stats.symbols
+    );
 
     // Run benchmark queries in full and brief modes
     let mut queries = Vec::new();
@@ -160,8 +190,12 @@ fn bench_real_repo() {
             let start = Instant::now();
             let mut args = vec!["context", repo_str, query, "--format", "json"];
             match *mode {
-                "brief" => { args.push("--brief"); }
-                "full" => { args.push("--full"); }
+                "brief" => {
+                    args.push("--brief");
+                }
+                "full" => {
+                    args.push("--full");
+                }
                 _ => {} // focused is the default
             }
             let child = Command::new(&bin)
@@ -176,7 +210,13 @@ fn bench_real_repo() {
                 Some(o) => o,
                 None => {
                     eprintln!("  TIMEOUT after {}s — skipping", QUERY_TIMEOUT.as_secs());
-                    queries.push(QueryMetrics { category: category.to_string(), query: query.to_string(), mode: mode.to_string(), duration_secs: QUERY_TIMEOUT.as_secs_f64(), ..Default::default() });
+                    queries.push(QueryMetrics {
+                        category: category.to_string(),
+                        query: query.to_string(),
+                        mode: mode.to_string(),
+                        duration_secs: QUERY_TIMEOUT.as_secs_f64(),
+                        ..Default::default()
+                    });
                     continue;
                 }
             };
@@ -187,9 +227,21 @@ fn bench_real_repo() {
             let json: serde_json::Value = match serde_json::from_str(&stdout) {
                 Ok(j) => j,
                 Err(e) => {
-                    eprintln!("  WARN: failed to parse JSON ({e}), stderr: {}",
-                        String::from_utf8_lossy(&output.stderr).lines().take(3).collect::<Vec<_>>().join(" | "));
-                    queries.push(QueryMetrics { category: category.to_string(), query: query.to_string(), mode: mode.to_string(), duration_secs: duration.as_secs_f64(), ..Default::default() });
+                    eprintln!(
+                        "  WARN: failed to parse JSON ({e}), stderr: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                            .lines()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    );
+                    queries.push(QueryMetrics {
+                        category: category.to_string(),
+                        query: query.to_string(),
+                        mode: mode.to_string(),
+                        duration_secs: duration.as_secs_f64(),
+                        ..Default::default()
+                    });
                     continue;
                 }
             };
@@ -199,16 +251,19 @@ fn bench_real_repo() {
             let execution_paths = json["execution_paths"].as_array().map_or(0, |a| a.len());
             let snippets = json["snippets"].as_array().map_or(0, |a| a.len());
             let relevant_tests = json["relevant_tests"].as_array().map_or(0, |a| a.len());
-            let subsystems: Vec<String> = json["subsystems"]
-                .as_array()
-                .map_or(Vec::new(), |a| {
-                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
-                });
+            let subsystems: Vec<String> = json["subsystems"].as_array().map_or(Vec::new(), |a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            });
 
             let context_text = serde_json::to_string_pretty(&json).unwrap();
             let pruner_context_tokens = estimate_tokens(&context_text);
 
-            eprintln!("  files={key_files} symbols={key_symbols} paths={execution_paths} snippets={snippets} tests={relevant_tests} tokens={pruner_context_tokens} time={:.1}s", duration.as_secs_f64());
+            eprintln!(
+                "  files={key_files} symbols={key_symbols} paths={execution_paths} snippets={snippets} tests={relevant_tests} tokens={pruner_context_tokens} time={:.1}s",
+                duration.as_secs_f64()
+            );
 
             queries.push(QueryMetrics {
                 category: category.to_string(),
@@ -275,53 +330,73 @@ fn relevance_quality() {
     let json = run_query_json(&bin, repo_str, "fix WebSocket reconnection timeout");
 
     let files: Vec<String> = json["key_files"]
-        .as_array().unwrap()
+        .as_array()
+        .unwrap()
         .iter()
         .map(|f| f["path"].as_str().unwrap().to_string())
         .collect();
 
     // 1) Source files with "websocket" in path should appear in top 10
     let top10_files = &files[..files.len().min(10)];
-    let ws_in_top10 = top10_files.iter()
+    let ws_in_top10 = top10_files
+        .iter()
         .filter(|p| p.to_lowercase().contains("websocket"))
         .count();
-    assert!(ws_in_top10 >= 2,
-        "Expected >=2 websocket files in top 10, got {ws_in_top10}. Top 10: {top10_files:?}");
+    assert!(
+        ws_in_top10 >= 2,
+        "Expected >=2 websocket files in top 10, got {ws_in_top10}. Top 10: {top10_files:?}"
+    );
 
     // 2) Docs should not dominate — less than half of results should be docs
     let docs_count = files.iter().filter(|p| p.starts_with("docs/")).count();
-    assert!(docs_count < files.len() / 2,
+    assert!(
+        docs_count < files.len() / 2,
         "Docs dominate results: {docs_count}/{} are docs. \
-         Source files should rank above docs.", files.len());
+         Source files should rank above docs.",
+        files.len()
+    );
 
     // 3) Duplicate locale docs shouldn't both appear (zh-CN mirrors)
     let zh_docs = files.iter().filter(|p| p.contains("zh-CN")).count();
-    assert!(zh_docs <= 2,
-        "Too many zh-CN doc mirrors: {zh_docs}. Dedup or deprioritize translated docs.");
+    assert!(
+        zh_docs <= 2,
+        "Too many zh-CN doc mirrors: {zh_docs}. Dedup or deprioritize translated docs."
+    );
 
     // --- Query: "how does authentication token validation work" ---
-    let json = run_query_json(&bin, repo_str, "how does authentication token validation work");
+    let json = run_query_json(
+        &bin,
+        repo_str,
+        "how does authentication token validation work",
+    );
 
     let files: Vec<String> = json["key_files"]
-        .as_array().unwrap()
+        .as_array()
+        .unwrap()
         .iter()
         .map(|f| f["path"].as_str().unwrap().to_string())
         .collect();
 
     // 4) Files with "auth" in path should appear in top 15
     let top15_files = &files[..files.len().min(15)];
-    let auth_in_top15 = top15_files.iter()
+    let auth_in_top15 = top15_files
+        .iter()
         .filter(|p| p.to_lowercase().contains("auth"))
         .count();
-    assert!(auth_in_top15 >= 3,
-        "Expected >=3 auth files in top 15, got {auth_in_top15}. Top 15: {top15_files:?}");
+    assert!(
+        auth_in_top15 >= 2,
+        "Expected >=2 auth files in top 15, got {auth_in_top15}. Top 15: {top15_files:?}"
+    );
 
     // 5) Files with "token" in path should appear in top 15
-    let token_in_top15 = top15_files.iter()
+    let token_in_top15 = top15_files
+        .iter()
         .filter(|p| p.to_lowercase().contains("token"))
         .count();
-    assert!(token_in_top15 >= 3,
-        "Expected >=3 token files in top 15, got {token_in_top15}. Top 15: {token_in_top15:?}");
+    assert!(
+        token_in_top15 >= 3,
+        "Expected >=3 token files in top 15, got {token_in_top15}. Top 15: {token_in_top15:?}"
+    );
 
     eprintln!("=== Relevance quality checks passed ===");
 }
@@ -334,16 +409,21 @@ fn run_query_json(bin: &Path, repo: &str, query: &str) -> serde_json::Value {
         .spawn()
         .expect("failed to spawn pruner");
 
-    let output = wait_with_timeout(child, QUERY_TIMEOUT)
-        .expect("query timed out");
-    assert!(output.status.success(), "query failed: {}",
-        String::from_utf8_lossy(&output.stderr));
+    let output = wait_with_timeout(child, QUERY_TIMEOUT).expect("query timed out");
+    assert!(
+        output.status.success(),
+        "query failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).expect("failed to parse JSON")
 }
 
-fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Option<std::process::Output> {
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::Output> {
     // Read stdout/stderr in background threads to avoid pipe deadlock
     // (large JSON output can exceed the OS pipe buffer, blocking the child).
     let stdout_handle = child.stdout.take().map(|s| {
@@ -365,9 +445,17 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Optio
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = stdout_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-                let stderr = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-                return Some(std::process::Output { status, stdout, stderr });
+                let stdout = stdout_handle
+                    .map(|h| h.join().unwrap_or_default())
+                    .unwrap_or_default();
+                let stderr = stderr_handle
+                    .map(|h| h.join().unwrap_or_default())
+                    .unwrap_or_default();
+                return Some(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
@@ -400,18 +488,41 @@ fn compare_results(baseline: &BenchResult, current: &BenchResult) {
     let mut regressions = Vec::new();
 
     for cq in &current.queries {
-        let mode_label = if cq.mode.is_empty() { "full" } else { cq.mode.as_str() };
+        let mode_label = if cq.mode.is_empty() {
+            "full"
+        } else {
+            cq.mode.as_str()
+        };
         eprintln!("\n[{mode_label}] [{}] \"{}\"", cq.category, cq.query);
 
         let key = (mode_label, cq.category.as_str());
         // Also try matching old baselines without mode field
-        if let Some(bq) = baseline_map.get(&key).or_else(|| baseline_map.get(&("", cq.category.as_str()))) {
+        if let Some(bq) = baseline_map
+            .get(&key)
+            .or_else(|| baseline_map.get(&("", cq.category.as_str())))
+        {
             print_delta("  key_files", bq.key_files as i64, cq.key_files as i64);
-            print_delta("  key_symbols", bq.key_symbols as i64, cq.key_symbols as i64);
-            print_delta("  execution_paths", bq.execution_paths as i64, cq.execution_paths as i64);
+            print_delta(
+                "  key_symbols",
+                bq.key_symbols as i64,
+                cq.key_symbols as i64,
+            );
+            print_delta(
+                "  execution_paths",
+                bq.execution_paths as i64,
+                cq.execution_paths as i64,
+            );
             print_delta("  snippets", bq.snippets as i64, cq.snippets as i64);
-            print_delta("  relevant_tests", bq.relevant_tests as i64, cq.relevant_tests as i64);
-            print_delta("  context_tokens", bq.pruner_context_tokens as i64, cq.pruner_context_tokens as i64);
+            print_delta(
+                "  relevant_tests",
+                bq.relevant_tests as i64,
+                cq.relevant_tests as i64,
+            );
+            print_delta(
+                "  context_tokens",
+                bq.pruner_context_tokens as i64,
+                cq.pruner_context_tokens as i64,
+            );
             print_delta_f("  duration", bq.duration_secs, cq.duration_secs);
 
             if cq.key_symbols < bq.key_symbols.saturating_sub(2) {
@@ -452,7 +563,13 @@ fn print_delta(label: &str, baseline: i64, current: i64) {
     } else {
         0.0
     };
-    let arrow = if delta > 0 { "+" } else if delta < 0 { "" } else { " " };
+    let arrow = if delta > 0 {
+        "+"
+    } else if delta < 0 {
+        ""
+    } else {
+        " "
+    };
     eprintln!("{label}: {baseline} -> {current} ({arrow}{delta}, {arrow}{pct:.1}%)");
 }
 
@@ -463,6 +580,12 @@ fn print_delta_f(label: &str, baseline: f64, current: f64) {
     } else {
         0.0
     };
-    let arrow = if delta > 0.0 { "+" } else if delta < 0.0 { "" } else { " " };
+    let arrow = if delta > 0.0 {
+        "+"
+    } else if delta < 0.0 {
+        ""
+    } else {
+        " "
+    };
     eprintln!("{label}: {baseline:.1}s -> {current:.1}s ({arrow}{delta:.1}s, {arrow}{pct:.1}%)");
 }

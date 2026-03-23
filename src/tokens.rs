@@ -1,7 +1,7 @@
 //! Token estimation and usage measurement.
 //!
 
-use crate::context::{self, format_context_text, generate_context, ContextMode};
+use crate::context::{self, ContextMode, format_context_text, generate_context};
 use crate::db::IndexDb;
 use crate::languages;
 use crate::query::QueryResult;
@@ -60,7 +60,12 @@ pub fn measure(
     max_snippet_lines: usize,
 ) -> Result<Measurement> {
     // Generate pruner context
-    let ctx = generate_context(query_result, repo_path, max_snippet_lines, ContextMode::Full)?;
+    let ctx = generate_context(
+        query_result,
+        repo_path,
+        max_snippet_lines,
+        ContextMode::Full,
+    )?;
     let text_output = format_context_text(&ctx);
     let json_output = context::format_context_json(&ctx)?;
 
@@ -222,9 +227,7 @@ pub fn estimate_claude_session(
     let all_indexed = db.all_files()?;
     let non_relevant_code_files: Vec<_> = all_indexed
         .iter()
-        .filter(|f| {
-            !relevant_file_ids.contains(&f.id) && f.language.is_some() && !f.is_test
-        })
+        .filter(|f| !relevant_file_ids.contains(&f.id) && f.language.is_some() && !f.is_test)
         .collect();
 
     // Irrelevant reads
@@ -234,7 +237,11 @@ pub fn estimate_claude_session(
     let mut irrelevant_to_read = Vec::new();
     for f in &non_relevant_code_files {
         let path_lower = f.path.to_lowercase();
-        if query_result.keywords.iter().any(|kw| path_lower.contains(kw)) {
+        if query_result
+            .keywords
+            .iter()
+            .any(|kw| path_lower.contains(kw))
+        {
             irrelevant_to_read.push(f);
             if irrelevant_to_read.len() >= irrelevant_count {
                 break;
@@ -275,7 +282,12 @@ pub fn estimate_claude_session(
     // --- WITH pruner ---
 
     // Step 1: pruner context output
-    let ctx = generate_context(query_result, repo_path, max_snippet_lines, ContextMode::Full)?;
+    let ctx = generate_context(
+        query_result,
+        repo_path,
+        max_snippet_lines,
+        ContextMode::Full,
+    )?;
     let pruner_text = format_context_text(&ctx);
     est.with_pruner_context_tokens = estimate_tokens(&pruner_text);
 
@@ -314,16 +326,13 @@ fn estimate_dir_depth(repo: &Path) -> usize {
     let mut max_depth = 0;
     let mut count = 0;
 
-    for entry in WalkDir::new(repo)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir() {
-                let name = e.file_name().to_string_lossy();
-                return !languages::is_ignored_dir(&name);
-            }
-            true
-        })
-    {
+    for entry in WalkDir::new(repo).into_iter().filter_entry(|e| {
+        if e.file_type().is_dir() {
+            let name = e.file_name().to_string_lossy();
+            return !languages::is_ignored_dir(&name);
+        }
+        true
+    }) {
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_dir() {
             continue;
@@ -554,17 +563,31 @@ mod tests {
         let src = tmp.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("main.rs"), "fn main() {\n    login();\n}\n").unwrap();
-        std::fs::write(src.join("auth.rs"), "fn login() {\n    verify();\n}\nfn verify() {}\n").unwrap();
+        std::fs::write(
+            src.join("auth.rs"),
+            "fn login() {\n    verify();\n}\nfn verify() {}\n",
+        )
+        .unwrap();
 
         let db_path = tmp.path().join(".pruner");
         std::fs::create_dir_all(&db_path).unwrap();
         let db = crate::db::IndexDb::open(&db_path.join("index.db")).unwrap();
 
-        let f1 = db.insert_file("src/main.rs", Some("rust"), 30, 3, false, 0).unwrap();
-        let f2 = db.insert_file("src/auth.rs", Some("rust"), 50, 4, false, 0).unwrap();
-        let main_sym = db.insert_symbol(f1, "main", "function", 1, 3, None, None).unwrap();
-        let login_sym = db.insert_symbol(f2, "login", "function", 1, 3, None, None).unwrap();
-        let verify_sym = db.insert_symbol(f2, "verify", "function", 4, 4, None, None).unwrap();
+        let f1 = db
+            .insert_file("src/main.rs", Some("rust"), 30, 3, false, 0)
+            .unwrap();
+        let f2 = db
+            .insert_file("src/auth.rs", Some("rust"), 50, 4, false, 0)
+            .unwrap();
+        let main_sym = db
+            .insert_symbol(f1, "main", "function", 1, 3, None, None)
+            .unwrap();
+        let login_sym = db
+            .insert_symbol(f2, "login", "function", 1, 3, None, None)
+            .unwrap();
+        let verify_sym = db
+            .insert_symbol(f2, "verify", "function", 4, 4, None, None)
+            .unwrap();
         db.insert_call(main_sym, "login", 2).unwrap();
         db.insert_call(login_sym, "verify", 2).unwrap();
         let _ = verify_sym; // used for DB only
@@ -631,7 +654,11 @@ mod tests {
         let est = estimate_claude_session(&result, &db, tmp.path(), 50).unwrap();
 
         // Should have glob + grep + read steps
-        let actions: Vec<&str> = est.without_steps.iter().map(|s| s.action.as_str()).collect();
+        let actions: Vec<&str> = est
+            .without_steps
+            .iter()
+            .map(|s| s.action.as_str())
+            .collect();
         assert!(actions.contains(&"glob"));
         assert!(actions.contains(&"grep"));
     }
@@ -688,14 +715,22 @@ mod tests {
         std::fs::create_dir_all(&db_path).unwrap();
         let db = crate::db::IndexDb::open(&db_path.join("index.db")).unwrap();
 
-        let f1 = db.insert_file("src/api.rs", Some("rust"), 30, 1, false, 0).unwrap();
-        db.insert_file("src/server.rs", Some("rust"), 20, 1, false, 0).unwrap();
-        db.insert_file("src/config.rs", Some("rust"), 20, 1, false, 0).unwrap();
-        db.insert_file("src/db.rs", Some("rust"), 20, 1, false, 0).unwrap();
-        db.insert_file("src/cache.rs", Some("rust"), 20, 1, false, 0).unwrap();
-        db.insert_file("src/auth.rs", Some("rust"), 20, 1, false, 0).unwrap();
+        let f1 = db
+            .insert_file("src/api.rs", Some("rust"), 30, 1, false, 0)
+            .unwrap();
+        db.insert_file("src/server.rs", Some("rust"), 20, 1, false, 0)
+            .unwrap();
+        db.insert_file("src/config.rs", Some("rust"), 20, 1, false, 0)
+            .unwrap();
+        db.insert_file("src/db.rs", Some("rust"), 20, 1, false, 0)
+            .unwrap();
+        db.insert_file("src/cache.rs", Some("rust"), 20, 1, false, 0)
+            .unwrap();
+        db.insert_file("src/auth.rs", Some("rust"), 20, 1, false, 0)
+            .unwrap();
 
-        db.insert_symbol(f1, "handleRequest", "function", 1, 1, None, None).unwrap();
+        db.insert_symbol(f1, "handleRequest", "function", 1, 1, None, None)
+            .unwrap();
 
         let result = crate::query::analyze_query("handleRequest", &db).unwrap();
         let est = estimate_claude_session(&result, &db, tmp.path(), 50).unwrap();
@@ -711,7 +746,11 @@ mod tests {
         let src = tmp.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
 
-        std::fs::write(src.join("login.rs"), "fn login() { verify(); }\nfn verify() {}\n").unwrap();
+        std::fs::write(
+            src.join("login.rs"),
+            "fn login() { verify(); }\nfn verify() {}\n",
+        )
+        .unwrap();
         std::fs::write(src.join("login_utils.rs"), "fn hash_password() {}\n").unwrap();
         std::fs::write(src.join("server.rs"), "fn start() {}\n").unwrap();
 
@@ -719,12 +758,19 @@ mod tests {
         std::fs::create_dir_all(&db_path).unwrap();
         let db = crate::db::IndexDb::open(&db_path.join("index.db")).unwrap();
 
-        let f1 = db.insert_file("src/login.rs", Some("rust"), 50, 2, false, 0).unwrap();
-        db.insert_file("src/login_utils.rs", Some("rust"), 30, 1, false, 0).unwrap();
-        db.insert_file("src/server.rs", Some("rust"), 20, 1, false, 0).unwrap();
+        let f1 = db
+            .insert_file("src/login.rs", Some("rust"), 50, 2, false, 0)
+            .unwrap();
+        db.insert_file("src/login_utils.rs", Some("rust"), 30, 1, false, 0)
+            .unwrap();
+        db.insert_file("src/server.rs", Some("rust"), 20, 1, false, 0)
+            .unwrap();
 
-        let login_sym = db.insert_symbol(f1, "login", "function", 1, 1, None, None).unwrap();
-        db.insert_symbol(f1, "verify", "function", 2, 2, None, None).unwrap();
+        let login_sym = db
+            .insert_symbol(f1, "login", "function", 1, 1, None, None)
+            .unwrap();
+        db.insert_symbol(f1, "verify", "function", 2, 2, None, None)
+            .unwrap();
         db.insert_call(login_sym, "verify", 1).unwrap();
 
         let result = crate::query::analyze_query("login", &db).unwrap();

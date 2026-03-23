@@ -77,11 +77,26 @@ static TEST_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 static IGNORED_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        ".git", ".hg", ".svn",
-        "node_modules", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
-        "venv", ".venv", "env", "vendor", ".eggs",
-        "dist", "build", "target", ".next", ".nuxt",
-        ".pruner", ".ruff_cache",
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        "venv",
+        ".venv",
+        "env",
+        "vendor",
+        ".eggs",
+        "dist",
+        "build",
+        "target",
+        ".next",
+        ".nuxt",
+        ".pruner",
+        ".ruff_cache",
     ]
     .into_iter()
     .collect()
@@ -89,12 +104,9 @@ static IGNORED_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 static IGNORED_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        "pyc", "pyo", "so", "dylib", "dll", "exe", "o", "a", "class", "jar", "war",
-        "zip", "tar", "gz", "bz2",
-        "png", "jpg", "jpeg", "gif", "ico", "svg", "woff", "woff2", "ttf", "eot",
-        "mp3", "mp4", "avi", "mov",
-        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-        "lock",
+        "pyc", "pyo", "so", "dylib", "dll", "exe", "o", "a", "class", "jar", "war", "zip", "tar",
+        "gz", "bz2", "png", "jpg", "jpeg", "gif", "ico", "svg", "woff", "woff2", "ttf", "eot",
+        "mp3", "mp4", "avi", "mov", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "lock",
     ]
     .into_iter()
     .collect()
@@ -107,9 +119,18 @@ mod tests {
 
     #[test]
     fn test_detect_language_js_variants() {
-        assert_eq!(detect_language(Path::new("app.mjs")), Some(Language::JavaScript));
-        assert_eq!(detect_language(Path::new("app.cjs")), Some(Language::JavaScript));
-        assert_eq!(detect_language(Path::new("app.js")), Some(Language::JavaScript));
+        assert_eq!(
+            detect_language(Path::new("app.mjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            detect_language(Path::new("app.cjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            detect_language(Path::new("app.js")),
+            Some(Language::JavaScript)
+        );
     }
 
     #[test]

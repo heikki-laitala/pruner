@@ -1,7 +1,10 @@
 //! CLI interface.
 //!
 
-use crate::context::{self, detect_mode, format_context_json, format_context_summary, format_context_text, ContextMode};
+use crate::context::{
+    self, ContextMode, detect_mode, format_context_json, format_context_summary,
+    format_context_text,
+};
 use crate::db::IndexDb;
 use crate::indexer;
 use crate::query;
@@ -16,7 +19,11 @@ const INDEX_DIR: &str = ".pruner";
 const DB_NAME: &str = "index.db";
 
 #[derive(Parser)]
-#[command(name = "pruner", version, about = "Synthetic code context engine for LLM coding tasks")]
+#[command(
+    name = "pruner",
+    version,
+    about = "Synthetic code context engine for LLM coding tasks"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -134,20 +141,52 @@ pub fn run() -> Result<()> {
     match cli.command {
         Commands::Init { repo, hook, global } => cmd_init(&repo, hook, global),
         Commands::Index { repo, verbose } => cmd_index(&repo, verbose),
-        Commands::Query { repo, ask, json_output } => cmd_query(&repo, &ask, json_output),
-        Commands::Context { repo, ask, format, max_snippet_lines, brief, full, output } => {
-            let mode = if brief { ContextMode::Brief } else if full { ContextMode::Full } else { ContextMode::Auto };
-            cmd_context(&repo, &ask, &format, max_snippet_lines, mode, output.as_deref())
+        Commands::Query {
+            repo,
+            ask,
+            json_output,
+        } => cmd_query(&repo, &ask, json_output),
+        Commands::Context {
+            repo,
+            ask,
+            format,
+            max_snippet_lines,
+            brief,
+            full,
+            output,
+        } => {
+            let mode = if brief {
+                ContextMode::Brief
+            } else if full {
+                ContextMode::Full
+            } else {
+                ContextMode::Auto
+            };
+            cmd_context(
+                &repo,
+                &ask,
+                &format,
+                max_snippet_lines,
+                mode,
+                output.as_deref(),
+            )
         }
         Commands::ShowFile { repo, path } => cmd_show_file(&repo, &path),
         Commands::ShowSymbol { repo, name } => cmd_show_symbol(&repo, &name),
         Commands::Stats { repo } => cmd_stats(&repo),
-        Commands::Measure { repo, ask, max_snippet_lines, json_output } => {
-            cmd_measure(&repo, &ask, max_snippet_lines, json_output)
-        }
-        Commands::Estimate { repo, ask, max_snippet_lines, json_output, show_steps } => {
-            cmd_estimate(&repo, &ask, max_snippet_lines, json_output, show_steps)
-        }
+        Commands::Measure {
+            repo,
+            ask,
+            max_snippet_lines,
+            json_output,
+        } => cmd_measure(&repo, &ask, max_snippet_lines, json_output),
+        Commands::Estimate {
+            repo,
+            ask,
+            max_snippet_lines,
+            json_output,
+            show_steps,
+        } => cmd_estimate(&repo, &ask, max_snippet_lines, json_output, show_steps),
     }
 }
 
@@ -166,7 +205,10 @@ fn ensure_index_dir(repo: &Path) -> Result<()> {
 fn open_db(repo: &Path) -> Result<IndexDb> {
     let path = db_path(repo);
     if !path.exists() {
-        anyhow::bail!("No index found at {}. Run `pruner index` first.", path.display());
+        anyhow::bail!(
+            "No index found at {}. Run `pruner index` first.",
+            path.display()
+        );
     }
     IndexDb::open(&path)
 }
@@ -215,17 +257,29 @@ fn is_index_fresh(db_path: &Path) -> bool {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_RECHECK_SECS);
 
-    let Ok(meta) = fs::metadata(db_path) else { return false };
-    let Ok(modified) = meta.modified() else { return false };
-    let Ok(elapsed) = SystemTime::now().duration_since(modified) else { return false };
+    let Ok(meta) = fs::metadata(db_path) else {
+        return false;
+    };
+    let Ok(modified) = meta.modified() else {
+        return false;
+    };
+    let Ok(elapsed) = SystemTime::now().duration_since(modified) else {
+        return false;
+    };
     elapsed.as_secs() < recheck_secs
 }
 
 fn format_index_age(repo: &Path) -> String {
     let path = db_path(repo);
-    let Ok(meta) = fs::metadata(&path) else { return String::new() };
-    let Ok(modified) = meta.modified() else { return String::new() };
-    let Ok(elapsed) = SystemTime::now().duration_since(modified) else { return String::new() };
+    let Ok(meta) = fs::metadata(&path) else {
+        return String::new();
+    };
+    let Ok(modified) = meta.modified() else {
+        return String::new();
+    };
+    let Ok(elapsed) = SystemTime::now().duration_since(modified) else {
+        return String::new();
+    };
 
     let secs = elapsed.as_secs();
     if secs < 60 {
@@ -258,7 +312,10 @@ fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
     fs::create_dir_all(&skill_dir)?;
     let skill_content = if hook { SKILL_HOOK_MD } else { SKILL_SKILL_MD };
     fs::write(skill_dir.join("SKILL.md"), skill_content)?;
-    println!("Installed skill -> {}", skill_dir.join("SKILL.md").display());
+    println!(
+        "Installed skill -> {}",
+        skill_dir.join("SKILL.md").display()
+    );
 
     // Install hook if requested
     if hook {
@@ -302,8 +359,14 @@ fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
         } else {
             String::new()
         };
-        if !gitignore_content.lines().any(|l| l.trim() == ".pruner/" || l.trim() == ".pruner") {
-            let mut f = fs::OpenOptions::new().create(true).append(true).open(&gitignore)?;
+        if !gitignore_content
+            .lines()
+            .any(|l| l.trim() == ".pruner/" || l.trim() == ".pruner")
+        {
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&gitignore)?;
             use std::io::Write;
             if !gitignore_content.is_empty() && !gitignore_content.ends_with('\n') {
                 writeln!(f)?;
@@ -320,7 +383,10 @@ fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
             String::new()
         };
         if !current.contains("pruner context") {
-            let mut f = fs::OpenOptions::new().create(true).append(true).open(&claude_md)?;
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&claude_md)?;
             use std::io::Write;
             write!(f, "\n{CLAUDE_TEMPLATE}")?;
             println!("Updated CLAUDE.md -> {}", claude_md.display());
@@ -356,15 +422,18 @@ fn cmd_query(repo: &Path, ask: &str, json_output: bool) -> Result<()> {
     let result = query::analyze_query(ask, &db)?;
 
     if json_output {
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-            "ask": result.ask,
-            "keywords": result.keywords,
-            "subsystems": result.subsystems,
-            "matching_files": result.matching_files.iter().map(|f| &f.path).collect::<Vec<_>>(),
-            "matching_symbols": result.matching_symbols.iter().map(|s| &s.name).collect::<Vec<_>>(),
-            "related_tests": result.related_tests.iter().map(|t| &t.path).collect::<Vec<_>>(),
-            "execution_paths": result.execution_paths.len(),
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ask": result.ask,
+                "keywords": result.keywords,
+                "subsystems": result.subsystems,
+                "matching_files": result.matching_files.iter().map(|f| &f.path).collect::<Vec<_>>(),
+                "matching_symbols": result.matching_symbols.iter().map(|s| &s.name).collect::<Vec<_>>(),
+                "related_tests": result.related_tests.iter().map(|t| &t.path).collect::<Vec<_>>(),
+                "execution_paths": result.execution_paths.len(),
+            }))?
+        );
     } else {
         println!("Keywords: {}", result.keywords.join(", "));
         println!("Subsystems: {}", result.subsystems.join(", "));
@@ -406,7 +475,8 @@ fn cmd_context(
 
     if resolved == ContextMode::Brief {
         // Write *full* context to .pruner/context.md so the LLM can drill deeper
-        let full_ctx = context::generate_context(&result, &repo_path, max_snippet_lines, ContextMode::Full)?;
+        let full_ctx =
+            context::generate_context(&result, &repo_path, max_snippet_lines, ContextMode::Full)?;
         let ctx_path = repo_path.join(INDEX_DIR).join("context.md");
         let full_text = format_context_text(&full_ctx);
         fs::write(&ctx_path, &full_text)?;
@@ -448,7 +518,10 @@ fn cmd_show_file(repo: &Path, path: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("File not found in index: {path}"))?;
 
     println!("Path: {}", file.path);
-    println!("Language: {}", file.language.as_deref().unwrap_or("unknown"));
+    println!(
+        "Language: {}",
+        file.language.as_deref().unwrap_or("unknown")
+    );
     println!("Lines: {}", file.line_count);
     println!("Size: {} bytes", file.size);
     println!("Test: {}", file.is_test);
@@ -489,7 +562,10 @@ fn cmd_show_symbol(repo: &Path, name: &str) -> Result<()> {
     }
 
     for s in &symbols {
-        println!("{} ({}) — {}:{}-{}", s.name, s.kind, s.file_path, s.line_start, s.line_end);
+        println!(
+            "{} ({}) — {}:{}-{}",
+            s.name, s.kind, s.file_path, s.line_start, s.line_end
+        );
         if let Some(sig) = &s.signature {
             println!("  Signature: {sig}");
         }
@@ -555,7 +631,10 @@ fn cmd_measure(repo: &Path, ask: &str, max_snippet_lines: usize, json_output: bo
         println!("Token usage measurement for: {}", m.ask);
         println!();
         println!("Whole repo (baseline):");
-        println!("  {} files, ~{} tokens", m.repo_total_files, m.repo_total_tokens);
+        println!(
+            "  {} files, ~{} tokens",
+            m.repo_total_files, m.repo_total_tokens
+        );
         println!();
         println!("Naive (full content of matching files):");
         println!(
@@ -669,7 +748,10 @@ fn cmd_estimate(
             "  Targeted file reads:       ~{} tokens ({} files)",
             est.with_targeted_read_tokens, est.with_files_read
         );
-        println!("  Total:                     ~{} tokens", est.with_total_tokens);
+        println!(
+            "  Total:                     ~{} tokens",
+            est.with_total_tokens
+        );
 
         println!();
         let saving_sign = if est.saving_pct() >= 0.0 { "+" } else { "" };
