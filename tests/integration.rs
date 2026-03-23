@@ -54,8 +54,17 @@ fn context_json(path: &str, query: &str) -> serde_json::Value {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"))
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"))
+}
+
+/// Helper: get context JSON with --full mode (forces snippets regardless of auto-detect).
+fn context_json_full(path: &str, query: &str) -> serde_json::Value {
+    let output = pruner()
+        .args(["context", path, query, "--format", "json", "--full"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"))
 }
 
 // ============================================================================
@@ -230,7 +239,7 @@ mod python_webapp {
         let dir = setup_fixture("python_webapp");
         let path = index_fixture(&dir);
 
-        let json = context_json(&path, "authenticate_user");
+        let json = context_json_full(&path, "authenticate_user");
         let snippets = json["snippets"].as_array().unwrap();
 
         assert!(!snippets.is_empty(), "should have code snippets");
@@ -258,10 +267,7 @@ mod python_webapp {
             "should find related test files when querying 'services'"
         );
 
-        let test_paths: Vec<&str> = tests
-            .iter()
-            .map(|t| t["path"].as_str().unwrap())
-            .collect();
+        let test_paths: Vec<&str> = tests.iter().map(|t| t["path"].as_str().unwrap()).collect();
         assert!(
             test_paths.iter().any(|p| p.contains("test_services")),
             "should link test_services.py as related test, got: {test_paths:?}"
@@ -362,7 +368,7 @@ mod ts_package {
         let dir = setup_fixture("ts_package");
         let path = index_fixture(&dir);
 
-        let json = context_json(&path, "handleLogin");
+        let json = context_json_full(&path, "handleLogin");
         let snippets = json["snippets"].as_array().unwrap();
 
         assert!(!snippets.is_empty(), "should include code snippets");

@@ -149,10 +149,10 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let mut seen_file_ids: HashSet<i64> = matching_files.iter().map(|f| f.id).collect();
     for path in &execution_paths {
         for step in path {
-            if let Some(file) = db.get_file_by_path(&step.file_path)? {
-                if seen_file_ids.insert(file.id) {
-                    matching_files.push(file);
-                }
+            if let Some(file) = db.get_file_by_path(&step.file_path)?
+                && seen_file_ids.insert(file.id)
+            {
+                matching_files.push(file);
             }
         }
     }
@@ -180,10 +180,7 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
 // ---------------------------------------------------------------------------
 
 /// Search files and symbols across all keyword-matching strategies.
-fn gather_candidates(
-    keywords: &[String],
-    db: &IndexDb,
-) -> Result<(Vec<FileRow>, Vec<SymbolRow>)> {
+fn gather_candidates(keywords: &[String], db: &IndexDb) -> Result<(Vec<FileRow>, Vec<SymbolRow>)> {
     let mut files = Vec::new();
     let mut symbols = Vec::new();
     let mut seen_files = HashSet::new();
@@ -192,12 +189,27 @@ fn gather_candidates(
     for kw in keywords {
         collect_dedup(&mut files, &mut seen_files, db.search_files(kw)?, |f| f.id);
 
-        collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols(kw)?, |s| s.id);
+        collect_dedup(
+            &mut symbols,
+            &mut seen_symbols,
+            db.search_symbols(kw)?,
+            |s| s.id,
+        );
         // Skip expensive cross-reference searches for short keywords — they
         // produce too many false positives (e.g. "web" matching thousands).
         if kw.len() >= MIN_SUB_KEYWORD_LEN {
-            collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols_by_signature(kw)?, |s| s.id);
-            collect_dedup(&mut symbols, &mut seen_symbols, db.search_callers_of(kw)?, |s| s.id);
+            collect_dedup(
+                &mut symbols,
+                &mut seen_symbols,
+                db.search_symbols_by_signature(kw)?,
+                |s| s.id,
+            );
+            collect_dedup(
+                &mut symbols,
+                &mut seen_symbols,
+                db.search_callers_of(kw)?,
+                |s| s.id,
+            );
         }
 
         for file_id in db.search_importing_files(kw)? {
@@ -498,7 +510,10 @@ fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
 /// Score how well keywords match the file path/name.
 fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
     let filename = path_lower.rsplit('/').next().unwrap_or(path_lower);
-    let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename);
 
     let mut score: i32 = 0;
     let mut filename_hits = 0;
@@ -530,8 +545,8 @@ fn score_file_quality(path_lower: &str, file: &FileRow) -> i32 {
     for segment in path_lower.split('/') {
         score += match segment {
             "docs" | "doc" | "documentation" => DIR_DOCS_PENALTY,
-            "zh-cn" | "zh-tw" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "ru"
-            | "locale" | "locales" | "i18n" | "translations" | "l10n" => DIR_LOCALE_PENALTY,
+            "zh-cn" | "zh-tw" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "ru" | "locale"
+            | "locales" | "i18n" | "translations" | "l10n" => DIR_LOCALE_PENALTY,
             "vendor" | "node_modules" | "third_party" | "third-party" => DIR_VENDOR_PENALTY,
             "examples" | "example" | "samples" | "sample" => DIR_EXAMPLES_PENALTY,
             "assets" | "dist" | "build" | "out" | "generated" | ".generated" => DIR_ASSETS_PENALTY,
@@ -579,7 +594,8 @@ fn score_and_rank_files<'a>(
         .iter()
         .map(|f| {
             let base = score_file(f, keywords);
-            let sym_boost = symbol_counts.get(&f.id).copied().unwrap_or(0) as i32 * FILE_SYMBOL_BOOST;
+            let sym_boost =
+                symbol_counts.get(&f.id).copied().unwrap_or(0) as i32 * FILE_SYMBOL_BOOST;
             (f, base + sym_boost)
         })
         .collect();
@@ -637,22 +653,128 @@ static SCAFFOLD_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "shall",
-        "should", "may", "might", "must", "can", "could",
-        "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
-        "they", "them", "their", "this", "that", "these", "those",
-        "what", "which", "who", "whom", "where", "when", "why", "how",
-        "not", "no", "nor", "but", "or", "and", "if", "then", "else",
-        "than", "too", "very", "just", "about", "above", "after", "again",
-        "all", "also", "any", "because", "before", "between", "both",
-        "by", "each", "for", "from", "get", "got", "here", "in", "into",
-        "of", "on", "once", "only", "other", "out", "over", "own", "same",
-        "so", "some", "such", "there", "through", "to", "under", "until",
-        "up", "want", "with",
-        "fix", "add", "make", "use", "find", "show", "change", "update",
-        "need", "like", "work", "look", "way", "new", "file", "files",
-        "code", "implement", "create",
+        "a",
+        "an",
+        "the",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "may",
+        "might",
+        "must",
+        "can",
+        "could",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "it",
+        "they",
+        "them",
+        "their",
+        "this",
+        "that",
+        "these",
+        "those",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "where",
+        "when",
+        "why",
+        "how",
+        "not",
+        "no",
+        "nor",
+        "but",
+        "or",
+        "and",
+        "if",
+        "then",
+        "else",
+        "than",
+        "too",
+        "very",
+        "just",
+        "about",
+        "above",
+        "after",
+        "again",
+        "all",
+        "also",
+        "any",
+        "because",
+        "before",
+        "between",
+        "both",
+        "by",
+        "each",
+        "for",
+        "from",
+        "get",
+        "got",
+        "here",
+        "in",
+        "into",
+        "of",
+        "on",
+        "once",
+        "only",
+        "other",
+        "out",
+        "over",
+        "own",
+        "same",
+        "so",
+        "some",
+        "such",
+        "there",
+        "through",
+        "to",
+        "under",
+        "until",
+        "up",
+        "want",
+        "with",
+        "fix",
+        "add",
+        "make",
+        "use",
+        "find",
+        "show",
+        "change",
+        "update",
+        "need",
+        "like",
+        "work",
+        "look",
+        "way",
+        "new",
+        "file",
+        "files",
+        "code",
+        "implement",
+        "create",
     ]
     .into_iter()
     .collect()
@@ -719,8 +841,14 @@ mod tests {
     #[test]
     fn test_score_symbol_exact_match() {
         let sym = SymbolRow {
-            id: 1, file_id: 1, name: "login".into(), kind: "function".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            id: 1,
+            file_id: 1,
+            name: "login".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, EXACT_MATCH + SYM_FUNCTION_BONUS);
@@ -729,8 +857,14 @@ mod tests {
     #[test]
     fn test_score_symbol_prefix_match() {
         let sym = SymbolRow {
-            id: 1, file_id: 1, name: "login_user".into(), kind: "function".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            id: 1,
+            file_id: 1,
+            name: "login_user".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
@@ -739,8 +873,14 @@ mod tests {
     #[test]
     fn test_score_symbol_substring_match() {
         let sym = SymbolRow {
-            id: 1, file_id: 1, name: "handle_login_request".into(), kind: "struct".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            id: 1,
+            file_id: 1,
+            name: "handle_login_request".into(),
+            kind: "struct".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, SUBSTRING_MATCH + SYM_TYPE_BONUS);
@@ -750,16 +890,34 @@ mod tests {
     fn test_score_and_rank_symbols() {
         let symbols = vec![
             SymbolRow {
-                id: 1, file_id: 1, name: "handle_timeout".into(), kind: "function".into(),
-                line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+                id: 1,
+                file_id: 1,
+                name: "handle_timeout".into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 10,
+                signature: None,
+                file_path: "a.rs".into(),
             },
             SymbolRow {
-                id: 2, file_id: 1, name: "timeout".into(), kind: "function".into(),
-                line_start: 20, line_end: 30, signature: None, file_path: "a.rs".into(),
+                id: 2,
+                file_id: 1,
+                name: "timeout".into(),
+                kind: "function".into(),
+                line_start: 20,
+                line_end: 30,
+                signature: None,
+                file_path: "a.rs".into(),
             },
             SymbolRow {
-                id: 3, file_id: 1, name: "timeout_handler".into(), kind: "function".into(),
-                line_start: 40, line_end: 50, signature: None, file_path: "a.rs".into(),
+                id: 3,
+                file_id: 1,
+                name: "timeout_handler".into(),
+                kind: "function".into(),
+                line_start: 40,
+                line_end: 50,
+                signature: None,
+                file_path: "a.rs".into(),
             },
         ];
         let ranked = score_and_rank_symbols(&symbols, &["timeout".to_string()], &no_file_scores());
@@ -809,8 +967,14 @@ mod tests {
     #[test]
     fn test_score_symbol_no_match() {
         let sym = SymbolRow {
-            id: 1, file_id: 1, name: "unrelated".into(), kind: "function".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            id: 1,
+            file_id: 1,
+            name: "unrelated".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, SYM_FUNCTION_BONUS);
@@ -819,10 +983,20 @@ mod tests {
     #[test]
     fn test_score_symbol_multiple_keywords() {
         let sym = SymbolRow {
-            id: 1, file_id: 1, name: "login_handler".into(), kind: "method".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            id: 1,
+            file_id: 1,
+            name: "login_handler".into(),
+            kind: "method".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string(), "handler".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["login".to_string(), "handler".to_string()],
+            &no_file_scores(),
+        );
         // login: prefix 50, handler: substring 10 => 60 + 20 method bonus
         assert_eq!(score, PREFIX_MATCH + SUBSTRING_MATCH + SYM_FUNCTION_BONUS);
     }
@@ -830,8 +1004,14 @@ mod tests {
     #[test]
     fn test_score_symbol_unknown_kind() {
         let sym = SymbolRow {
-            id: 1, file_id: 1, name: "login".into(), kind: "variable".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            id: 1,
+            file_id: 1,
+            name: "login".into(),
+            kind: "variable".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, EXACT_MATCH);
@@ -848,16 +1028,32 @@ mod tests {
         let result = QueryResult {
             ask: "test".into(),
             keywords: vec![],
-            matching_files: vec![
-                FileRow { id: 1, path: "a.rs".into(), language: None, size: 0, line_count: 0, is_test: false },
-            ],
-            matching_symbols: vec![
-                SymbolRow { id: 10, file_id: 2, name: "foo".into(), kind: "function".into(),
-                    line_start: 1, line_end: 10, signature: None, file_path: "b.rs".into() },
-            ],
-            related_tests: vec![
-                FileRow { id: 3, path: "test_a.rs".into(), language: None, size: 0, line_count: 0, is_test: true },
-            ],
+            matching_files: vec![FileRow {
+                id: 1,
+                path: "a.rs".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: false,
+            }],
+            matching_symbols: vec![SymbolRow {
+                id: 10,
+                file_id: 2,
+                name: "foo".into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 10,
+                signature: None,
+                file_path: "b.rs".into(),
+            }],
+            related_tests: vec![FileRow {
+                id: 3,
+                path: "test_a.rs".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: true,
+            }],
             execution_paths: vec![],
             subsystems: vec![],
         };
@@ -873,13 +1069,24 @@ mod tests {
         let result = QueryResult {
             ask: "test".into(),
             keywords: vec![],
-            matching_files: vec![
-                FileRow { id: 1, path: "a.rs".into(), language: None, size: 0, line_count: 0, is_test: false },
-            ],
-            matching_symbols: vec![
-                SymbolRow { id: 10, file_id: 1, name: "foo".into(), kind: "function".into(),
-                    line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into() },
-            ],
+            matching_files: vec![FileRow {
+                id: 1,
+                path: "a.rs".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: false,
+            }],
+            matching_symbols: vec![SymbolRow {
+                id: 10,
+                file_id: 1,
+                name: "foo".into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 10,
+                signature: None,
+                file_path: "a.rs".into(),
+            }],
             related_tests: vec![],
             execution_paths: vec![],
             subsystems: vec![],
@@ -891,8 +1098,12 @@ mod tests {
     #[test]
     fn test_score_file_exact_filename_match() {
         let file = FileRow {
-            id: 1, path: "src/auth/websocket.rs".into(),
-            language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
+            id: 1,
+            path: "src/auth/websocket.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 50,
+            is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
         assert_eq!(score, FILE_EXACT_STEM + FILE_LANGUAGE_BONUS);
@@ -901,8 +1112,12 @@ mod tests {
     #[test]
     fn test_score_file_docs_penalty() {
         let file = FileRow {
-            id: 1, path: "docs/api/websocket.md".into(),
-            language: None, size: 500, line_count: 100, is_test: false,
+            id: 1,
+            path: "docs/api/websocket.md".into(),
+            language: None,
+            size: 500,
+            line_count: 100,
+            is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
         assert_eq!(score, FILE_EXACT_STEM + DIR_DOCS_PENALTY);
@@ -911,46 +1126,82 @@ mod tests {
     #[test]
     fn test_score_file_locale_penalty() {
         let file = FileRow {
-            id: 1, path: "docs/zh-CN/api/websocket.md".into(),
-            language: None, size: 500, line_count: 100, is_test: false,
+            id: 1,
+            path: "docs/zh-CN/api/websocket.md".into(),
+            language: None,
+            size: 500,
+            line_count: 100,
+            is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
-        assert_eq!(score, FILE_EXACT_STEM + DIR_DOCS_PENALTY + DIR_LOCALE_PENALTY);
+        assert_eq!(
+            score,
+            FILE_EXACT_STEM + DIR_DOCS_PENALTY + DIR_LOCALE_PENALTY
+        );
     }
 
     #[test]
     fn test_score_file_source_beats_docs() {
         let src = FileRow {
-            id: 1, path: "src/net/websocket.rs".into(),
-            language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
+            id: 1,
+            path: "src/net/websocket.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 50,
+            is_test: false,
         };
         let doc = FileRow {
-            id: 2, path: "docs/api/websocket.md".into(),
-            language: None, size: 500, line_count: 100, is_test: false,
+            id: 2,
+            path: "docs/api/websocket.md".into(),
+            language: None,
+            size: 500,
+            line_count: 100,
+            is_test: false,
         };
         let src_score = score_file(&src, &["websocket".to_string()]);
         let doc_score = score_file(&doc, &["websocket".to_string()]);
-        assert!(src_score > doc_score, "source ({src_score}) should beat doc ({doc_score})");
+        assert!(
+            src_score > doc_score,
+            "source ({src_score}) should beat doc ({doc_score})"
+        );
     }
 
     #[test]
     fn test_score_file_multiple_keywords() {
         let file = FileRow {
-            id: 1, path: "src/auth/token_validator.rs".into(),
-            language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
+            id: 1,
+            path: "src/auth/token_validator.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 50,
+            is_test: false,
         };
-        let score = score_file(&file, &["auth".to_string(), "token".to_string(), "validator".to_string()]);
+        let score = score_file(
+            &file,
+            &[
+                "auth".to_string(),
+                "token".to_string(),
+                "validator".to_string(),
+            ],
+        );
         // stem "token_validator" contains "token" (40) + "validator" (40) → 2 hits → +30 multi bonus
         // "auth" dir only (5) + language (20)
-        let expected = FILE_STEM_CONTAINS * 2 + FILE_MULTI_KEYWORD_BONUS + FILE_DIR_CONTAINS + FILE_LANGUAGE_BONUS;
+        let expected = FILE_STEM_CONTAINS * 2
+            + FILE_MULTI_KEYWORD_BONUS
+            + FILE_DIR_CONTAINS
+            + FILE_LANGUAGE_BONUS;
         assert_eq!(score, expected);
     }
 
     #[test]
     fn test_score_file_dir_only_match_below_threshold() {
         let file = FileRow {
-            id: 1, path: "src/auth/utils.rs".into(),
-            language: Some("rust".into()), size: 100, line_count: 20, is_test: false,
+            id: 1,
+            path: "src/auth/utils.rs".into(),
+            language: Some("rust".into()),
+            size: 100,
+            line_count: 20,
+            is_test: false,
         };
         let score = score_file(&file, &["auth".to_string()]);
         assert_eq!(score, FILE_DIR_CONTAINS + FILE_LANGUAGE_BONUS);
@@ -961,9 +1212,30 @@ mod tests {
     #[test]
     fn test_score_and_rank_files_ordering() {
         let files = vec![
-            FileRow { id: 1, path: "docs/zh-CN/websocket.md".into(), language: None, size: 500, line_count: 100, is_test: false },
-            FileRow { id: 2, path: "src/net/websocket.rs".into(), language: Some("rust".into()), size: 200, line_count: 50, is_test: false },
-            FileRow { id: 3, path: "docs/websocket.md".into(), language: None, size: 300, line_count: 60, is_test: false },
+            FileRow {
+                id: 1,
+                path: "docs/zh-CN/websocket.md".into(),
+                language: None,
+                size: 500,
+                line_count: 100,
+                is_test: false,
+            },
+            FileRow {
+                id: 2,
+                path: "src/net/websocket.rs".into(),
+                language: Some("rust".into()),
+                size: 200,
+                line_count: 50,
+                is_test: false,
+            },
+            FileRow {
+                id: 3,
+                path: "docs/websocket.md".into(),
+                language: None,
+                size: 300,
+                line_count: 60,
+                is_test: false,
+            },
         ];
         let no_counts = HashMap::new();
         let ranked = score_and_rank_files(&files, &["websocket".to_string()], &no_counts);
@@ -974,9 +1246,14 @@ mod tests {
 
     #[test]
     fn test_infer_subsystems_root_file_becomes_subsystem() {
-        let files = vec![
-            FileRow { id: 1, path: "Makefile".into(), language: None, size: 0, line_count: 0, is_test: false },
-        ];
+        let files = vec![FileRow {
+            id: 1,
+            path: "Makefile".into(),
+            language: None,
+            size: 0,
+            line_count: 0,
+            is_test: false,
+        }];
         let subs = infer_subsystems(&files);
         assert_eq!(subs, vec!["Makefile"]);
     }
@@ -984,8 +1261,22 @@ mod tests {
     #[test]
     fn test_infer_subsystems_dedup() {
         let files = vec![
-            FileRow { id: 1, path: "src/auth/login.py".into(), language: None, size: 0, line_count: 0, is_test: false },
-            FileRow { id: 2, path: "src/auth/register.py".into(), language: None, size: 0, line_count: 0, is_test: false },
+            FileRow {
+                id: 1,
+                path: "src/auth/login.py".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: false,
+            },
+            FileRow {
+                id: 2,
+                path: "src/auth/register.py".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: false,
+            },
         ];
         let subs = infer_subsystems(&files);
         assert_eq!(subs.len(), 1);
@@ -995,8 +1286,22 @@ mod tests {
     #[test]
     fn test_infer_subsystems() {
         let files = vec![
-            FileRow { id: 1, path: "src/auth/login.py".into(), language: None, size: 0, line_count: 0, is_test: false },
-            FileRow { id: 2, path: "src/api/routes.py".into(), language: None, size: 0, line_count: 0, is_test: false },
+            FileRow {
+                id: 1,
+                path: "src/auth/login.py".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: false,
+            },
+            FileRow {
+                id: 2,
+                path: "src/api/routes.py".into(),
+                language: None,
+                size: 0,
+                line_count: 0,
+                is_test: false,
+            },
         ];
         let subs = infer_subsystems(&files);
         assert!(subs.contains(&"auth".to_string()));
@@ -1012,7 +1317,12 @@ mod tests {
         db.insert_symbol(fid, "verify_password", "function", 11, 20, None, None)?;
 
         let result = analyze_query("login authentication", &db)?;
-        assert!(result.matching_files.iter().any(|f| f.path.contains("login")));
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path.contains("login"))
+        );
         assert!(result.matching_symbols.iter().any(|s| s.name == "login"));
         assert!(result.keywords.contains(&"login".to_string()));
         assert!(result.keywords.contains(&"authentication".to_string()));
@@ -1026,9 +1336,17 @@ mod tests {
         db.insert_symbol(fid, "login", "function", 1, 10, None, None)?;
 
         let result = analyze_query("login", &db)?;
-        let login_files: Vec<_> = result.matching_files.iter().filter(|f| f.path.contains("login")).collect();
+        let login_files: Vec<_> = result
+            .matching_files
+            .iter()
+            .filter(|f| f.path.contains("login"))
+            .collect();
         assert_eq!(login_files.len(), 1);
-        let login_syms: Vec<_> = result.matching_symbols.iter().filter(|s| s.name == "login").collect();
+        let login_syms: Vec<_> = result
+            .matching_symbols
+            .iter()
+            .filter(|s| s.name == "login")
+            .collect();
         assert_eq!(login_syms.len(), 1);
         Ok(())
     }
@@ -1042,7 +1360,12 @@ mod tests {
 
         let result = analyze_query("auth", &db)?;
         assert!(!result.related_tests.is_empty());
-        assert!(result.related_tests.iter().any(|t| t.path.contains("test_auth")));
+        assert!(
+            result
+                .related_tests
+                .iter()
+                .any(|t| t.path.contains("test_auth"))
+        );
         Ok(())
     }
 
@@ -1094,8 +1417,14 @@ mod tests {
         db.insert_call(a, "b", 5)?;
 
         let start = SymbolRow {
-            id: a, file_id: fid, name: "a".into(), kind: "function".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "src/lib.rs".into(),
+            id: a,
+            file_id: fid,
+            name: "a".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "src/lib.rs".into(),
         };
         let path = trace_execution_path_cte(&start, &db, 5)?;
         assert_eq!(path.len(), 2);
@@ -1113,8 +1442,14 @@ mod tests {
         let a = db.insert_symbol(fid, "isolated", "function", 1, 10, None, None)?;
 
         let start = SymbolRow {
-            id: a, file_id: fid, name: "isolated".into(), kind: "function".into(),
-            line_start: 1, line_end: 10, signature: None, file_path: "src/lib.rs".into(),
+            id: a,
+            file_id: fid,
+            name: "isolated".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "src/lib.rs".into(),
         };
         let path = trace_execution_path_cte(&start, &db, 5)?;
         assert_eq!(path.len(), 1);

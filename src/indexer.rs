@@ -101,10 +101,7 @@ pub fn index_repo_incremental(
         return Ok(None);
     }
 
-    let deleted_count = existing
-        .keys()
-        .filter(|p| !seen_paths.contains(*p))
-        .count();
+    let deleted_count = existing.keys().filter(|p| !seen_paths.contains(*p)).count();
 
     // Re-index only changed files, then rebuild all edges
     let mut stats = index_files(repo_path, db, verbose, Some(&changed_paths))?;
@@ -117,15 +114,13 @@ pub fn index_repo_incremental(
 
 /// Walk the repo, filtering ignored directories.
 fn walk_repo(repo_path: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
-    WalkDir::new(repo_path)
-        .into_iter()
-        .filter_entry(|e| {
-            if e.file_type().is_dir() {
-                let name = e.file_name().to_string_lossy();
-                return !languages::is_ignored_dir(&name);
-            }
-            true
-        })
+    WalkDir::new(repo_path).into_iter().filter_entry(|e| {
+        if e.file_type().is_dir() {
+            let name = e.file_name().to_string_lossy();
+            return !languages::is_ignored_dir(&name);
+        }
+        true
+    })
 }
 
 /// Index files into the DB. If `only_paths` is Some, only index those relative paths
@@ -287,7 +282,14 @@ fn index_files(
                 stats.edges += 1;
             }
         } else {
-            db.insert_edge("calls", None, Some(*caller_id), None, None, Some(callee_name))?;
+            db.insert_edge(
+                "calls",
+                None,
+                Some(*caller_id),
+                None,
+                None,
+                Some(callee_name),
+            )?;
             stats.edges += 1;
         }
     }
@@ -312,10 +314,7 @@ fn build_test_edges(_repo_path: &Path, db: &IndexDb) -> Result<()> {
 
     for tf in &test_files {
         let test_path = Path::new(&tf.path);
-        let test_name = test_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let test_name = test_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
         // test_foo.py -> foo.py
         let base_name = test_name
@@ -397,7 +396,10 @@ mod tests {
 
         let main_file = db.get_file_by_path("main.py")?.unwrap();
         let test_edges = db.edges_to_file(main_file.id, "tests")?;
-        assert!(!test_edges.is_empty(), "should have test edges pointing to main.py");
+        assert!(
+            !test_edges.is_empty(),
+            "should have test edges pointing to main.py"
+        );
         Ok(())
     }
 
@@ -445,7 +447,10 @@ mod tests {
         let initial_count = db.file_count()?;
 
         // Add a new file
-        fs::write(dir.path().join("new_module.py"), "def new_func():\n    pass\n")?;
+        fs::write(
+            dir.path().join("new_module.py"),
+            "def new_func():\n    pass\n",
+        )?;
 
         let result = index_repo_incremental(dir.path(), &db, false)?;
         assert!(result.is_some());

@@ -1,9 +1,8 @@
 //! SQLite schema and data access layer.
 //!
 
-
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -125,7 +124,8 @@ impl IndexDb {
 
     /// Delete a file and all its associated data (CASCADE handles symbols, imports, calls, edges).
     pub fn delete_file(&self, file_id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
+        self.conn
+            .execute("DELETE FROM files WHERE id = ?1", params![file_id])?;
         Ok(())
     }
 
@@ -133,7 +133,10 @@ impl IndexDb {
     pub fn all_file_mtimes(&self) -> Result<HashMap<String, (i64, i64)>> {
         let mut stmt = self.conn.prepare("SELECT id, path, mtime FROM files")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(1)?, (row.get::<_, i64>(0)?, row.get::<_, i64>(2)?)))
+            Ok((
+                row.get::<_, String>(1)?,
+                (row.get::<_, i64>(0)?, row.get::<_, i64>(2)?),
+            ))
         })?;
         let mut map = HashMap::new();
         for row in rows {
@@ -145,7 +148,8 @@ impl IndexDb {
 
     /// Delete all edges (used before rebuilding call/test edges during incremental index).
     pub fn clear_edges(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM edges; DELETE FROM calls;")?;
+        self.conn
+            .execute_batch("DELETE FROM edges; DELETE FROM calls;")?;
         Ok(())
     }
 
@@ -204,23 +208,33 @@ impl IndexDb {
     // -- Queries --
 
     pub fn file_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?)
     }
 
     pub fn symbol_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get(0))?)
     }
 
     pub fn import_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM imports", [], |r| r.get(0))?)
     }
 
     pub fn call_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM calls", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM calls", [], |r| r.get(0))?)
     }
 
     pub fn edge_count(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?)
     }
 
     /// Search files by keyword in path.
@@ -262,9 +276,9 @@ impl IndexDb {
     /// Find file IDs that import a module matching a keyword.
     pub fn search_importing_files(&self, keyword: &str) -> Result<Vec<i64>> {
         let pattern = format!("%{keyword}%");
-        let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT file_id FROM imports WHERE module LIKE ?1 LIMIT 200",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT file_id FROM imports WHERE module LIKE ?1 LIMIT 200")?;
         let rows = stmt.query_map(params![pattern], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -336,9 +350,9 @@ impl IndexDb {
 
     /// Get all files.
     pub fn all_files(&self) -> Result<Vec<FileRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, path, language, size, line_count, is_test FROM files",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, language, size, line_count, is_test FROM files")?;
         let rows = stmt.query_map([], FileRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
@@ -363,9 +377,9 @@ impl IndexDb {
 
     /// Get imports for a file.
     pub fn imports_for_file(&self, file_id: i64) -> Result<Vec<ImportRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, file_id, module, names FROM imports WHERE file_id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, file_id, module, names FROM imports WHERE file_id = ?1")?;
         let rows = stmt.query_map(params![file_id], |row| {
             Ok(ImportRow {
                 id: row.get(0)?,
@@ -381,7 +395,11 @@ impl IndexDb {
     /// Returns callee symbols reachable within `max_depth` hops, ordered by depth.
     /// This replaces per-step DFS with a single SQL query, eliminating millions of
     /// round-trips on large repos.
-    pub fn trace_call_graph(&self, start_symbol_id: i64, max_depth: usize) -> Result<Vec<TraceRow>> {
+    pub fn trace_call_graph(
+        &self,
+        start_symbol_id: i64,
+        max_depth: usize,
+    ) -> Result<Vec<TraceRow>> {
         let mut stmt = self.conn.prepare(
             "WITH RECURSIVE cg(symbol_id, depth) AS (
                 SELECT ?1, 0
@@ -423,7 +441,6 @@ impl IndexDb {
         let rows = stmt.query_map(params![file_id], SymbolRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
-
 }
 
 // -- Row types --
@@ -541,7 +558,15 @@ mod tests {
     fn test_insert_symbol_and_search() -> Result<()> {
         let db = IndexDb::open_memory()?;
         let file_id = db.insert_file("src/lib.rs", Some("rust"), 200, 20, false, 0)?;
-        db.insert_symbol(file_id, "parse_file", "function", 10, 30, None, Some("fn parse_file(path: &Path)"))?;
+        db.insert_symbol(
+            file_id,
+            "parse_file",
+            "function",
+            10,
+            30,
+            None,
+            Some("fn parse_file(path: &Path)"),
+        )?;
         db.insert_symbol(file_id, "detect_language", "function", 35, 50, None, None)?;
 
         assert_eq!(db.symbol_count()?, 2);
@@ -743,8 +768,16 @@ mod tests {
 
         let imports = db.imports_for_file(fid)?;
         assert_eq!(imports.len(), 2);
-        assert!(imports.iter().any(|i| i.module == "os" && i.names.is_none()));
-        assert!(imports.iter().any(|i| i.module == "sys" && i.names.as_deref() == Some("argv, exit")));
+        assert!(
+            imports
+                .iter()
+                .any(|i| i.module == "os" && i.names.is_none())
+        );
+        assert!(
+            imports
+                .iter()
+                .any(|i| i.module == "sys" && i.names.as_deref() == Some("argv, exit"))
+        );
         Ok(())
     }
 
@@ -793,7 +826,15 @@ mod tests {
         let db = IndexDb::open_memory()?;
         let fid = db.insert_file("lib.rs", Some("rust"), 200, 50, false, 0)?;
         let parent = db.insert_symbol(fid, "MyStruct", "struct", 1, 20, None, None)?;
-        db.insert_symbol(fid, "my_method", "method", 5, 15, Some(parent), Some("fn my_method(&self)"))?;
+        db.insert_symbol(
+            fid,
+            "my_method",
+            "method",
+            5,
+            15,
+            Some(parent),
+            Some("fn my_method(&self)"),
+        )?;
 
         let syms = db.symbols_for_file(fid)?;
         assert_eq!(syms.len(), 2);

@@ -90,7 +90,11 @@ fn extract_python_node(
         match child.kind() {
             "function_definition" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
-                    let kind = if parent_index.is_some() { "method" } else { "function" };
+                    let kind = if parent_index.is_some() {
+                        "method"
+                    } else {
+                        "function"
+                    };
                     let sig = build_python_signature(&child, src);
                     let idx = result.symbols.len();
                     result.symbols.push(Symbol {
@@ -146,7 +150,11 @@ fn extract_python_node(
                     }
                     result.imports.push(Import {
                         module,
-                        names: if names.is_empty() { None } else { Some(names.join(", ")) },
+                        names: if names.is_empty() {
+                            None
+                        } else {
+                            Some(names.join(", "))
+                        },
                     });
                 }
             }
@@ -310,7 +318,9 @@ fn extract_js_ts_arrow_functions(
 
 fn extract_js_ts_import(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
     if let Some(source) = node.child_by_field_name("source") {
-        let module = node_text(source, src).trim_matches(|c| c == '\'' || c == '"').to_string();
+        let module = node_text(source, src)
+            .trim_matches(|c| c == '\'' || c == '"')
+            .to_string();
         let mut names = Vec::new();
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
@@ -338,7 +348,11 @@ fn extract_js_ts_import(node: &tree_sitter::Node, src: &[u8], result: &mut Parse
         }
         result.imports.push(Import {
             module,
-            names: if names.is_empty() { None } else { Some(names.join(", ")) },
+            names: if names.is_empty() {
+                None
+            } else {
+                Some(names.join(", "))
+            },
         });
     }
 }
@@ -394,7 +408,11 @@ fn extract_rust_node(
         match child.kind() {
             "function_item" => {
                 if let Some(name_node) = child.child_by_field_name("name") {
-                    let kind = if parent_index.is_some() { "method" } else { "function" };
+                    let kind = if parent_index.is_some() {
+                        "method"
+                    } else {
+                        "function"
+                    };
                     let sig = build_rust_fn_signature(&child, src);
                     let idx = result.symbols.len();
                     result.symbols.push(Symbol {
@@ -451,10 +469,9 @@ fn extract_rust_node(
                 if let Some(type_node) = child.child_by_field_name("type") {
                     let type_name = node_text(type_node, src);
                     // Find the parent symbol index for this impl
-                    let impl_parent = result
-                        .symbols
-                        .iter()
-                        .position(|s| s.name == type_name && (s.kind == "struct" || s.kind == "enum"));
+                    let impl_parent = result.symbols.iter().position(|s| {
+                        s.name == type_name && (s.kind == "struct" || s.kind == "enum")
+                    });
                     extract_rust_node(child, src, result, impl_parent);
                 } else {
                     extract_rust_node(child, src, result, parent_index);
@@ -557,7 +574,13 @@ def hello(name):
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].name, "hello");
         assert_eq!(result.symbols[0].kind, "function");
-        assert!(result.symbols[0].signature.as_ref().unwrap().contains("def hello"));
+        assert!(
+            result.symbols[0]
+                .signature
+                .as_ref()
+                .unwrap()
+                .contains("def hello")
+        );
 
         // Should find calls to print and greet
         assert!(result.calls.iter().any(|c| c.callee_name == "print"));
@@ -608,7 +631,13 @@ fn process(input: &str) -> Result<()> {
         let result = parse_source(src, Language::Rust)?;
         assert_eq!(result.symbols.len(), 1);
         assert_eq!(result.symbols[0].name, "process");
-        assert!(result.symbols[0].signature.as_ref().unwrap().contains("-> Result<()>"));
+        assert!(
+            result.symbols[0]
+                .signature
+                .as_ref()
+                .unwrap()
+                .contains("-> Result<()>")
+        );
 
         assert!(result.calls.iter().any(|c| c.callee_name == "parse"));
         assert!(result.calls.iter().any(|c| c.callee_name == "validate"));
@@ -629,7 +658,12 @@ impl Config {
 }
 "#;
         let result = parse_source(src, Language::Rust)?;
-        assert!(result.symbols.iter().any(|s| s.name == "Config" && s.kind == "struct"));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Config" && s.kind == "struct")
+        );
         let new_fn = result.symbols.iter().find(|s| s.name == "new").unwrap();
         assert_eq!(new_fn.kind, "method");
         // Parent should point to Config
@@ -689,8 +723,18 @@ class UserService {
 }
 "#;
         let result = parse_source(src, Language::JavaScript)?;
-        assert!(result.symbols.iter().any(|s| s.name == "UserService" && s.kind == "class"));
-        assert!(result.symbols.iter().any(|s| s.name == "getUser" && s.kind == "method"));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "UserService" && s.kind == "class")
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "getUser" && s.kind == "method")
+        );
         assert!(result.calls.iter().any(|c| c.callee_name == "findById"));
         Ok(())
     }
@@ -705,7 +749,12 @@ enum Color {
 }
 "#;
         let result = parse_source(src, Language::Rust)?;
-        assert!(result.symbols.iter().any(|s| s.name == "Color" && s.kind == "enum"));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Color" && s.kind == "enum")
+        );
         Ok(())
     }
 
@@ -718,11 +767,23 @@ trait Drawable {
 }
 "#;
         let result = parse_source(src, Language::Rust)?;
-        assert!(result.symbols.iter().any(|s| s.name == "Drawable" && s.kind == "trait"));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Drawable" && s.kind == "trait")
+        );
         // Methods with bodies inside trait should be parsed as children
         let draw = result.symbols.iter().find(|s| s.name == "draw");
-        assert!(draw.is_some(), "draw should be found; symbols: {:?}",
-            result.symbols.iter().map(|s| format!("{} ({})", s.name, s.kind)).collect::<Vec<_>>());
+        assert!(
+            draw.is_some(),
+            "draw should be found; symbols: {:?}",
+            result
+                .symbols
+                .iter()
+                .map(|s| format!("{} ({})", s.name, s.kind))
+                .collect::<Vec<_>>()
+        );
         Ok(())
     }
 
@@ -777,7 +838,12 @@ fn build() {
 "#;
         let result = parse_source(src, Language::Rust)?;
         assert!(result.calls.iter().any(|c| c.callee_name == "from"));
-        assert!(result.calls.iter().any(|c| c.callee_name == "read_to_string"));
+        assert!(
+            result
+                .calls
+                .iter()
+                .any(|c| c.callee_name == "read_to_string")
+        );
         Ok(())
     }
 
@@ -829,7 +895,13 @@ from collections import OrderedDict as OD
         let result = parse_source(src, Language::Python)?;
         assert_eq!(result.imports.len(), 1);
         assert_eq!(result.imports[0].module, "collections");
-        assert!(result.imports[0].names.as_ref().unwrap().contains("OrderedDict"));
+        assert!(
+            result.imports[0]
+                .names
+                .as_ref()
+                .unwrap()
+                .contains("OrderedDict")
+        );
         Ok(())
     }
 
@@ -890,8 +962,17 @@ impl Status {
 }
 "#;
         let result = parse_source(src, Language::Rust)?;
-        assert!(result.symbols.iter().any(|s| s.name == "Status" && s.kind == "enum"));
-        let method = result.symbols.iter().find(|s| s.name == "is_active").unwrap();
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Status" && s.kind == "enum")
+        );
+        let method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "is_active")
+            .unwrap();
         // Parent should be the enum
         assert_eq!(method.parent_index, Some(0));
         Ok(())
@@ -920,8 +1001,18 @@ export class Router {
 }
 "#;
         let result = parse_source(src, Language::JavaScript)?;
-        assert!(result.symbols.iter().any(|s| s.name == "Router" && s.kind == "class"));
-        assert!(result.symbols.iter().any(|s| s.name == "route" && s.kind == "method"));
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Router" && s.kind == "class")
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "route" && s.kind == "method")
+        );
         Ok(())
     }
 

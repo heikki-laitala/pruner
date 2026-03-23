@@ -109,17 +109,34 @@ impl Limits {
         match mode {
             ContextMode::Auto => Self::for_mode(ContextMode::Focused, max_snippet_lines),
             ContextMode::Brief => Self {
-                max_files: 8, max_symbols: 15, max_paths: 3, max_path_depth: 2,
-                max_steps_per_path: 10, max_tests: 5, max_snippets: 0, max_snippet_lines: 0,
+                max_files: 8,
+                max_symbols: 15,
+                max_paths: 3,
+                max_path_depth: 2,
+                max_steps_per_path: 10,
+                max_tests: 5,
+                max_snippets: 0,
+                max_snippet_lines: 0,
             },
             ContextMode::Focused => Self {
-                max_files: 10, max_symbols: 20, max_paths: 5, max_path_depth: 3,
-                max_steps_per_path: 15, max_tests: 8, max_snippets: 20,
+                max_files: 10,
+                max_symbols: 20,
+                max_paths: 5,
+                max_path_depth: 3,
+                max_steps_per_path: 15,
+                max_tests: 8,
+                max_snippets: 20,
                 max_snippet_lines: max_snippet_lines.min(30),
             },
             ContextMode::Full => Self {
-                max_files: 999, max_symbols: 999, max_paths: 999, max_path_depth: 999,
-                max_steps_per_path: 999, max_tests: 999, max_snippets: 999, max_snippet_lines,
+                max_files: 999,
+                max_symbols: 999,
+                max_paths: 999,
+                max_path_depth: 999,
+                max_steps_per_path: 999,
+                max_tests: 999,
+                max_snippets: 999,
+                max_snippet_lines,
             },
         }
     }
@@ -132,7 +149,11 @@ pub fn generate_context(
     max_snippet_lines: usize,
     mode: ContextMode,
 ) -> Result<ContextPackage> {
-    let resolved = if mode == ContextMode::Auto { detect_mode(query) } else { mode };
+    let resolved = if mode == ContextMode::Auto {
+        detect_mode(query)
+    } else {
+        mode
+    };
     let limits = Limits::for_mode(resolved, max_snippet_lines);
 
     // Execution paths
@@ -188,7 +209,9 @@ pub fn generate_context(
         .related_tests
         .iter()
         .take(limits.max_tests)
-        .map(|t| TestFile { path: t.path.clone() })
+        .map(|t| TestFile {
+            path: t.path.clone(),
+        })
         .collect();
 
     // Snippets — cap both line count and character count to avoid
@@ -216,7 +239,11 @@ pub fn generate_context(
                 symbol: sym.name.clone(),
                 line_start: sym.line_start,
                 line_end: end as i64 + 1,
-                code: if truncated { format!("{code}\n  ...") } else { code },
+                code: if truncated {
+                    format!("{code}\n  ...")
+                } else {
+                    code
+                },
             });
         }
     }
@@ -239,7 +266,10 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
 
     out.push_str(&format!("# Context: {}\n\n", ctx.ask));
     out.push_str(&format!("**Keywords:** {}\n", ctx.keywords.join(", ")));
-    out.push_str(&format!("**Subsystems:** {}\n\n", ctx.subsystems.join(", ")));
+    out.push_str(&format!(
+        "**Subsystems:** {}\n\n",
+        ctx.subsystems.join(", ")
+    ));
 
     // Execution paths
     if !ctx.execution_paths.is_empty() {
@@ -251,7 +281,10 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
                 out.push_str(&format!(
                     "{indent}{} `{}` ({}) — {}:{}\n",
                     if step.depth > 0 { "→" } else { "" },
-                    step.symbol, step.kind, step.file, step.line
+                    step.symbol,
+                    step.kind,
+                    step.file,
+                    step.line
                 ));
             }
             out.push('\n');
@@ -264,7 +297,10 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
         for f in &ctx.key_files {
             let lang = f.language.as_deref().unwrap_or("?");
             let test = if f.is_test { " [test]" } else { "" };
-            out.push_str(&format!("- `{}` ({}, {} lines){}\n", f.path, lang, f.lines, test));
+            out.push_str(&format!(
+                "- `{}` ({}, {} lines){}\n",
+                f.path, lang, f.lines, test
+            ));
         }
         out.push('\n');
     }
@@ -295,7 +331,10 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
     if !ctx.snippets.is_empty() {
         out.push_str("## Code Snippets\n\n");
         for s in &ctx.snippets {
-            out.push_str(&format!("### {} ({}:{}-{})\n", s.symbol, s.file, s.line_start, s.line_end));
+            out.push_str(&format!(
+                "### {} ({}:{}-{})\n",
+                s.symbol, s.file, s.line_start, s.line_end
+            ));
             out.push_str("```\n");
             out.push_str(&s.code);
             out.push_str("\n```\n\n");
@@ -323,7 +362,10 @@ pub fn format_context_summary(ctx: &ContextPackage) -> String {
     if !ctx.key_symbols.is_empty() {
         out.push_str("\nKey symbols:\n");
         for s in &ctx.key_symbols {
-            out.push_str(&format!("  {} ({}) — {}:{}\n", s.name, s.kind, s.file, s.line_start));
+            out.push_str(&format!(
+                "  {} ({}) — {}:{}\n",
+                s.name, s.kind, s.file, s.line_start
+            ));
         }
     }
 
@@ -352,26 +394,54 @@ mod tests {
             keywords: vec!["login".to_string(), "auth".to_string()],
             subsystems: vec!["auth".to_string()],
             execution_paths: vec![vec![
-                PathEntry { symbol: "handle_login".into(), kind: "function".into(), file: "src/auth.rs".into(), line: 10, depth: 0 },
-                PathEntry { symbol: "verify".into(), kind: "function".into(), file: "src/auth.rs".into(), line: 25, depth: 1 },
+                PathEntry {
+                    symbol: "handle_login".into(),
+                    kind: "function".into(),
+                    file: "src/auth.rs".into(),
+                    line: 10,
+                    depth: 0,
+                },
+                PathEntry {
+                    symbol: "verify".into(),
+                    kind: "function".into(),
+                    file: "src/auth.rs".into(),
+                    line: 25,
+                    depth: 1,
+                },
             ]],
             key_files: vec![KeyFile {
-                path: "src/auth.rs".into(), language: Some("rust".into()), lines: 50, is_test: false,
+                path: "src/auth.rs".into(),
+                language: Some("rust".into()),
+                lines: 50,
+                is_test: false,
             }],
             key_symbols: vec![
                 KeySymbol {
-                    name: "handle_login".into(), kind: "function".into(), file: "src/auth.rs".into(),
-                    line_start: 10, line_end: 20, signature: Some("fn handle_login(req: Request)".into()),
+                    name: "handle_login".into(),
+                    kind: "function".into(),
+                    file: "src/auth.rs".into(),
+                    line_start: 10,
+                    line_end: 20,
+                    signature: Some("fn handle_login(req: Request)".into()),
                 },
                 KeySymbol {
-                    name: "verify".into(), kind: "function".into(), file: "src/auth.rs".into(),
-                    line_start: 25, line_end: 35, signature: None,
+                    name: "verify".into(),
+                    kind: "function".into(),
+                    file: "src/auth.rs".into(),
+                    line_start: 25,
+                    line_end: 35,
+                    signature: None,
                 },
             ],
-            relevant_tests: vec![TestFile { path: "tests/test_auth.rs".into() }],
+            relevant_tests: vec![TestFile {
+                path: "tests/test_auth.rs".into(),
+            }],
             snippets: vec![Snippet {
-                file: "src/auth.rs".into(), symbol: "handle_login".into(),
-                line_start: 10, line_end: 15, code: "fn handle_login(req: Request) {\n    verify(req);\n}".into(),
+                file: "src/auth.rs".into(),
+                symbol: "handle_login".into(),
+                line_start: 10,
+                line_end: 15,
+                code: "fn handle_login(req: Request) {\n    verify(req);\n}".into(),
             }],
         }
     }
@@ -465,7 +535,10 @@ mod tests {
             subsystems: vec![],
             execution_paths: vec![],
             key_files: vec![KeyFile {
-                path: "tests/test_auth.rs".into(), language: Some("rust".into()), lines: 30, is_test: true,
+                path: "tests/test_auth.rs".into(),
+                language: Some("rust".into()),
+                lines: 30,
+                is_test: true,
             }],
             key_symbols: vec![],
             relevant_tests: vec![],
@@ -484,15 +557,24 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("login.rs"), "fn login() {\n    verify();\n}\nfn verify() {}\n").unwrap();
+        std::fs::write(
+            src.join("login.rs"),
+            "fn login() {\n    verify();\n}\nfn verify() {}\n",
+        )
+        .unwrap();
 
         let db_path = tmp.path().join(".pruner");
         std::fs::create_dir_all(&db_path).unwrap();
         let db = IndexDb::open(&db_path.join("index.db")).unwrap();
 
-        let fid = db.insert_file("src/login.rs", Some("rust"), 50, 4, false, 0).unwrap();
-        let s = db.insert_symbol(fid, "login", "function", 1, 3, None, None).unwrap();
-        db.insert_symbol(fid, "verify", "function", 4, 4, None, None).unwrap();
+        let fid = db
+            .insert_file("src/login.rs", Some("rust"), 50, 4, false, 0)
+            .unwrap();
+        let s = db
+            .insert_symbol(fid, "login", "function", 1, 3, None, None)
+            .unwrap();
+        db.insert_symbol(fid, "verify", "function", 4, 4, None, None)
+            .unwrap();
         db.insert_call(s, "verify", 2).unwrap();
 
         let result = query::analyze_query("login", &db).unwrap();
@@ -515,8 +597,12 @@ mod tests {
             execution_paths: vec![],
             key_files: vec![],
             key_symbols: vec![KeySymbol {
-                name: "foo".into(), kind: "function".into(), file: "a.rs".into(),
-                line_start: 1, line_end: 5, signature: None,
+                name: "foo".into(),
+                kind: "function".into(),
+                file: "a.rs".into(),
+                line_start: 1,
+                line_end: 5,
+                signature: None,
             }],
             relevant_tests: vec![],
             snippets: vec![],
@@ -533,8 +619,12 @@ mod tests {
             ask: "fix login".into(),
             keywords: vec!["login".into()],
             matching_files: vec![FileRow {
-                id: 1, path: "src/auth.rs".into(), language: Some("rust".into()),
-                size: 100, line_count: 50, is_test: false,
+                id: 1,
+                path: "src/auth.rs".into(),
+                language: Some("rust".into()),
+                size: 100,
+                line_count: 50,
+                is_test: false,
             }],
             matching_symbols: vec![],
             related_tests: vec![],
@@ -548,8 +638,12 @@ mod tests {
     fn test_detect_mode_broad() {
         use crate::db::FileRow;
         let make_file = |id, path: &str| FileRow {
-            id, path: path.into(), language: Some("rust".into()),
-            size: 100, line_count: 50, is_test: false,
+            id,
+            path: path.into(),
+            language: Some("rust".into()),
+            size: 100,
+            line_count: 50,
+            is_test: false,
         };
         let result = QueryResult {
             ask: "how does auth flow work".into(),
