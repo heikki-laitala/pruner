@@ -281,14 +281,19 @@ fn cmd_context(
         let full_text = format_context_text(&ctx);
         fs::write(&ctx_path, &full_text)?;
 
-        // Print summary to stdout
-        let summary = format_context_summary(&ctx);
-        let age = format_index_age(repo);
-        if !age.is_empty() {
-            eprintln!("Index age: {age}");
+        match fmt {
+            "json" => println!("{}", format_context_json(&ctx)?),
+            _ => {
+                // Print summary to stdout
+                let summary = format_context_summary(&ctx);
+                let age = format_index_age(repo);
+                if !age.is_empty() {
+                    eprintln!("Index age: {age}");
+                }
+                print!("{summary}");
+                eprintln!("Full context: {}", ctx_path.display());
+            }
         }
-        print!("{summary}");
-        eprintln!("Full context: {}", ctx_path.display());
     } else {
         match fmt {
             "json" => println!("{}", format_context_json(&ctx)?),

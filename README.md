@@ -38,21 +38,33 @@ Returns matching files, symbols, related tests, and execution paths.
 
 ### Generate LLM context
 
+Pruner works in two phases: a cheap **brief** scan to orient, then **targeted reads** of source files.
+
+**Phase 1 — Orient with brief mode (~3K tokens):**
+
+```bash
+pruner context . "fix WebSocket reconnection timeout" --brief
+```
+
+Prints a compact table of contents: key files, symbols with locations, shallow execution paths, and related tests. No snippets — just pointers. Also writes to `.pruner/context.md`.
+
+**Phase 2 — Read what matters:**
+
+Use the file paths and symbol locations from brief output to read only the relevant source files. For most tasks, reading 3-5 files is enough.
+
+**Full mode** (when you need deep detail):
+
 ```bash
 pruner context . "fix the authentication flow"
 pruner context . "add caching to the API" --format json
-pruner context . "refactor data pipeline" --brief
 ```
 
-Produces a structured context package with:
+Produces a complete context package with execution paths, key files, key symbols, related tests, and code snippets (~55-70K tokens on large repos).
 
-- Inferred execution paths
-- Key files and their symbols
-- Key symbols with call graphs
-- Related tests
-- Code snippets
-
-With `--brief`, prints a compact summary to stdout and writes full context to `.pruner/context.md`.
+| Mode | Files | Symbols | Paths | Snippets | Tokens |
+|------|-------|---------|-------|----------|--------|
+| Brief | 8 | 15 | 3 (shallow) | 0 | ~3K |
+| Full | 25 | 40 | unlimited | 40 | ~55-70K |
 
 ### Measure token savings
 
@@ -132,16 +144,18 @@ src/
 
 ### Query analysis
 
-1. Extract keywords from natural language ask (stop word removal, camelCase/snake_case splitting)
-2. Search files and symbols by keyword
-3. Find related tests via graph edges
-4. Trace execution paths through call graph (DFS, depth 5, branch limit 3)
-5. Infer subsystems from file paths
+1. **Keyword extraction** — stop word removal, camelCase/snake_case splitting, minimum sub-keyword length (4 chars) to avoid overly broad matches
+2. **Candidate gathering** — search files by path, symbols by name, signature, callers, and importing files. Expensive cross-reference searches skipped for short keywords
+3. **Scoring and ranking** — files scored by keyword match (exact stem, contains, directory), quality (language, minified/bundled detection, directory penalties for docs/locale/vendor/assets), and cross-reference boost (files hosting more matched symbols rank higher). Duplicate filenames penalized. Dynamic score cutoff drops results below 25% of the top score
+4. **Symbol scoring** — exact/prefix/substring match + kind bonus (functions rank above variables) + negative file quality propagation (symbols in minified files penalized)
+5. **Test discovery** — related tests found via graph edges
+6. **Execution path tracing** — recursive CTE through call graph (depth 5), time-budgeted to 10 seconds
+7. **Subsystem inference** — top-level directory names from matched files
 
 ### Context generation
 
-1. Collect execution paths, key files, key symbols, related tests
-2. Extract code snippets from source files
+1. Apply mode limits (brief: 8 files, 15 symbols, 3 shallow paths, 0 snippets; full: uncapped)
+2. Extract code snippets from source files (full mode only, capped at 4000 chars per snippet)
 3. Output as human-readable text and/or structured JSON
 
 ## Supported languages
@@ -159,9 +173,10 @@ Basic indexing (files, metadata):
 ## Limitations
 
 - Call graph is best-effort — dynamic dispatch, string-based lookups, and indirect calls are not tracked
-- Query analysis uses keyword matching, not semantic understanding
+- Query analysis uses keyword matching with heuristic scoring, not semantic understanding
 - Import resolution is heuristic (module name -> file path mapping)
-- Token savings are inconsistent on code-change tasks where full file reads are needed regardless
+- Relevance scoring can miss results when keywords don't appear in file paths or symbol names (e.g., a function that handles authentication but is named `validateRequest`)
+- On very large repos (10K+ files), full mode produces ~55-70K tokens — use brief mode for orientation
 
 ## Claude Code integration
 
@@ -211,11 +226,13 @@ pruner index /path/to/your-project -v
 
 Once set up, when you ask Claude Code to do something like "fix the login flow", Claude will:
 
-1. Check if `.pruner/index.db` exists (index if not)
-2. Run `pruner context . "fix the login flow" --brief`
-3. Read the key files and snippets from `.pruner/context.md`
-4. Use execution paths and call graphs to understand the change surface
+1. Run `pruner context . "fix the login flow" --brief` (~3K tokens — auto-indexes if needed)
+2. Read the brief output: key files, symbols with locations, execution paths, related tests
+3. Open the top 3-5 source files identified by pruner using file:line pointers
+4. If the task requires deeper understanding, run full mode or use `pruner show-symbol` for specific call graphs
 5. Proceed with the task, informed by focused context
+
+The key insight: brief mode tells the LLM **where to look** (~3K tokens), not **everything about the code** (~60K tokens). The LLM then reads only what it needs.
 
 ## Similar projects
 
@@ -248,5 +265,5 @@ Several tools tackle the same problem. The key difference is **how** they delive
 ## Future work
 
 - More language parsers (Go, Java, Ruby)
-- Smarter query heuristics (TF-IDF, path-based weighting)
+- Semantic search (embeddings) for queries that don't match symbol/file names
 - Optional tiktoken integration for exact token counts

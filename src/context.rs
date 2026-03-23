@@ -67,17 +67,26 @@ struct Limits {
     max_files: usize,
     max_symbols: usize,
     max_paths: usize,
+    max_path_depth: usize,
+    max_steps_per_path: usize,
+    max_tests: usize,
     max_snippets: usize,
     max_snippet_lines: usize,
 }
 
 impl Limits {
     fn brief() -> Self {
-        Self { max_files: 10, max_symbols: 20, max_paths: 5, max_snippets: 15, max_snippet_lines: 10 }
+        Self {
+            max_files: 8, max_symbols: 15, max_paths: 3, max_path_depth: 2,
+            max_steps_per_path: 10, max_tests: 5, max_snippets: 0, max_snippet_lines: 0,
+        }
     }
 
     fn full(max_snippet_lines: usize) -> Self {
-        Self { max_files: 999, max_symbols: 999, max_paths: 999, max_snippets: 999, max_snippet_lines }
+        Self {
+            max_files: 999, max_symbols: 999, max_paths: 999, max_path_depth: 999,
+            max_steps_per_path: 999, max_tests: 999, max_snippets: 999, max_snippet_lines,
+        }
     }
 }
 
@@ -98,6 +107,8 @@ pub fn generate_context(
         .take(limits.max_paths)
         .map(|path| {
             path.iter()
+                .filter(|step| step.depth <= limits.max_path_depth)
+                .take(limits.max_steps_per_path)
                 .map(|step| PathEntry {
                     symbol: step.name.clone(),
                     kind: step.kind.clone(),
@@ -141,6 +152,7 @@ pub fn generate_context(
     let relevant_tests: Vec<TestFile> = query
         .related_tests
         .iter()
+        .take(limits.max_tests)
         .map(|t| TestFile { path: t.path.clone() })
         .collect();
 

@@ -1,9 +1,7 @@
 ## Pruner — automatic code context
 
-Before making code changes, fixing bugs, refactoring, or answering questions about this codebase, run pruner to get focused context:
+Before making code changes, fixing bugs, refactoring, or answering questions about this codebase:
 
-```bash
-pruner context . "<task description>" --brief
-```
-
-This auto-indexes if needed, prints a compact summary, and writes full context to `.pruner/context.md`. Read only the key files listed. Use Read/Grep on `.pruner/context.md` for details (snippets, call graphs, imports).
+1. **Orient**: `pruner context . "<task description>" --brief` — prints a compact table of contents (~500 tokens): key files, symbols with locations, execution path count.
+2. **Read**: Open the top 3-5 key files listed. Use symbol locations (file:line) to jump to relevant code.
+3. **Deep dive** (only if needed): `pruner context . "<task>"` (no `--brief`) for full execution paths and snippets.

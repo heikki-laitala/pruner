@@ -39,6 +39,8 @@ const FILE_DIR_CONTAINS: i32 = 5;
 const FILE_MULTI_KEYWORD_BONUS: i32 = 30;
 const FILE_LANGUAGE_BONUS: i32 = 20;
 const FILE_TEST_PENALTY: i32 = -5;
+/// Bonus per matched symbol hosted in a file (cross-reference boost).
+const FILE_SYMBOL_BOOST: i32 = 15;
 
 // Directory penalties
 const DIR_DOCS_PENALTY: i32 = -30;
@@ -138,7 +140,8 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
 
     let (matching_symbols, top_symbols) =
         rank_and_filter_symbols(&matching_symbols, &keywords, &file_scores);
-    let matching_files = rank_and_filter_files(&matching_files, &keywords);
+    let symbol_file_counts = count_symbols_per_file(&matching_symbols);
+    let matching_files = rank_and_filter_files(&matching_files, &keywords, &symbol_file_counts);
     let mut related_tests = related_tests;
     related_tests.truncate(MAX_RESULT_TESTS);
 
@@ -174,8 +177,12 @@ fn gather_candidates(
         collect_dedup(&mut files, &mut seen_files, db.search_files(kw)?, |f| f.id);
 
         collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols(kw)?, |s| s.id);
-        collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols_by_signature(kw)?, |s| s.id);
-        collect_dedup(&mut symbols, &mut seen_symbols, db.search_callers_of(kw)?, |s| s.id);
+        // Skip expensive cross-reference searches for short keywords — they
+        // produce too many false positives (e.g. "web" matching thousands).
+        if kw.len() >= MIN_SUB_KEYWORD_LEN {
+            collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols_by_signature(kw)?, |s| s.id);
+            collect_dedup(&mut symbols, &mut seen_symbols, db.search_callers_of(kw)?, |s| s.id);
+        }
 
         for file_id in db.search_importing_files(kw)? {
             if seen_files.insert(file_id)
@@ -234,7 +241,8 @@ fn build_file_scores(
     keywords: &[String],
     db: &IndexDb,
 ) -> Result<HashMap<i64, i32>> {
-    let scored = score_and_rank_files(files, keywords);
+    let no_counts = HashMap::new();
+    let scored = score_and_rank_files(files, keywords, &no_counts);
     let mut map: HashMap<i64, i32> = scored.iter().map(|(f, s)| (f.id, *s)).collect();
 
     // Score files that host matched symbols but weren't in the file results.
@@ -274,9 +282,22 @@ fn rank_and_filter_symbols(
     (all, top)
 }
 
+/// Count how many matched symbols belong to each file.
+fn count_symbols_per_file(symbols: &[SymbolRow]) -> HashMap<i64, usize> {
+    let mut counts = HashMap::new();
+    for sym in symbols {
+        *counts.entry(sym.file_id).or_insert(0) += 1;
+    }
+    counts
+}
+
 /// Score, apply dynamic cutoff, and cap files.
-fn rank_and_filter_files(files: &[FileRow], keywords: &[String]) -> Vec<FileRow> {
-    let scored = score_and_rank_files(files, keywords);
+fn rank_and_filter_files(
+    files: &[FileRow],
+    keywords: &[String],
+    symbol_counts: &HashMap<i64, usize>,
+) -> Vec<FileRow> {
+    let scored = score_and_rank_files(files, keywords, symbol_counts);
     let cutoff = dynamic_cutoff(&scored, MIN_FILE_SCORE);
 
     scored
@@ -531,14 +552,20 @@ fn score_file_quality(path_lower: &str, file: &FileRow) -> i32 {
     score
 }
 
-/// Score and rank files, penalizing duplicate filenames.
+/// Score and rank files. Boosts files containing matched symbols and
+/// penalizes duplicate filenames.
 fn score_and_rank_files<'a>(
     files: &'a [FileRow],
     keywords: &[String],
+    symbol_counts: &HashMap<i64, usize>,
 ) -> Vec<(&'a FileRow, i32)> {
     let mut scored: Vec<_> = files
         .iter()
-        .map(|f| (f, score_file(f, keywords)))
+        .map(|f| {
+            let base = score_file(f, keywords);
+            let sym_boost = symbol_counts.get(&f.id).copied().unwrap_or(0) as i32 * FILE_SYMBOL_BOOST;
+            (f, base + sym_boost)
+        })
         .collect();
     scored.sort_by(|a, b| b.1.cmp(&a.1));
 
@@ -918,7 +945,8 @@ mod tests {
             FileRow { id: 2, path: "src/net/websocket.rs".into(), language: Some("rust".into()), size: 200, line_count: 50, is_test: false },
             FileRow { id: 3, path: "docs/websocket.md".into(), language: None, size: 300, line_count: 60, is_test: false },
         ];
-        let ranked = score_and_rank_files(&files, &["websocket".to_string()]);
+        let no_counts = HashMap::new();
+        let ranked = score_and_rank_files(&files, &["websocket".to_string()], &no_counts);
         assert_eq!(ranked[0].0.id, 2, "source file should rank first");
         assert_eq!(ranked[1].0.id, 3, "docs should rank second");
         assert_eq!(ranked[2].0.id, 1, "zh-CN docs should rank last");

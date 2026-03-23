@@ -44,6 +44,8 @@ struct IndexStats {
 struct QueryMetrics {
     category: String,
     query: String,
+    #[serde(default)]
+    mode: String, // "full" or "brief"
     key_files: usize,
     key_symbols: usize,
     execution_paths: usize,
@@ -147,94 +149,103 @@ fn bench_real_repo() {
     assert!(index_stats.files > 50, "should index >50 files, got {}", index_stats.files);
     assert!(index_stats.symbols > 100, "should find >100 symbols, got {}", index_stats.symbols);
 
-    // Run benchmark queries
+    // Run benchmark queries in full and brief modes
     let mut queries = Vec::new();
 
-    for (category, query) in BENCHMARK_QUERIES {
-        eprintln!("\n--- Query [{category}]: \"{query}\" ---");
+    for mode in &["full", "brief"] {
+        eprintln!("\n=== Mode: {mode} ===");
+        for (category, query) in BENCHMARK_QUERIES {
+            eprintln!("\n--- [{mode}] [{category}]: \"{query}\" ---");
 
-        let start = Instant::now();
-        let child = Command::new(&bin)
-            .args(["context", repo_str, query, "--format", "json"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("failed to spawn pruner");
-
-        // Wait with timeout
-        let output = match wait_with_timeout(child, QUERY_TIMEOUT) {
-            Some(o) => o,
-            None => {
-                eprintln!("  TIMEOUT after {}s — skipping", QUERY_TIMEOUT.as_secs());
-                queries.push(QueryMetrics {
-                    category: category.to_string(),
-                    query: query.to_string(),
-                    key_files: 0,
-                    key_symbols: 0,
-                    execution_paths: 0,
-                    snippets: 0,
-                    relevant_tests: 0,
-                    subsystems: Vec::new(),
-                    pruner_context_tokens: 0,
-                    duration_secs: QUERY_TIMEOUT.as_secs_f64(),
-                });
-                continue;
+            let start = Instant::now();
+            let mut args = vec!["context", repo_str, query, "--format", "json"];
+            if *mode == "brief" {
+                args.push("--brief");
             }
-        };
-        let duration = start.elapsed();
+            let child = Command::new(&bin)
+                .args(&args)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("failed to spawn pruner");
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+            // Wait with timeout
+            let output = match wait_with_timeout(child, QUERY_TIMEOUT) {
+                Some(o) => o,
+                None => {
+                    eprintln!("  TIMEOUT after {}s — skipping", QUERY_TIMEOUT.as_secs());
+                    queries.push(QueryMetrics {
+                        category: category.to_string(),
+                        query: query.to_string(),
+                        mode: mode.to_string(),
+                        key_files: 0,
+                        key_symbols: 0,
+                        execution_paths: 0,
+                        snippets: 0,
+                        relevant_tests: 0,
+                        subsystems: Vec::new(),
+                        pruner_context_tokens: 0,
+                        duration_secs: QUERY_TIMEOUT.as_secs_f64(),
+                    });
+                    continue;
+                }
+            };
+            let duration = start.elapsed();
 
-        let json: serde_json::Value = match serde_json::from_str(&stdout) {
-            Ok(j) => j,
-            Err(e) => {
-                eprintln!("  WARN: failed to parse JSON ({e}), stderr: {}",
-                    String::from_utf8_lossy(&output.stderr).lines().take(3).collect::<Vec<_>>().join(" | "));
-                queries.push(QueryMetrics {
-                    category: category.to_string(),
-                    query: query.to_string(),
-                    key_files: 0,
-                    key_symbols: 0,
-                    execution_paths: 0,
-                    snippets: 0,
-                    relevant_tests: 0,
-                    subsystems: Vec::new(),
-                    pruner_context_tokens: 0,
-                    duration_secs: duration.as_secs_f64(),
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            let json: serde_json::Value = match serde_json::from_str(&stdout) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("  WARN: failed to parse JSON ({e}), stderr: {}",
+                        String::from_utf8_lossy(&output.stderr).lines().take(3).collect::<Vec<_>>().join(" | "));
+                    queries.push(QueryMetrics {
+                        category: category.to_string(),
+                        query: query.to_string(),
+                        mode: mode.to_string(),
+                        key_files: 0,
+                        key_symbols: 0,
+                        execution_paths: 0,
+                        snippets: 0,
+                        relevant_tests: 0,
+                        subsystems: Vec::new(),
+                        pruner_context_tokens: 0,
+                        duration_secs: duration.as_secs_f64(),
+                    });
+                    continue;
+                }
+            };
+
+            let key_files = json["key_files"].as_array().map_or(0, |a| a.len());
+            let key_symbols = json["key_symbols"].as_array().map_or(0, |a| a.len());
+            let execution_paths = json["execution_paths"].as_array().map_or(0, |a| a.len());
+            let snippets = json["snippets"].as_array().map_or(0, |a| a.len());
+            let relevant_tests = json["relevant_tests"].as_array().map_or(0, |a| a.len());
+            let subsystems: Vec<String> = json["subsystems"]
+                .as_array()
+                .map_or(Vec::new(), |a| {
+                    a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
                 });
-                continue;
-            }
-        };
 
-        let key_files = json["key_files"].as_array().map_or(0, |a| a.len());
-        let key_symbols = json["key_symbols"].as_array().map_or(0, |a| a.len());
-        let execution_paths = json["execution_paths"].as_array().map_or(0, |a| a.len());
-        let snippets = json["snippets"].as_array().map_or(0, |a| a.len());
-        let relevant_tests = json["relevant_tests"].as_array().map_or(0, |a| a.len());
-        let subsystems: Vec<String> = json["subsystems"]
-            .as_array()
-            .map_or(Vec::new(), |a| {
-                a.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+            let context_text = serde_json::to_string_pretty(&json).unwrap();
+            let pruner_context_tokens = estimate_tokens(&context_text);
+
+            eprintln!("  files={key_files} symbols={key_symbols} paths={execution_paths} snippets={snippets} tests={relevant_tests} tokens={pruner_context_tokens} time={:.1}s", duration.as_secs_f64());
+
+            queries.push(QueryMetrics {
+                category: category.to_string(),
+                query: query.to_string(),
+                mode: mode.to_string(),
+                key_files,
+                key_symbols,
+                execution_paths,
+                snippets,
+                relevant_tests,
+                subsystems,
+                pruner_context_tokens,
+                duration_secs: duration.as_secs_f64(),
             });
-
-        let context_text = serde_json::to_string_pretty(&json).unwrap();
-        let pruner_context_tokens = estimate_tokens(&context_text);
-
-        eprintln!("  files={key_files} symbols={key_symbols} paths={execution_paths} snippets={snippets} tests={relevant_tests} tokens={pruner_context_tokens} time={:.1}s", duration.as_secs_f64());
-        eprintln!("  subsystems: {}", if subsystems.is_empty() { "(none)".to_string() } else { subsystems.join(", ") });
-
-        queries.push(QueryMetrics {
-            category: category.to_string(),
-            query: query.to_string(),
-            key_files,
-            key_symbols,
-            execution_paths,
-            snippets,
-            relevant_tests,
-            subsystems,
-            pruner_context_tokens,
-            duration_secs: duration.as_secs_f64(),
-        });
+        }
     }
 
     let result = BenchResult {
@@ -402,18 +413,21 @@ fn compare_results(baseline: &BenchResult, current: &BenchResult) {
     print_delta("Calls tracked", bi.calls, ci.calls);
     print_delta("Edges built", bi.edges, ci.edges);
 
-    let baseline_map: HashMap<&str, &QueryMetrics> = baseline
+    let baseline_map: HashMap<(&str, &str), &QueryMetrics> = baseline
         .queries
         .iter()
-        .map(|q| (q.category.as_str(), q))
+        .map(|q| ((q.mode.as_str(), q.category.as_str()), q))
         .collect();
 
     let mut regressions = Vec::new();
 
     for cq in &current.queries {
-        eprintln!("\n[{}] \"{}\"", cq.category, cq.query);
+        let mode_label = if cq.mode.is_empty() { "full" } else { cq.mode.as_str() };
+        eprintln!("\n[{mode_label}] [{}] \"{}\"", cq.category, cq.query);
 
-        if let Some(bq) = baseline_map.get(cq.category.as_str()) {
+        let key = (mode_label, cq.category.as_str());
+        // Also try matching old baselines without mode field
+        if let Some(bq) = baseline_map.get(&key).or_else(|| baseline_map.get(&("", cq.category.as_str()))) {
             print_delta("  key_files", bq.key_files as i64, cq.key_files as i64);
             print_delta("  key_symbols", bq.key_symbols as i64, cq.key_symbols as i64);
             print_delta("  execution_paths", bq.execution_paths as i64, cq.execution_paths as i64);
@@ -424,13 +438,13 @@ fn compare_results(baseline: &BenchResult, current: &BenchResult) {
 
             if cq.key_symbols < bq.key_symbols.saturating_sub(2) {
                 regressions.push(format!(
-                    "[{}] key_symbols dropped: {} -> {}",
+                    "[{mode_label}][{}] key_symbols dropped: {} -> {}",
                     cq.category, bq.key_symbols, cq.key_symbols
                 ));
             }
             if cq.execution_paths == 0 && bq.execution_paths > 0 {
                 regressions.push(format!(
-                    "[{}] execution_paths dropped to 0 (was {})",
+                    "[{mode_label}][{}] execution_paths dropped to 0 (was {})",
                     cq.category, bq.execution_paths
                 ));
             }
