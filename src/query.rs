@@ -134,18 +134,34 @@ impl QueryResult {
 pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let keywords = extract_keywords(ask);
 
-    let (matching_files, matching_symbols) = gather_candidates(&keywords, db)?;
+    let (mut matching_files, matching_symbols) = gather_candidates(&keywords, db)?;
     let related_tests = find_related_tests(&matching_files, db)?;
     let file_scores = build_file_scores(&matching_files, &matching_symbols, &keywords, db)?;
 
     let (matching_symbols, top_symbols) =
         rank_and_filter_symbols(&matching_symbols, &keywords, &file_scores);
+    let execution_paths = trace_paths(&top_symbols, db)?;
+
+    // Graph expansion: add files discovered through execution paths that
+    // weren't found by keyword matching. This helps when the query concept
+    // (e.g. "authentication") doesn't appear in file/symbol names but is
+    // reachable via the call graph from a seed match.
+    let mut seen_file_ids: HashSet<i64> = matching_files.iter().map(|f| f.id).collect();
+    for path in &execution_paths {
+        for step in path {
+            if let Some(file) = db.get_file_by_path(&step.file_path)? {
+                if seen_file_ids.insert(file.id) {
+                    matching_files.push(file);
+                }
+            }
+        }
+    }
+
     let symbol_file_counts = count_symbols_per_file(&matching_symbols);
     let matching_files = rank_and_filter_files(&matching_files, &keywords, &symbol_file_counts);
     let mut related_tests = related_tests;
     related_tests.truncate(MAX_RESULT_TESTS);
 
-    let execution_paths = trace_paths(&top_symbols, db)?;
     let subsystems = infer_subsystems(&matching_files);
 
     Ok(QueryResult {
