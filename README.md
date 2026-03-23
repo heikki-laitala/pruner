@@ -4,7 +4,7 @@
 
 AI coding agents (Claude Code, Codex, Copilot) spend most of their time and tokens exploring your codebase — grepping, globbing, reading files, figuring out what's relevant. On a 10K-file repo, a single task can burn 50-80 tool calls just on navigation.
 
-Pruner eliminates this. It pre-indexes your entire repository structurally (call graphs, symbols, imports) and gives the agent exactly the context it needs in one shot. The agent skips exploration and goes straight to work.
+Pruner eliminates this. It pre-indexes your entire repository using plain structural code analysis — call graphs, symbols, imports, execution paths — and gives the agent exactly the context it needs in one shot. **No LLM, no embeddings, no API keys, no network calls.** Just fast, deterministic tree-sitter parsing that runs locally in seconds. The agent skips exploration and goes straight to work.
 
 **Measured on real Claude Code sessions** (openclaw, 9.8K files):
 
