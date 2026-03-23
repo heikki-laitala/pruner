@@ -85,6 +85,7 @@ if ! curl -sSfL "$DOWNLOAD_URL" -o "${TEMP_DIR}/pruner.tar.gz"; then
     fi
 else
     tar -xzf "${TEMP_DIR}/pruner.tar.gz" -C "$TEMP_DIR"
+    mv "${TEMP_DIR}/${BINARY_NAME}" "${TEMP_DIR}/pruner" 2>/dev/null || true
 fi
 
 # Install binary
