@@ -73,7 +73,7 @@ pruner stats .
 
 ## A/B test results
 
-Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner skill installed, once vanilla. Sessions run in parallel on separate clones.
+Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner skill installed, once vanilla. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase.
 
 ### Results (auto mode — current)
 
