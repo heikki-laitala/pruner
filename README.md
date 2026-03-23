@@ -83,40 +83,46 @@ pruner show-symbol . login
 pruner stats .
 ```
 
-## When pruner helps
+## A/B test results
 
-Pruner was A/B tested on a 622-file TypeScript/Rust/Go monorepo. Results from 6 task pairs comparing Claude Code with and without pruner context.
+Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Three strategies compared across 5 query types:
 
-### Where it works well
+- **A — Brief + read**: `pruner context --brief` (~3K tokens) then read the 8 key files it identifies
+- **B — Full dump**: `pruner context` (full mode) dumped into conversation
+- **C — No pruner**: Simulated vanilla Claude Code behavior (glob directory structure, grep for keywords, read relevant + some irrelevant files)
 
-**Understanding tasks across multiple packages.** When Claude needs to trace a flow that spans several subsystems (e.g., "how does an MCP tool call flow from HTTP to sandbox execution"), pruner eliminates the exploration phase (glob/grep) and sends the agent straight to the right files.
+### Token usage per query
 
-- Tool calls reduced by **35-50%** on cross-package understanding tasks
-- Duration reduced by **20-23%** on broad exploration tasks
-- Glob/grep calls **nearly eliminated** (pruner replaces manual directory exploration)
+| Task type | A (brief+read) | B (full dump) | C (no pruner) | A vs B | A vs C |
+|-----------|---------------:|-------------:|-------------:|-------:|-------:|
+| Cross-package flow | 14,212 | 54,173 | 226,352 | -73.8% | -93.7% |
+| Narrow fix (WebSocket) | 16,181 | 56,667 | 152,540 | -71.4% | -89.4% |
+| Understanding (pipeline) | 17,829 | 63,631 | 162,757 | -72.0% | -89.0% |
+| Cross-cutting (correlation ID) | 7,487 | 68,441 | 190,426 | -89.1% | -96.1% |
+| Data flow (auth tokens) | 13,048 | 59,774 | 132,293 | -78.2% | -90.1% |
+| **Average** | **13,751** | **60,537** | **172,873** | **-76.9%** | **-91.7%** |
 
-**Cross-cutting code changes.** Tasks like "add correlation IDs across middleware, audit trail, and WebSocket handlers" benefit because pruner identifies all the relevant subsystems upfront.
+### Key findings
 
-**Large codebases with deep nesting.** The bigger the repo, the more exploration Claude wastes without pruner. On a 622-file repo, agents without pruner averaged 3-6 glob calls and 4-8 grep calls just to orient themselves.
+**Brief + read uses 77% fewer tokens than full dump, 92% fewer than no pruner.** The two-phase approach (orient with ~3K token summary, then read source files) consistently beats dumping the full context package into the conversation.
+
+**Cross-cutting tasks benefit most** (-89% vs full, -96% vs no pruner). When the task spans many subsystems but the key files are small, brief mode's targeted file list avoids loading irrelevant snippets and execution paths.
+
+**Even the worst case saves 71%.** The narrow fix query (WebSocket reconnection) produces the smallest gap because the key files are larger (13K tokens), but still beats full dump by 71%.
 
 ### Where it helps less
 
-**Narrow, focused tasks.** When both approaches quickly converge on the same 3-5 files (e.g., "add audit logging" in a codebase that already has it), pruner adds overhead without proportional savings.
+**Exhaustive codebase scans.** Tasks like "find all console.log calls across every package" require grepping the entire codebase regardless. Pruner can't shortcut that.
 
-**Exhaustive codebase scans.** Tasks like "find all console.log calls across every package" require grepping the entire codebase regardless. Pruner can't shortcut that — the agent needs to see every match. In testing, this pattern showed **+15% token overhead** because the pruner context was additive rather than replacing exploration.
+**Tasks requiring full file reads.** When the LLM needs to read complete files to write correct code (not just understand them), the token savings from brief mode shrink since you're reading those files anyway. Brief mode's value is in telling you *which* files to read.
 
-**Code change tasks where full file reads are required.** When Claude needs to read complete files to write correct code (not just understand them), the token savings from pruner's snippets are offset by the agent reading the full files anyway.
+### Reproduce
 
-### Summary from A/B testing
-
-| Metric | Avg improvement | Best case |
-|--------|----------------|-----------|
-| Tool calls | -35% | -53% |
-| Duration | -12% | -23% |
-| Token savings | Variable | -14% to -29% on understanding tasks |
-| Glob/grep elimination | ~100% | ~100% |
-
-The core value is **replacing manual exploration with pre-computed navigation**. Token savings are highest when the task requires understanding many files but doesn't require reading all of them in full.
+```bash
+make bench                              # full + brief benchmark against openclaw
+python3 tests/ab_test.py                # A/B token comparison (default: openclaw)
+python3 tests/ab_test.py /path/to/repo  # test against any repo
+```
 
 ## Architecture
 
