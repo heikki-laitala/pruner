@@ -1,10 +1,13 @@
-.PHONY: build release run test test-quick test-unit test-integration bench lint format check clean index
+.PHONY: build release install run test test-quick test-unit test-integration bench lint format check clean index
 
 build:
 	cargo build
 
 release:
 	cargo build --release
+
+install: release
+	cargo install --path .
 
 test:
 	cargo test --bin pruner --test integration

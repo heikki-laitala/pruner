@@ -2,18 +2,30 @@
 
 Synthetic code context engine for LLM coding tasks. Indexes a repository structurally, infers relevant execution paths from natural language asks, and generates compact LLM-ready context packages — all without using an LLM for indexing.
 
+## Prerequisites
+
+- **Rust** (1.85+) — install via [rustup](https://rustup.rs/): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- **C compiler** — needed for tree-sitter. On macOS: `xcode-select --install`. On Ubuntu/Debian: `sudo apt install build-essential`.
+
+Ensure `~/.cargo/bin` is in your PATH (rustup adds it automatically, but verify):
+
+```bash
+echo $PATH | grep cargo
+# If missing:
+export PATH="$HOME/.cargo/bin:$PATH"
+# Add to your shell profile (~/.zshrc or ~/.bashrc) to make permanent
+```
+
+All other dependencies (SQLite, tree-sitter parsers) are bundled Rust crates and compiled automatically.
+
 ## Install
 
 ```bash
-cargo install --path .
+make install
+# or: cargo install --path .
 ```
 
-Or build locally:
-
-```bash
-cargo build --release
-# Binary at ./target/release/pruner
-```
+This builds a release binary and installs it to `~/.cargo/bin/pruner`.
 
 ## Usage
 
@@ -108,7 +120,7 @@ Earlier approach where pruner ran as a skill (1 tool call). Kept for reference.
 
 **Data flow is no longer the hard case.** Previously -2% with the skill approach, now -32% with the hook. The hook injects context before Claude decides to spawn its own subagent, preempting the re-exploration pattern.
 
-**Vanilla Claude is unpredictable.** Without pruner, Claude's strategy varies between runs — sometimes efficient (16 tool calls), sometimes expensive (51 tool calls). With pruner, behavior is consistent: 7-21 tool calls.
+**Vanilla Claude has high variance.** Without pruner, Claude's strategy varies significantly between runs of the same task. The implement scenario cost $0.66 in one run and $0.82 in another; narrow fix ranged from $0.28 to $0.45. Claude sometimes spawns cheap subagents (2 opus turns + 40 subagent tool calls), sometimes does everything on the main thread (20 opus turns + 50 tool calls). This makes A/B results noisy — N=1 per task means individual numbers can shift ±30%. The directional trend (pruner saves on broad tasks) is consistent across runs, but exact percentages vary. With pruner, behavior is more predictable: 7-29 tool calls across all tasks.
 
 **Token count is misleading.** Pruner shows higher raw token counts because its output is included in every subsequent API call. But cost depends on cache hits (cheap) vs fresh tokens (expensive). Fewer tool calls = fewer fresh tokens = lower cost.
 
@@ -190,6 +202,39 @@ Full tree-sitter parsing (symbols, imports, calls):
 Basic indexing (files, metadata):
 
 - All text files not in the ignore list
+
+## Development
+
+### Make targets
+
+| Command | Description |
+|---------|-------------|
+| `make build` | Debug build |
+| `make release` | Release build (optimized) |
+| `make install` | Build release and install to `~/.cargo/bin/` |
+| `make test` | Run unit + integration tests |
+| `make test-unit` | Run unit tests only |
+| `make test-integration` | Run integration tests only |
+| `make bench` | Run benchmarks on a real repo (clones openclaw, ~2 min) |
+| `make lint` | Run clippy with warnings as errors |
+| `make format` | Format code with rustfmt |
+| `make check` | Lint + test |
+| `make clean` | Remove build artifacts and `.pruner/` |
+| `make run ARGS="..."` | Run pruner with arguments, e.g. `make run ARGS="index . -v"` |
+| `make index` | Index the current repo |
+
+### Cargo equivalents
+
+```bash
+cargo build                          # debug build
+cargo build --release                # release build
+cargo install --path .               # install to ~/.cargo/bin/
+cargo test --bin pruner --test integration  # unit + integration tests
+cargo test --lib                     # unit tests only
+cargo test --test bench -- --nocapture      # benchmarks
+cargo clippy -- -D warnings          # lint
+cargo fmt                            # format
+```
 
 ## Limitations
 

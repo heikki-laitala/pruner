@@ -2,7 +2,7 @@
 """A/B test: real Claude Code sessions with and without pruner on a real repo.
 
 Sets up two clones of the test repo:
-  A — with pruner skill + CLAUDE.md instructions installed
+  A — with pruner installed (hook or skill mode)
   B — vanilla (no pruner)
 
 Runs Claude Code (opus) on identical tasks in parallel, measures actual
@@ -11,9 +11,10 @@ token usage, tool calls, cost, and turns.
 Usage:
     python3 tests/ab_test.py [options] [/path/to/repo]
 
-    --task TASK      Run only this task (narrow_fix, cross_package, understanding, data_flow)
+    --task TASK          Run only this task
+    --mode hook|skill    Pruner delivery: hook (prompt-submit) or skill (tool call)
     --only with|without  Run only one side
-    --save-raw       Save raw stream-json output to /tmp/pruner-bench/ab-raw/
+    --save-raw           Save raw stream-json output to /tmp/pruner-bench/ab-raw/
 
 Requires:
   - `claude` CLI installed and logged in
@@ -28,7 +29,8 @@ from pathlib import Path
 
 PRUNER_DIR = Path(__file__).resolve().parent.parent
 PRUNER_BIN = PRUNER_DIR / "target" / "release" / "pruner"
-SKILL_SRC = PRUNER_DIR / ".claude" / "skills" / "pruner" / "SKILL.md"
+SKILL_HOOK_SRC = PRUNER_DIR / ".claude" / "skills" / "pruner" / "SKILL.hook.md"
+SKILL_SKILL_SRC = PRUNER_DIR / ".claude" / "skills" / "pruner" / "SKILL.skill.md"
 HOOK_SRC = PRUNER_DIR / ".claude" / "hooks" / "pruner-context.sh"
 CLAUDE_TEMPLATE = PRUNER_DIR / "CLAUDE.template.md"
 
@@ -79,12 +81,14 @@ def parse_args():
                         help="Run only this task")
     parser.add_argument("--only", choices=["with", "without"],
                         help="Run only one side (with or without pruner)")
+    parser.add_argument("--mode", choices=["hook", "skill"], default="hook",
+                        help="Pruner delivery mode: hook (prompt-submit) or skill (tool call)")
     parser.add_argument("--save-raw", action="store_true",
                         help="Save raw stream-json output for analysis")
     return parser.parse_args()
 
 
-def setup_clones(repo):
+def setup_clones(repo, mode="hook"):
     """Create two copies of the repo: one with pruner, one without."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -96,41 +100,67 @@ def setup_clones(repo):
         shutil.copytree(repo, clone_path, symlinks=True,
                         ignore=shutil.ignore_patterns('.pruner'))
 
-    # Install pruner hook in the "with" clone
-    hook_dir = CLONE_WITH / ".claude" / "hooks"
-    hook_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(HOOK_SRC, hook_dir / "pruner-context.sh")
-    (hook_dir / "pruner-context.sh").chmod(0o755)
+    print(f"  Pruner mode: {mode}", file=sys.stderr)
 
-    # Install hook settings
-    settings_dir = CLONE_WITH / ".claude"
-    settings_file = settings_dir / "settings.json"
-    settings = {}
-    if settings_file.exists():
-        settings = json.loads(settings_file.read_text())
-    settings["hooks"] = {
-        "UserPromptSubmit": [
-            {
-                "matcher": "",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": str(hook_dir / "pruner-context.sh"),
-                        "timeout": 60,
-                    }
-                ],
-            }
-        ]
-    }
-    settings_file.write_text(json.dumps(settings, indent=2))
+    # Clean previous pruner setup from the "with" clone
+    for p in [CLONE_WITH / ".claude" / "skills" / "pruner",
+              CLONE_WITH / ".claude" / "hooks"]:
+        if p.exists():
+            shutil.rmtree(p)
+    with_settings_file = CLONE_WITH / ".claude" / "settings.json"
+    if with_settings_file.exists():
+        s = json.loads(with_settings_file.read_text())
+        s.pop("hooks", None)
+        with_settings_file.write_text(json.dumps(s, indent=2))
 
-    # Also install skill (hook injects context, skill provides show-symbol/show-file)
-    skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(SKILL_SRC, skill_dir / "SKILL.md")
+    # Remove old pruner instructions from CLAUDE.md
+    claude_md = CLONE_WITH / "CLAUDE.md"
+    if claude_md.exists():
+        text = claude_md.read_text()
+        marker = "## Pruner"
+        idx = text.find(marker)
+        if idx >= 0:
+            claude_md.write_text(text[:idx].rstrip() + "\n")
+
+    if mode == "hook":
+        # Install hook
+        hook_dir = CLONE_WITH / ".claude" / "hooks"
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(HOOK_SRC, hook_dir / "pruner-context.sh")
+        (hook_dir / "pruner-context.sh").chmod(0o755)
+
+        # Install hook settings
+        settings = {}
+        if with_settings_file.exists():
+            settings = json.loads(with_settings_file.read_text())
+        settings["hooks"] = {
+            "UserPromptSubmit": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": str(hook_dir / "pruner-context.sh"),
+                            "timeout": 60,
+                        }
+                    ],
+                }
+            ]
+        }
+        with_settings_file.write_text(json.dumps(settings, indent=2))
+
+        # Install hook-mode skill
+        skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SKILL_HOOK_SRC, skill_dir / "SKILL.md")
+
+    elif mode == "skill":
+        # Install skill-mode skill (Claude calls pruner as a tool)
+        skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SKILL_SKILL_SRC, skill_dir / "SKILL.md")
 
     # Append pruner instructions to CLAUDE.md
-    claude_md = CLONE_WITH / "CLAUDE.md"
     template_text = CLAUDE_TEMPLATE.read_text()
     current = claude_md.read_text() if claude_md.exists() else ""
     if "pruner context" not in current:
@@ -150,7 +180,6 @@ def setup_clones(repo):
               CLONE_WITHOUT / ".pruner"]:
         if p.exists():
             shutil.rmtree(p)
-    # Remove hook settings if present
     without_settings = CLONE_WITHOUT / ".claude" / "settings.json"
     if without_settings.exists():
         s = json.loads(without_settings.read_text())
@@ -403,8 +432,8 @@ def main():
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
     assert Path(args.repo).is_dir(), f"repo not found at {args.repo}"
 
-    print("Setting up test clones ...", file=sys.stderr)
-    setup_clones(args.repo)
+    print(f"Setting up test clones (mode={args.mode}) ...", file=sys.stderr)
+    setup_clones(args.repo, mode=args.mode)
 
     # Select tasks
     if args.task:
