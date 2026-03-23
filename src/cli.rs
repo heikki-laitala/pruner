@@ -276,9 +276,10 @@ fn cmd_context(
     let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, brief)?;
 
     if brief {
-        // Write full context to .pruner/context.md
+        // Write *full* context to .pruner/context.md so the LLM can drill deeper
+        let full_ctx = context::generate_context(&result, &repo_path, max_snippet_lines, false)?;
         let ctx_path = repo_path.join(INDEX_DIR).join("context.md");
-        let full_text = format_context_text(&ctx);
+        let full_text = format_context_text(&full_ctx);
         fs::write(&ctx_path, &full_text)?;
 
         match fmt {

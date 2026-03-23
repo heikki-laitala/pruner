@@ -20,6 +20,8 @@ IMPORTANT: Always pass the repo as an absolute path argument. Do NOT use `cd <re
 
 This prints a compact table of contents (~500 tokens): keywords, key files, key symbols with locations, execution path count, and related tests. No snippets — just pointers.
 
+It also writes **full context** (with snippets, call graphs, execution paths) to `<repo>/.pruner/context.md`.
+
 ## Phase 2: Read — open the source files
 
 1. **Read the top 3-5 key files** listed in the brief output. These are the files most relevant to the task — read them directly with the Read tool.
@@ -28,7 +30,7 @@ This prints a compact table of contents (~500 tokens): keywords, key files, key 
 
 ## When you need more detail
 
-- **Deep call graph**: `pruner context /path/to/repo "<ask>"` (without `--brief`) writes full execution paths, snippets, and call graphs. Only use this when you need to trace a complex flow across many files.
+- **Grep `<repo>/.pruner/context.md`** for a symbol name to get its snippet, call graph, and execution path without reading the whole file. This is the cheapest way to drill deeper.
 - **Single symbol**: `pruner show-symbol /path/to/repo "<name>"` shows a symbol's signature, callers, and callees.
 - **Single file**: `pruner show-file /path/to/repo "<path>"` shows all symbols and imports in a file.
 
