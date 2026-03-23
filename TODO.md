@@ -1,36 +1,56 @@
 # TODO
 
-## Critical: Query performance on large repos
+## Problem statement
 
-Benchmark on OpenClaw (9.5k files, 30k symbols, 165k calls) shows all 5 queries timeout at 120s. Pruner is unusable on repos this size.
+Pruner preprocesses the entire codebase (call graphs, symbols, imports) but vanilla Claude Code matches or beats pruner on cost by delegating exploration to cheap subagents. Pruner saves tool calls and wall time, but doesn't consistently save cost. We need to leverage the preprocessing advantage more aggressively.
 
-**Root cause:** `trace_execution_path` in `query.rs` does DFS through the call graph via individual SQLite queries per symbol. Broad keywords match hundreds of symbols, each triggering depth-5 DFS through 165k calls = millions of DB round-trips.
+A/B test baseline (implement scenario on OpenClaw, 9.8K files):
+- Without pruner: $0.66 / 48 tools / 122.6s
+- With pruner (auto mode): $0.70 / 23 tools / 80.7s (+6% cost, -52% tools, -34% time)
 
-**Fix (in priority order):**
+## 1. Prompt-submit hook (zero tool calls)
 
-1. **Cap matching symbols** — limit to top 20 before tracing execution paths. Currently every match gets traced.
-2. **In-memory call graph** — load adjacency list once at query time instead of per-step `calls_by_symbol` DB queries.
-3. **Time budget** — abort execution path tracing after 10s, return what we have.
-4. **Smarter keyword matching** — "WebSocket reconnection timeout" shouldn't match every function with "timeout" in its name. Need relevance scoring (TF-IDF or at minimum exact-match-first ranking).
+Install pruner as a Claude Code `prompt_submit` hook instead of a skill. When the user submits a prompt, the hook runs `pruner context` and injects the output into the conversation before Claude starts thinking.
 
-## Critical: First query returns empty JSON
+**Why this matters:**
+- Eliminates the tool call that runs pruner (saves one opus round-trip)
+- Context is present from turn 1, gets cached by the API on all subsequent turns (cheap)
+- Claude never spends opus tokens deciding whether/how to use pruner
 
-The cross_package query ("how does a message flow from webhook to channel handler") returned empty stdout on OpenClaw. Likely the context command crashes or produces no output when matching too many files. Need to investigate and handle gracefully.
+**Implementation:**
+- Add a hook config to `.claude/settings.json` that runs `pruner context . "$PROMPT"` on prompt_submit
+- Hook output appears as user-context, not as tool-call result
+- Need to figure out how hook output is injected (env var? stdin? appended to prompt?)
 
-## Important: Context is too broad on large repos
+## 2. Complete code slices (zero follow-up reads)
 
-The narrow_fix query ("fix WebSocket reconnection timeout") matched 169 files, 592 symbols, 494 execution paths. That's not focused context — it's a dump. Pruner's value is replacing exploration with precision, and this is the opposite.
+Current snippets are 30-line truncations that often require Claude to Read the full file anyway. Since tree-sitter knows exact symbol boundaries, pruner should extract complete function/method bodies.
 
-**Fix:**
-- Add relevance scoring so not every keyword-matching symbol is included
-- Rank results: exact match > prefix match > substring match
-- Limit output: top 10 files, top 20 symbols, top 5 execution paths (brief mode already does this, but the query itself is slow because it computes everything before limiting)
+**Why this matters:**
+- Each follow-up Read adds ~2-5K tokens to the opus conversation history
+- If pruner gives Claude everything it needs upfront, Claude can go straight to implementation
+- The goal: zero Read tool calls for understanding, only Read/Write for making changes
 
-## Bench baseline
+**Implementation:**
+- In `context.rs`, use symbol start/end line info to extract full function bodies instead of fixed 30-line windows
+- Cap individual function bodies at reasonable size (e.g., 100 lines)
+- For the implementation scenario, include the function where new code should be added (e.g., the route registration function)
 
-After fixing the above, run `make bench` and save the baseline:
-```bash
-cp tests/bench_results.json tests/bench_baseline.json
-```
+## 3. Edit-location hints
 
-Future changes can then be measured for regression.
+For implementation tasks, pruner can analyze the call graph to suggest exactly where to make changes, not just which files are relevant.
+
+**Why this matters:**
+- Turns "here are 10 relevant files" into "add your code at `src/routes.ts:45` inside `registerRoutes()`"
+- Claude skips the "figure out where to put it" phase entirely
+- Biggest win for implementation tasks (currently our weakest scenario)
+
+**Implementation:**
+- Detect "implement" / "add" / "create" keywords in the query
+- Find insertion points: functions that register similar things (routes, handlers, tests)
+- Output a "suggested edit location" section with file:line and surrounding context
+
+## 4. Explored but rejected
+
+### Subagent delegation (feat/subagent-delegation branch)
+Tried having pruner instruct Claude to spawn a cheap sonnet subagent for implementation. Result: +292% cost, +336% time. The opus orchestration overhead plus subagent context duplication made it much worse. Claude also ignored the "don't re-explore" instruction and spawned its own Explore subagent first.
