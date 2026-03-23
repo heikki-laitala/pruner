@@ -8,6 +8,9 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const MAX_TRACED_SYMBOLS: usize = 20;
+const MAX_RESULT_SYMBOLS: usize = 100;
+const MAX_RESULT_FILES: usize = 50;
+const MAX_RESULT_TESTS: usize = 20;
 const TRACE_TIME_BUDGET: Duration = Duration::from_secs(10);
 
 /// Result of analyzing a natural language query against the index.
@@ -99,13 +102,24 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         }
     }
 
-    // Score and cap symbols before tracing
+    // Score and rank symbols, then cap results
     let scored_symbols = score_and_rank_symbols(&matching_symbols, &keywords);
     let top_symbols: Vec<&SymbolRow> = scored_symbols
         .iter()
         .take(MAX_TRACED_SYMBOLS)
         .map(|(sym, _)| *sym)
         .collect();
+
+    // Cap matching_symbols to top N by relevance score
+    let matching_symbols: Vec<SymbolRow> = scored_symbols
+        .into_iter()
+        .take(MAX_RESULT_SYMBOLS)
+        .map(|(sym, _)| sym.clone())
+        .collect();
+
+    // Cap matching files and tests
+    matching_files.truncate(MAX_RESULT_FILES);
+    related_tests.truncate(MAX_RESULT_TESTS);
 
     // Trace execution paths with time budget
     let mut execution_paths = Vec::new();

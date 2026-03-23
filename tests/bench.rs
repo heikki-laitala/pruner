@@ -265,20 +265,29 @@ fn bench_real_repo() {
 }
 
 fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> Option<std::process::Output> {
+    // Read stdout/stderr in background threads to avoid pipe deadlock
+    // (large JSON output can exceed the OS pipe buffer, blocking the child).
+    let stdout_handle = child.stdout.take().map(|s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::BufReader::new(s), &mut buf).unwrap_or(0);
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|s| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::BufReader::new(s), &mut buf).unwrap_or(0);
+            buf
+        })
+    });
+
     let start = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let stdout = child.stdout.take().map(|mut s| {
-                    let mut buf = Vec::new();
-                    std::io::Read::read_to_end(&mut s, &mut buf).unwrap_or(0);
-                    buf
-                }).unwrap_or_default();
-                let stderr = child.stderr.take().map(|mut s| {
-                    let mut buf = Vec::new();
-                    std::io::Read::read_to_end(&mut s, &mut buf).unwrap_or(0);
-                    buf
-                }).unwrap_or_default();
+                let stdout = stdout_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+                let stderr = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
                 return Some(std::process::Output { status, stdout, stderr });
             }
             Ok(None) => {

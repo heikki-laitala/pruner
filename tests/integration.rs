@@ -34,7 +34,10 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 fn pruner() -> Command {
-    Command::cargo_bin("pruner").unwrap()
+    let mut cmd = Command::cargo_bin("pruner").unwrap();
+    // Disable freshness cache so incremental tests can detect changes immediately
+    cmd.env("PRUNER_RECHECK_SECS", "0");
+    cmd
 }
 
 /// Helper: index a fixture dir, return the path string.

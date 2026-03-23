@@ -11,62 +11,95 @@
     {
       "category": "cross_package",
       "query": "how does a message flow from webhook to channel handler",
-      "key_files": 0,
-      "key_symbols": 0,
-      "execution_paths": 0,
-      "snippets": 0,
-      "relevant_tests": 0,
-      "subsystems": [],
-      "pruner_context_tokens": 0,
-      "duration_secs": 90.3649325
+      "key_files": 50,
+      "key_symbols": 100,
+      "execution_paths": 11,
+      "snippets": 100,
+      "relevant_tests": 20,
+      "subsystems": [
+        "docs",
+        "extensions",
+        "ui"
+      ],
+      "pruner_context_tokens": 86384,
+      "duration_secs": 0.210449125
     },
     {
       "category": "narrow_fix",
       "query": "fix WebSocket reconnection timeout",
-      "key_files": 0,
-      "key_symbols": 0,
-      "execution_paths": 0,
-      "snippets": 0,
-      "relevant_tests": 0,
-      "subsystems": [],
-      "pruner_context_tokens": 0,
-      "duration_secs": 120.0
+      "key_files": 50,
+      "key_symbols": 100,
+      "execution_paths": 9,
+      "snippets": 100,
+      "relevant_tests": 20,
+      "subsystems": [
+        "apps",
+        "docs",
+        "extensions",
+        "test"
+      ],
+      "pruner_context_tokens": 78041,
+      "duration_secs": 0.207963167
     },
     {
       "category": "understanding",
       "query": "how does the skill execution pipeline work",
-      "key_files": 0,
-      "key_symbols": 0,
-      "execution_paths": 0,
-      "snippets": 0,
-      "relevant_tests": 0,
-      "subsystems": [],
-      "pruner_context_tokens": 0,
-      "duration_secs": 120.0
+      "key_files": 50,
+      "key_symbols": 100,
+      "execution_paths": 15,
+      "snippets": 100,
+      "relevant_tests": 20,
+      "subsystems": [
+        "docs",
+        "extensions",
+        "skills",
+        "ui"
+      ],
+      "pruner_context_tokens": 99417,
+      "duration_secs": 0.206613333
     },
     {
       "category": "cross_cutting",
       "query": "add correlation ID across middleware and handlers",
-      "key_files": 0,
-      "key_symbols": 0,
-      "execution_paths": 0,
-      "snippets": 0,
-      "relevant_tests": 0,
-      "subsystems": [],
-      "pruner_context_tokens": 0,
-      "duration_secs": 120.0
+      "key_files": 50,
+      "key_symbols": 100,
+      "execution_paths": 15,
+      "snippets": 100,
+      "relevant_tests": 20,
+      "subsystems": [
+        "docs",
+        "test",
+        "ui"
+      ],
+      "pruner_context_tokens": 173360,
+      "duration_secs": 0.416596583
     },
     {
       "category": "data_flow",
       "query": "how does authentication token validation work",
-      "key_files": 0,
-      "key_symbols": 0,
-      "execution_paths": 0,
-      "snippets": 0,
-      "relevant_tests": 0,
-      "subsystems": [],
-      "pruner_context_tokens": 0,
-      "duration_secs": 120.0
+      "key_files": 50,
+      "key_symbols": 100,
+      "execution_paths": 11,
+      "snippets": 100,
+      "relevant_tests": 16,
+      "subsystems": [
+        "agents",
+        "apps",
+        "auto-reply",
+        "browser",
+        "cli",
+        "commands",
+        "config",
+        "docs",
+        "extensions",
+        "gateway",
+        "infra",
+        "line",
+        "plugins",
+        "test-utils"
+      ],
+      "pruner_context_tokens": 338117,
+      "duration_secs": 0.10539125
     }
   ]
 }

@@ -154,6 +154,11 @@ fn open_db(repo: &Path) -> Result<IndexDb> {
     IndexDb::open(&path)
 }
 
+/// Minimum seconds between incremental index checks.
+/// Avoids re-walking the entire repo on every `context` call.
+/// Override with PRUNER_RECHECK_SECS=0 to force a check every time.
+const DEFAULT_RECHECK_SECS: u64 = 300;
+
 fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
     let path = db_path(repo);
     if !path.exists() {
@@ -169,6 +174,11 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
         return Ok(db);
     }
 
+    // Skip incremental walk if the index was checked recently
+    if is_index_fresh(&path) {
+        return IndexDb::open(&path);
+    }
+
     // Try incremental update
     let db = IndexDb::open(&path)?;
     let repo_path = repo.canonicalize()?;
@@ -179,6 +189,19 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
         );
     }
     Ok(db)
+}
+
+/// Check if the index DB was modified recently enough to skip re-checking.
+fn is_index_fresh(db_path: &Path) -> bool {
+    let recheck_secs = std::env::var("PRUNER_RECHECK_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_RECHECK_SECS);
+
+    let Ok(meta) = fs::metadata(db_path) else { return false };
+    let Ok(modified) = meta.modified() else { return false };
+    let Ok(elapsed) = SystemTime::now().duration_since(modified) else { return false };
+    elapsed.as_secs() < recheck_secs
 }
 
 fn format_index_age(repo: &Path) -> String {
