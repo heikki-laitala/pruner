@@ -2,23 +2,45 @@
 
 Synthetic code context engine for LLM coding tasks. Indexes a repository structurally, infers relevant execution paths from natural language asks, and generates compact LLM-ready context packages — all without using an LLM for indexing.
 
-## Prerequisites
+## Install
 
-- **Rust** (1.85+) — install via [rustup](https://rustup.rs/): `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- **C compiler** — needed for tree-sitter. On macOS: `xcode-select --install`. On Ubuntu/Debian: `sudo apt install build-essential`.
-
-Ensure `~/.cargo/bin` is in your PATH (rustup adds it automatically, but verify):
+### Quick install (pre-built binary)
 
 ```bash
-echo $PATH | grep cargo
-# If missing:
-export PATH="$HOME/.cargo/bin:$PATH"
-# Add to your shell profile (~/.zshrc or ~/.bashrc) to make permanent
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh
 ```
 
-All other dependencies (SQLite, tree-sitter parsers) are bundled Rust crates and compiled automatically.
+This downloads the latest release binary for your platform (macOS/Linux, x86_64/arm64) and installs it to `~/.local/bin/`.
 
-## Install
+Options:
+
+```bash
+# Install with Claude Code hook (best performance)
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --hook --global
+
+# Install to a custom directory
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --dir /usr/local/bin
+
+# Install a specific version
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --version v0.1.0
+```
+
+### Build from source
+
+Requires Rust (1.85+) and a C compiler (for tree-sitter):
+
+```bash
+# macOS
+xcode-select --install
+
+# Ubuntu/Debian
+sudo apt install build-essential
+
+# Install Rust if needed
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then:
 
 ```bash
 make install
@@ -26,6 +48,17 @@ make install
 ```
 
 This builds a release binary and installs it to `~/.cargo/bin/pruner`.
+
+### Set up a project
+
+After installing the binary, set up pruner in your project:
+
+```bash
+pruner init /path/to/project          # skill mode (works with any AI agent)
+pruner init /path/to/project --hook   # hook mode (Claude Code only, best performance)
+pruner init --global                  # install globally to ~/.claude/
+pruner index /path/to/project         # index the codebase (re-run after major changes)
+```
 
 ## Usage
 
@@ -247,56 +280,43 @@ cargo fmt                            # format
 
 ## Claude Code integration
 
-Pruner integrates with Claude Code so that Claude automatically runs `pruner context` before making code changes.
+Two modes available:
 
-### Setup
+### Hook mode (recommended for Claude Code)
 
-**1. Install pruner:**
+Context is injected automatically before Claude starts thinking — zero tool calls.
 
 ```bash
-cargo install --path /path/to/pruner
+pruner init /path/to/project --hook
+pruner index /path/to/project
 ```
 
-Verify:
+### Skill mode (works with any AI agent)
+
+Claude calls `pruner context` as a tool. Works with Claude Code, Codex, Copilot, etc.
 
 ```bash
-pruner --version
+pruner init /path/to/project
+pruner index /path/to/project
 ```
 
-**2. Copy the skill and CLAUDE.md into your target project:**
+### Global install
+
+Install once for all projects:
 
 ```bash
-# The skill (teaches Claude how to use pruner)
-mkdir -p /path/to/your-project/.claude/skills/pruner
-cp /path/to/pruner/.claude/skills/pruner/SKILL.md \
-   /path/to/your-project/.claude/skills/pruner/SKILL.md
-
-# The CLAUDE.md snippet (tells Claude to use pruner automatically)
-cat /path/to/pruner/CLAUDE.template.md >> /path/to/your-project/CLAUDE.md
-```
-
-Or install the skill globally:
-
-```bash
-mkdir -p ~/.claude/skills/pruner
-cp /path/to/pruner/.claude/skills/pruner/SKILL.md \
-   ~/.claude/skills/pruner/SKILL.md
-```
-
-**3. Index the target repo** (one-time, re-run after major changes):
-
-```bash
-pruner index /path/to/your-project -v
+pruner init --global          # skill mode
+pruner init --global --hook   # hook mode
 ```
 
 ### What happens automatically
 
-Once set up, when you ask Claude Code to do something like "fix the login flow", Claude will:
+Once set up, when you ask Claude Code to do something like "fix the login flow":
 
-1. Run `pruner context . "fix the login flow"` (auto-indexes if needed)
-2. Pruner auto-detects task scope and returns focused context with code snippets (~10-15K tokens) or brief pointers (~3K tokens)
+1. Pruner provides context (injected via hook, or Claude runs `pruner context`)
+2. Auto-detects task scope: focused context with code snippets (~10-15K tokens) or brief pointers (~3K tokens)
 3. Claude works directly from the output — no grep/glob exploration needed
-4. If a snippet is truncated, Claude reads the specific file using the file:line pointers from the output
+4. If a snippet is truncated, Claude reads the specific file using the file:line pointers
 
 ## Similar projects
 
