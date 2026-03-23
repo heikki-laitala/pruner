@@ -22,7 +22,7 @@ Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **C
 ### Quick install (pre-built binary)
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash
 ```
 
 This downloads the latest release binary for your platform (macOS/Linux, x86_64/arm64) and installs it to `~/.local/bin/`.
