@@ -85,14 +85,15 @@ Pruner auto-detects task scope and adjusts output. For broad tasks (most queries
 | Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.61 / 58 tools | $0.48 / 19 tools | **-22%** | **-67%** | **-50%** |
 | Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.40 / 57 tools | $0.35 / 19 tools | **-12%** | **-67%** | **-43%** |
 | Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.45 / 55 tools | $0.44 / 54 tools | -2% | -2% | 0% |
+| Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.66 / 48 tools | $0.70 / 23 tools | +6% | **-52%** | **-34%** |
 
 ### What the data shows
 
-**Pruner saves cost across all tasks.** The worst case (data_flow) is breakeven at -2%. The best case (narrow_fix) saves 50% cost and 69% wall time.
+**Pruner saves cost on most tasks.** The worst case (implement) is +6%. The best case (narrow_fix) saves 50% cost and 69% wall time.
 
 **Tool calls drop dramatically** on exploration-heavy tasks (-67% to -74%). Pruner's pre-computed context replaces grep/glob/read exploration chains.
 
-**Vanilla Claude is unpredictable.** Without pruner, Claude's strategy varies between runs — sometimes efficient (13 tool calls), sometimes expensive (58 tool calls). With pruner, behavior is consistent: 7-19 tool calls.
+**Vanilla Claude is unpredictable.** Without pruner, Claude's strategy varies between runs — sometimes efficient (13 tool calls), sometimes expensive (58 tool calls). With pruner, behavior is consistent: 7-23 tool calls.
 
 **Token count is misleading.** Pruner shows higher raw token counts because its output is included in every subsequent API call. But cost depends on cache hits (cheap) vs fresh tokens (expensive). Fewer tool calls = fewer fresh tokens = lower cost.
 
