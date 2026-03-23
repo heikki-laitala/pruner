@@ -59,7 +59,12 @@ After installing the binary, set up pruner in your project:
 pruner init /path/to/project          # skill mode (works with any AI agent)
 pruner init /path/to/project --hook   # hook mode (Claude Code only, best performance)
 pruner init --global                  # install globally to ~/.claude/
-pruner index /path/to/project         # index the codebase (re-run after major changes)
+```
+
+Indexing happens automatically on first use — no manual step needed. To pre-index for faster first query:
+
+```bash
+pruner index /path/to/project
 ```
 
 ## Usage
@@ -73,6 +78,8 @@ pruner index . -v           # verbose output
 ```
 
 This creates a `.pruner/index.db` SQLite database inside the repo.
+
+**Indexing is automatic.** You don't need to run `pruner index` manually — `pruner context` auto-indexes on first run if no index exists. After that, it runs incremental updates when the index is older than 5 minutes (checks for new, modified, and deleted files). Override with `PRUNER_RECHECK_SECS=0` to force a check every time.
 
 ### Query the index
 
@@ -209,6 +216,8 @@ src/
 4. Extract symbols (functions, classes, methods), imports, and call sites
 5. Build graph edges: contains, calls, imports, tests
 6. Store everything in SQLite with WAL journaling
+
+**Incremental updates:** On subsequent runs, pruner compares file modification times against the index. Only new/modified files are re-parsed; deleted files are removed. If the index was checked within the last 5 minutes, the walk is skipped entirely.
 
 ### Query analysis
 
