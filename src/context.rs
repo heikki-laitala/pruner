@@ -61,7 +61,17 @@ pub struct Snippet {
     pub code: String,
 }
 
-/// Brief mode limits.
+/// Output mode controls how much context is generated.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ContextMode {
+    /// Brief: metadata only, no snippets (~3K tokens)
+    Brief,
+    /// Focused: metadata + key snippets (~10-15K tokens) — the default for agent use
+    Focused,
+    /// Full: everything, uncapped snippets (~50-70K tokens on large repos)
+    Full,
+}
+
 struct Limits {
     max_files: usize,
     max_symbols: usize,
@@ -74,17 +84,21 @@ struct Limits {
 }
 
 impl Limits {
-    fn brief() -> Self {
-        Self {
-            max_files: 8, max_symbols: 15, max_paths: 3, max_path_depth: 2,
-            max_steps_per_path: 10, max_tests: 5, max_snippets: 0, max_snippet_lines: 0,
-        }
-    }
-
-    fn full(max_snippet_lines: usize) -> Self {
-        Self {
-            max_files: 999, max_symbols: 999, max_paths: 999, max_path_depth: 999,
-            max_steps_per_path: 999, max_tests: 999, max_snippets: 999, max_snippet_lines,
+    fn for_mode(mode: ContextMode, max_snippet_lines: usize) -> Self {
+        match mode {
+            ContextMode::Brief => Self {
+                max_files: 8, max_symbols: 15, max_paths: 3, max_path_depth: 2,
+                max_steps_per_path: 10, max_tests: 5, max_snippets: 0, max_snippet_lines: 0,
+            },
+            ContextMode::Focused => Self {
+                max_files: 10, max_symbols: 20, max_paths: 5, max_path_depth: 3,
+                max_steps_per_path: 15, max_tests: 8, max_snippets: 20,
+                max_snippet_lines: max_snippet_lines.min(30),
+            },
+            ContextMode::Full => Self {
+                max_files: 999, max_symbols: 999, max_paths: 999, max_path_depth: 999,
+                max_steps_per_path: 999, max_tests: 999, max_snippets: 999, max_snippet_lines,
+            },
         }
     }
 }
@@ -94,9 +108,9 @@ pub fn generate_context(
     query: &QueryResult,
     repo_path: &Path,
     max_snippet_lines: usize,
-    brief: bool,
+    mode: ContextMode,
 ) -> Result<ContextPackage> {
-    let limits = if brief { Limits::brief() } else { Limits::full(max_snippet_lines) };
+    let limits = Limits::for_mode(mode, max_snippet_lines);
 
     // Execution paths
     let execution_paths: Vec<Vec<PathEntry>> = query
@@ -459,7 +473,7 @@ mod tests {
         db.insert_call(s, "verify", 2).unwrap();
 
         let result = query::analyze_query("login", &db).unwrap();
-        let ctx = generate_context(&result, tmp.path(), 50, true).unwrap();
+        let ctx = generate_context(&result, tmp.path(), 50, ContextMode::Brief).unwrap();
 
         assert!(!ctx.key_files.is_empty());
         // Brief mode limits snippets to 10 lines

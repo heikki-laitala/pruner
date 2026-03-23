@@ -170,15 +170,17 @@ fn bench_real_repo() {
     // Run benchmark queries in full and brief modes
     let mut queries = Vec::new();
 
-    for mode in &["full", "brief"] {
+    for mode in &["focused", "full", "brief"] {
         eprintln!("\n=== Mode: {mode} ===");
         for (category, query) in BENCHMARK_QUERIES {
             eprintln!("\n--- [{mode}] [{category}]: \"{query}\" ---");
 
             let start = Instant::now();
             let mut args = vec!["context", repo_str, query, "--format", "json"];
-            if *mode == "brief" {
-                args.push("--brief");
+            match *mode {
+                "brief" => { args.push("--brief"); }
+                "full" => { args.push("--full"); }
+                _ => {} // focused is the default
             }
             let child = Command::new(&bin)
                 .args(&args)

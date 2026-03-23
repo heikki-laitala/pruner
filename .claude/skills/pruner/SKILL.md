@@ -8,35 +8,36 @@ user-invocable: false
 
 # Pruner — Code Context Engine
 
-Pruner works in two phases: a cheap **brief** scan to orient you, then **targeted reads** of the actual source files it identifies. Do NOT dump full context into the conversation — use brief to decide *where* to look, then read only what you need.
+Run one command to get focused context (~10-15K tokens) with key files, symbols, execution paths, and relevant code snippets. This replaces manual grep/glob exploration.
 
-## Phase 1: Orient — run brief
+## Usage
 
 ```bash
-pruner context /absolute/path/to/repo "<the user's ask>" --brief
+pruner context /absolute/path/to/repo "<the user's ask>"
 ```
 
 IMPORTANT: Always pass the repo as an absolute path argument. Do NOT use `cd <repo> && pruner context .` — the shell sandbox may reset the working directory.
 
-This prints a compact table of contents (~500 tokens): keywords, key files, key symbols with locations, execution path count, and related tests. No snippets — just pointers.
+This prints a focused context package containing:
+- Keywords and subsystems
+- Execution paths through the call graph
+- Key files (top 10)
+- Key symbols with locations (top 20)
+- Code snippets for matched symbols (top 20, up to 30 lines each)
+- Related tests
 
-It also writes **full context** (with snippets, call graphs, execution paths) to `<repo>/.pruner/context.md`.
+## After running pruner
 
-## Phase 2: Read — open the source files
-
-1. **Read the top 3-5 key files** listed in the brief output. These are the files most relevant to the task — read them directly with the Read tool.
-2. **Use symbol locations** (file:line) from the brief output to jump to specific functions/classes rather than reading entire large files.
-3. **Read related test files** if the task involves changing behavior.
+1. **Read the output** — it contains the actual code snippets you need. In most cases you can proceed directly to the task.
+2. **Read source files only if needed** — if a snippet is truncated or you need surrounding context, use the file:line pointers from the output.
+3. **Do NOT re-explore** — pruner already searched the index. Do not grep or glob for the same keywords.
 
 ## When you need more detail
 
-- **Grep `<repo>/.pruner/context.md`** for a symbol name to get its snippet, call graph, and execution path without reading the whole file. This is the cheapest way to drill deeper.
-- **Single symbol**: `pruner show-symbol /path/to/repo "<name>"` shows a symbol's signature, callers, and callees.
-- **Single file**: `pruner show-file /path/to/repo "<path>"` shows all symbols and imports in a file.
+- **Single symbol**: `pruner show-symbol /path/to/repo "<name>"` — signature, callers, callees.
+- **Single file**: `pruner show-file /path/to/repo "<path>"` — all symbols and imports.
 
-## What NOT to do
+## Other modes
 
-- **Do NOT Glob** to explore directory structure — pruner already identified relevant files.
-- **Do NOT Grep the codebase** for keywords — pruner already searched the index.
-- **Do NOT read full context into conversation** when brief is sufficient — it wastes tokens.
-- Only Glob/Grep to verify a specific detail not in pruner's output (e.g., checking package.json for a dependency).
+- `--brief` — metadata only, no snippets (~3K tokens). Use when you only need file/symbol pointers.
+- `--full` — uncapped output with all snippets (~50-70K tokens). Use for deep analysis.

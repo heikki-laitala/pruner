@@ -1,7 +1,7 @@
 //! CLI interface.
 //!
 
-use crate::context::{self, format_context_json, format_context_summary, format_context_text};
+use crate::context::{self, format_context_json, format_context_summary, format_context_text, ContextMode};
 use crate::db::IndexDb;
 use crate::indexer;
 use crate::query;
@@ -55,9 +55,12 @@ enum Commands {
         /// Max lines per snippet
         #[arg(long, default_value = "50")]
         max_snippet_lines: usize,
-        /// Compact output for LLM consumption
+        /// Brief mode: metadata only, no snippets (~3K tokens)
         #[arg(long)]
         brief: bool,
+        /// Full mode: uncapped output (~50-70K tokens on large repos)
+        #[arg(long)]
+        full: bool,
         /// Output file path
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -119,8 +122,9 @@ pub fn run() -> Result<()> {
     match cli.command {
         Commands::Index { repo, verbose } => cmd_index(&repo, verbose),
         Commands::Query { repo, ask, json_output } => cmd_query(&repo, &ask, json_output),
-        Commands::Context { repo, ask, format, max_snippet_lines, brief, output } => {
-            cmd_context(&repo, &ask, &format, max_snippet_lines, brief, output.as_deref())
+        Commands::Context { repo, ask, format, max_snippet_lines, brief, full, output } => {
+            let mode = if brief { ContextMode::Brief } else if full { ContextMode::Full } else { ContextMode::Focused };
+            cmd_context(&repo, &ask, &format, max_snippet_lines, mode, output.as_deref())
         }
         Commands::ShowFile { repo, path } => cmd_show_file(&repo, &path),
         Commands::ShowSymbol { repo, name } => cmd_show_symbol(&repo, &name),
@@ -267,17 +271,17 @@ fn cmd_context(
     ask: &str,
     fmt: &str,
     max_snippet_lines: usize,
-    brief: bool,
+    mode: ContextMode,
     output: Option<&Path>,
 ) -> Result<()> {
     let db = open_or_create_db(repo, false)?;
     let repo_path = repo.canonicalize()?;
     let result = query::analyze_query(ask, &db)?;
-    let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, brief)?;
+    let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, mode)?;
 
-    if brief {
+    if mode == ContextMode::Brief {
         // Write *full* context to .pruner/context.md so the LLM can drill deeper
-        let full_ctx = context::generate_context(&result, &repo_path, max_snippet_lines, false)?;
+        let full_ctx = context::generate_context(&result, &repo_path, max_snippet_lines, ContextMode::Full)?;
         let ctx_path = repo_path.join(INDEX_DIR).join("context.md");
         let full_text = format_context_text(&full_ctx);
         fs::write(&ctx_path, &full_text)?;
@@ -285,7 +289,6 @@ fn cmd_context(
         match fmt {
             "json" => println!("{}", format_context_json(&ctx)?),
             _ => {
-                // Print summary to stdout
                 let summary = format_context_summary(&ctx);
                 let age = format_index_age(repo);
                 if !age.is_empty() {
@@ -296,6 +299,7 @@ fn cmd_context(
             }
         }
     } else {
+        // Focused (default) and Full modes: print full text with snippets
         match fmt {
             "json" => println!("{}", format_context_json(&ctx)?),
             "both" => {

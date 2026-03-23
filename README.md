@@ -87,30 +87,38 @@ pruner stats .
 
 Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner skill installed, once vanilla. Sessions run in parallel on separate clones.
 
-### Results
+### Results (focused mode — current)
 
-| Task | Without pruner | With pruner | Δ tokens | Δ cost | Δ tool calls | Δ wall time |
-|------|---------------:|------------:|---------:|-------:|-------------:|------------:|
-| Narrow fix (WebSocket) | 155,935 tok / $0.22 | 223,808 tok / $0.27 | +43% | +22% | 18→14 (-22%) | 69s→60s (-13%) |
-| Cross-package flow | 50,590 tok / $0.46 | 322,351 tok / $0.35 | +537% | **-25%** | 46→16 (-65%) | 146s→78s (**-47%**) |
-| Understanding (plugins) | 52,015 tok / $0.38 | 127,884 tok / $0.44 | +146% | +18% | 44→39 (-11%) | 115s→118s (+3%) |
-| Data flow (auth) | 51,619 tok / $0.36 | 56,105 tok / $0.48 | +9% | +32% | 45→18 (-60%) | 110s→141s (+28%) |
+Focused mode (~10-15K tokens): includes key files, symbols, execution paths, and code snippets in a single call. Claude gets actual code upfront and skips most exploration.
+
+| Task | Without pruner | With pruner | Δ cost | Δ tool calls | Δ wall time |
+|------|---------------:|------------:|-------:|-------------:|------------:|
+| Cross-package flow | 51,845 tok / $0.61 | 486,603 tok / $0.48 | **-22%** | 58→19 (**-67%**) | 173s→88s (**-50%**) |
+
+### Earlier results (brief mode — superseded)
+
+Brief mode (~3K tokens) gave pointers but no code, so Claude still read files afterward. Cost was mixed.
+
+| Task | Without pruner | With pruner | Δ cost | Δ tool calls | Δ wall time |
+|------|---------------:|------------:|-------:|-------------:|------------:|
+| Cross-package flow | 50,615 tok / $0.38 | 511,946 tok / $0.46 | +19% | 37→22 (-41%) | 125s→74s (-41%) |
+| Narrow fix (WebSocket) | 155,935 tok / $0.22 | 223,808 tok / $0.27 | +22% | 18→14 (-22%) | 69s→60s (-13%) |
+| Understanding (plugins) | 52,015 tok / $0.38 | 127,884 tok / $0.44 | +18% | 44→39 (-11%) | 115s→118s (+3%) |
+| Data flow (auth) | 51,619 tok / $0.36 | 56,105 tok / $0.48 | +32% | 45→18 (-60%) | 110s→141s (+28%) |
 
 ### What the data shows
 
-**Pruner uses more tokens, not fewer.** The brief context (~3K tokens) doesn't replace exploration — Claude still reads the source files. The context accumulates across turns, inflating the token count. Raw token comparison favors vanilla.
+**Focused mode saves cost and time.** By including actual code snippets (~10-15K tokens), Claude can work directly from pruner's output instead of making follow-up reads. On cross-package tracing, this saves 22% cost, 67% fewer tool calls, and 50% wall time.
 
-**Pruner reduces tool calls consistently** (-22% to -65%). It tells Claude where to look, so fewer grep/glob calls are needed. The cross-package task dropped from 46 to 16 tool calls.
+**Brief mode (superseded) had mixed cost results.** It gave pointers but no code, so Claude still explored afterward. The overhead of extra turns sometimes exceeded the savings from fewer tool calls.
 
-**Wall time is the clearest win for cross-package tasks.** When the task requires tracing a flow across many packages, pruner's pre-computed navigation cuts wall time nearly in half (146s→78s). The agent skips the exploration phase and goes straight to relevant files.
-
-**Cost is mixed.** Pruner saved 25% on cross-package flow but added cost on other tasks. The token overhead from pruner context across many turns sometimes exceeds the savings from fewer tool calls.
+**Token count is misleading.** Pruner always shows higher raw token counts because its context output is included in every subsequent API call. But cost depends on cache hits (cheap) vs fresh tokens (expensive). Fewer tool calls = fewer fresh tokens = lower cost despite higher raw count.
 
 ### When to use pruner
 
-- **Cross-package tracing**: Big win. Pruner eliminates the glob/grep exploration phase.
-- **Large unfamiliar codebases**: Pruner's index helps Claude find the right files faster than manual exploration.
-- **Narrow/focused tasks**: Marginal benefit. Claude finds the right files quickly regardless.
+- **Cross-package tracing**: Clear win — 22% cheaper, 50% faster, 67% fewer tool calls.
+- **Large unfamiliar codebases**: Pruner's index helps Claude find the right files without exploration.
+- **Narrow/focused tasks**: Testing in progress.
 
 ### Reproduce
 
@@ -119,8 +127,10 @@ Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openc
 cargo build --release && ln -sf $(pwd)/target/release/pruner /usr/local/bin/pruner
 
 # Run real A/B test (requires claude CLI, ~$2 per run)
-python3 tests/ab_test.py                # default: openclaw
-python3 tests/ab_test.py /path/to/repo  # any repo
+python3 tests/ab_test.py                          # all tasks
+python3 tests/ab_test.py --task cross_package      # single task
+python3 tests/ab_test.py --task narrow_fix --save-raw  # with raw output
+python3 tests/ab_test.py /path/to/repo             # any repo
 
 # Quick benchmark (no claude CLI needed)
 make bench
