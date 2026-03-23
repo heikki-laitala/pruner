@@ -144,7 +144,9 @@ pub fn generate_context(
         .map(|t| TestFile { path: t.path.clone() })
         .collect();
 
-    // Snippets
+    // Snippets — cap both line count and character count to avoid
+    // minified/bundled files blowing up context size.
+    const MAX_SNIPPET_CHARS: usize = 4000;
     let mut snippets = Vec::new();
     for sym in query.matching_symbols.iter().take(limits.max_snippets) {
         let file_path = repo_path.join(&sym.file_path);
@@ -153,7 +155,14 @@ pub fn generate_context(
             let start = (sym.line_start - 1).max(0) as usize;
             let end = (start + limits.max_snippet_lines).min(lines.len());
             let code = lines[start..end].join("\n");
-            let truncated = end < sym.line_end as usize;
+            let truncated = end < sym.line_end as usize || code.len() > MAX_SNIPPET_CHARS;
+
+            // Truncate to character limit
+            let code = if code.len() > MAX_SNIPPET_CHARS {
+                format!("{}...", &code[..MAX_SNIPPET_CHARS])
+            } else {
+                code
+            };
 
             snippets.push(Snippet {
                 file: sym.file_path.clone(),

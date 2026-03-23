@@ -17,19 +17,20 @@
       "snippets": 40,
       "relevant_tests": 10,
       "subsystems": [
-        "commands",
+        "agents",
         "extensions",
-        "infra"
+        "ui",
+        "utils"
       ],
-      "pruner_context_tokens": 53542,
-      "duration_secs": 0.208636792
+      "pruner_context_tokens": 54183,
+      "duration_secs": 0.525557333
     },
     {
       "category": "narrow_fix",
       "query": "fix WebSocket reconnection timeout",
       "key_files": 25,
       "key_symbols": 40,
-      "execution_paths": 11,
+      "execution_paths": 12,
       "snippets": 40,
       "relevant_tests": 10,
       "subsystems": [
@@ -45,8 +46,8 @@
         "test",
         "utils"
       ],
-      "pruner_context_tokens": 53881,
-      "duration_secs": 0.210486792
+      "pruner_context_tokens": 56690,
+      "duration_secs": 0.524329917
     },
     {
       "category": "understanding",
@@ -57,11 +58,16 @@
       "snippets": 40,
       "relevant_tests": 10,
       "subsystems": [
+        "agents",
+        "config",
         "extensions",
-        "skills"
+        "infra",
+        "security",
+        "skills",
+        "ui"
       ],
-      "pruner_context_tokens": 63532,
-      "duration_secs": 0.205390375
+      "pruner_context_tokens": 63630,
+      "duration_secs": 0.420327584
     },
     {
       "category": "cross_cutting",
@@ -76,15 +82,15 @@
         "extensions",
         "ui"
       ],
-      "pruner_context_tokens": 68426,
-      "duration_secs": 0.207357125
+      "pruner_context_tokens": 68430,
+      "duration_secs": 0.521320625
     },
     {
       "category": "data_flow",
       "query": "how does authentication token validation work",
       "key_files": 25,
       "key_symbols": 40,
-      "execution_paths": 11,
+      "execution_paths": 13,
       "snippets": 40,
       "relevant_tests": 10,
       "subsystems": [
@@ -100,8 +106,8 @@
         "plugins",
         "test-utils"
       ],
-      "pruner_context_tokens": 255138,
-      "duration_secs": 0.105400125
+      "pruner_context_tokens": 59773,
+      "duration_secs": 0.315470042
     }
   ]
 }

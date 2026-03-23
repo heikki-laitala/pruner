@@ -14,6 +14,8 @@ const MAX_RESULT_TESTS: usize = 10;
 /// Minimum relevance score for a file/symbol to be included in results.
 const MIN_FILE_SCORE: i32 = 10;
 const MIN_SYMBOL_SCORE: i32 = 15;
+/// Dynamic cutoff: drop results scoring below this fraction of the top result.
+const SCORE_CUTOFF_RATIO: f64 = 0.25;
 const TRACE_TIME_BUDGET: Duration = Duration::from_secs(10);
 
 /// Result of analyzing a natural language query against the index.
@@ -127,26 +129,41 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         }
     }
 
-    // Score and rank symbols, then filter by threshold and cap
-    let scored_symbols = score_and_rank_symbols(&matching_symbols, &keywords);
+    // Score files first — we use file scores to penalize symbols from low-quality files.
+    // Include files from matched symbols that weren't in matching_files.
+    let scored_files = score_and_rank_files(&matching_files, &keywords);
+    let mut file_scores: HashMap<i64, i32> = scored_files.iter().map(|(f, s)| (f.id, *s)).collect();
+    for sym in &matching_symbols {
+        if !file_scores.contains_key(&sym.file_id) {
+            if let Ok(Some(f)) = db.get_file_by_path_id(sym.file_id) {
+                let s = score_file(&f, &keywords);
+                file_scores.insert(f.id, s);
+            }
+        }
+    }
+
+    // Score and rank symbols, cross-referencing file quality
+    let scored_symbols = score_and_rank_symbols(&matching_symbols, &keywords, &file_scores);
+    let symbol_cutoff = dynamic_cutoff(&scored_symbols, MIN_SYMBOL_SCORE);
     let top_symbols: Vec<&SymbolRow> = scored_symbols
         .iter()
-        .filter(|(_, score)| *score >= MIN_SYMBOL_SCORE)
+        .filter(|(_, score)| *score >= symbol_cutoff)
         .take(MAX_TRACED_SYMBOLS)
         .map(|(sym, _)| *sym)
         .collect();
 
     let matching_symbols: Vec<SymbolRow> = scored_symbols
         .into_iter()
-        .filter(|(_, score)| *score >= MIN_SYMBOL_SCORE)
+        .filter(|(_, score)| *score >= symbol_cutoff)
         .take(MAX_RESULT_SYMBOLS)
         .map(|(sym, _)| sym.clone())
         .collect();
 
-    // Score and rank files, then filter by threshold and cap
-    let matching_files: Vec<FileRow> = score_and_rank_files(&matching_files, &keywords)
+    // Apply dynamic cutoff and cap to files
+    let file_cutoff = dynamic_cutoff(&scored_files, MIN_FILE_SCORE);
+    let matching_files: Vec<FileRow> = scored_files
         .into_iter()
-        .filter(|(_, score)| *score >= MIN_FILE_SCORE)
+        .filter(|(_, score)| *score >= file_cutoff)
         .take(MAX_RESULT_FILES)
         .map(|(f, _)| f.clone())
         .collect();
@@ -250,8 +267,9 @@ fn split_identifier(s: &str) -> Vec<String> {
 }
 
 /// Score a symbol's relevance to the query keywords.
-/// Higher score = more relevant.
-fn score_symbol(sym: &SymbolRow, keywords: &[String]) -> i32 {
+/// Higher score = more relevant. Uses file scores to penalize symbols
+/// from low-quality files (minified, bundled, docs).
+fn score_symbol(sym: &SymbolRow, keywords: &[String], file_scores: &HashMap<i64, i32>) -> i32 {
     let name_lower = sym.name.to_lowercase();
     let mut score: i32 = 0;
 
@@ -272,6 +290,13 @@ fn score_symbol(sym: &SymbolRow, keywords: &[String]) -> i32 {
         _ => {}
     }
 
+    // Cross-reference: penalize symbols from low-quality files
+    if let Some(&file_score) = file_scores.get(&sym.file_id) {
+        if file_score < 0 {
+            score += file_score; // propagate negative file score
+        }
+    }
+
     score
 }
 
@@ -279,10 +304,11 @@ fn score_symbol(sym: &SymbolRow, keywords: &[String]) -> i32 {
 fn score_and_rank_symbols<'a>(
     symbols: &'a [SymbolRow],
     keywords: &[String],
+    file_scores: &HashMap<i64, i32>,
 ) -> Vec<(&'a SymbolRow, i32)> {
     let mut scored: Vec<(&SymbolRow, i32)> = symbols
         .iter()
-        .map(|s| (s, score_symbol(s, keywords)))
+        .map(|s| (s, score_symbol(s, keywords, file_scores)))
         .collect();
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored
@@ -324,7 +350,7 @@ fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
         score += 30 * (filename_hits - 1);
     }
 
-    // Penalize non-source directories
+    // Penalize non-source directories and bundled/generated assets
     for segment in path_lower.split('/') {
         match segment {
             "docs" | "doc" | "documentation" => score -= 30,
@@ -332,7 +358,25 @@ fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
             | "locale" | "locales" | "i18n" | "translations" | "l10n" => score -= 50,
             "vendor" | "node_modules" | "third_party" | "third-party" => score -= 40,
             "examples" | "example" | "samples" | "sample" => score -= 15,
+            "assets" | "dist" | "build" | "out" | "generated" | ".generated" => score -= 40,
             _ => {}
+        }
+    }
+
+    // Penalize minified/bundled files
+    if path_lower.ends_with(".min.js") || path_lower.ends_with(".min.css")
+        || path_lower.ends_with(".bundle.js") || path_lower.ends_with(".bundle.css")
+    {
+        score -= 60;
+    }
+
+    // Penalize likely bundled files (very high size-to-line ratio suggests minified)
+    if file.line_count > 0 {
+        let bytes_per_line = file.size / file.line_count;
+        if bytes_per_line > 1000 {
+            score -= 200; // almost certainly minified/generated — effectively exclude
+        } else if bytes_per_line > 500 {
+            score -= 80;
         }
     }
 
@@ -375,6 +419,15 @@ fn score_and_rank_files<'a>(
     // Re-sort after penalty
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored
+}
+
+/// Compute a dynamic score cutoff: the higher of `min_score` or
+/// `SCORE_CUTOFF_RATIO` × the top result's score. This naturally returns
+/// fewer results for narrow queries and more for broad ones.
+fn dynamic_cutoff<T>(scored: &[(T, i32)], min_score: i32) -> i32 {
+    let top_score = scored.first().map(|(_, s)| *s).unwrap_or(0);
+    let ratio_cutoff = (top_score as f64 * SCORE_CUTOFF_RATIO) as i32;
+    min_score.max(ratio_cutoff)
 }
 
 /// Trace call graph from a symbol using a single SQL recursive CTE.
@@ -452,6 +505,10 @@ mod tests {
     use super::*;
     use crate::db::IndexDb;
 
+    fn no_file_scores() -> HashMap<i64, i32> {
+        HashMap::new()
+    }
+
     #[test]
     fn test_extract_keywords_basic() {
         let kws = extract_keywords("why is login broken?");
@@ -503,7 +560,7 @@ mod tests {
             id: 1, file_id: 1, name: "login".into(), kind: "function".into(),
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()]);
+        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, 120); // 100 exact + 20 function bonus
     }
 
@@ -513,7 +570,7 @@ mod tests {
             id: 1, file_id: 1, name: "login_user".into(), kind: "function".into(),
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()]);
+        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, 70); // 50 prefix + 20 function bonus
     }
 
@@ -523,7 +580,7 @@ mod tests {
             id: 1, file_id: 1, name: "handle_login_request".into(), kind: "struct".into(),
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()]);
+        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, 15); // 10 substring + 5 struct bonus
     }
 
@@ -543,7 +600,7 @@ mod tests {
                 line_start: 40, line_end: 50, signature: None, file_path: "a.rs".into(),
             },
         ];
-        let ranked = score_and_rank_symbols(&symbols, &["timeout".to_string()]);
+        let ranked = score_and_rank_symbols(&symbols, &["timeout".to_string()], &no_file_scores());
         assert_eq!(ranked[0].0.id, 2); // exact match first (100 + 20 = 120)
         assert_eq!(ranked[1].0.id, 3); // prefix match second (50 + 20 = 70)
         assert_eq!(ranked[2].0.id, 1); // substring match last (10 + 20 = 30)
@@ -595,7 +652,7 @@ mod tests {
             id: 1, file_id: 1, name: "unrelated".into(), kind: "function".into(),
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()]);
+        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, 20); // only function bonus, no keyword match
     }
 
@@ -605,7 +662,7 @@ mod tests {
             id: 1, file_id: 1, name: "login_handler".into(), kind: "method".into(),
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string(), "handler".to_string()]);
+        let score = score_symbol(&sym, &["login".to_string(), "handler".to_string()], &no_file_scores());
         // login: prefix 50, handler: substring 10 => 60 + 20 method bonus
         assert_eq!(score, 80);
     }
@@ -616,13 +673,13 @@ mod tests {
             id: 1, file_id: 1, name: "login".into(), kind: "variable".into(),
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()]);
+        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
         assert_eq!(score, 100); // exact match, no kind bonus
     }
 
     #[test]
     fn test_score_and_rank_empty() {
-        let ranked = score_and_rank_symbols(&[], &["login".to_string()]);
+        let ranked = score_and_rank_symbols(&[], &["login".to_string()], &no_file_scores());
         assert!(ranked.is_empty());
     }
 

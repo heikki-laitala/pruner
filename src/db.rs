@@ -246,12 +246,14 @@ impl IndexDb {
     }
 
     /// Search symbols by keyword in signature (parameter names, types).
+    /// Limited to avoid full-table scans on large repos.
     pub fn search_symbols_by_signature(&self, keyword: &str) -> Result<Vec<SymbolRow>> {
         let pattern = format!("%{keyword}%");
         let mut stmt = self.conn.prepare(
             "SELECT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end, s.signature, f.path
              FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.signature LIKE ?1 AND s.name NOT LIKE ?1",
+             WHERE s.signature LIKE ?1 AND s.name NOT LIKE ?1
+             LIMIT 200",
         )?;
         let rows = stmt.query_map(params![pattern], SymbolRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -261,14 +263,14 @@ impl IndexDb {
     pub fn search_importing_files(&self, keyword: &str) -> Result<Vec<i64>> {
         let pattern = format!("%{keyword}%");
         let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT file_id FROM imports WHERE module LIKE ?1",
+            "SELECT DISTINCT file_id FROM imports WHERE module LIKE ?1 LIMIT 200",
         )?;
         let rows = stmt.query_map(params![pattern], |row| row.get(0))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     /// Find symbols (callers) that call a function matching a keyword.
-    /// Returns the caller symbol rows.
+    /// Returns the caller symbol rows, limited to avoid expensive full scans.
     pub fn search_callers_of(&self, keyword: &str) -> Result<Vec<SymbolRow>> {
         let pattern = format!("%{keyword}%");
         let mut stmt = self.conn.prepare(
@@ -276,7 +278,8 @@ impl IndexDb {
              FROM calls c
              JOIN symbols s ON c.caller_symbol_id = s.id
              JOIN files f ON s.file_id = f.id
-             WHERE c.callee_name LIKE ?1 AND s.name NOT LIKE ?1",
+             WHERE c.callee_name LIKE ?1 AND s.name NOT LIKE ?1
+             LIMIT 200",
         )?;
         let rows = stmt.query_map(params![pattern], SymbolRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
