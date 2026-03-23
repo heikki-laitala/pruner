@@ -1,8 +1,21 @@
 # Pruner
 
-Synthetic code context engine for LLM coding tasks. Indexes a repository structurally, infers relevant execution paths from natural language asks, and generates compact LLM-ready context packages — all without using an LLM for indexing.
+**Cut your AI coding costs by 24-41% and speed up tasks by 46-62%.**
 
-**Recommended setup for Claude Code:** install with `--hook` flag to inject context automatically via prompt-submit hook. Saves 24-41% cost and 46-62% time on broad tasks. For other agents (Codex, Copilot), use skill mode.
+AI coding agents (Claude Code, Codex, Copilot) spend most of their time and tokens exploring your codebase — grepping, globbing, reading files, figuring out what's relevant. On a 10K-file repo, a single task can burn 50-80 tool calls just on navigation.
+
+Pruner eliminates this. It pre-indexes your entire repository structurally (call graphs, symbols, imports) and gives the agent exactly the context it needs in one shot. The agent skips exploration and goes straight to work.
+
+**Measured on real Claude Code sessions** (openclaw, 9.8K files):
+
+| Task type | Cost saved | Time saved | Tool calls saved |
+|-----------|-----------|-----------|-----------------|
+| Large feature implementation | **41%** | **62%** | **66%** |
+| Understanding / data flow | **32%** | **56-58%** | **76-86%** |
+| Small implementation | **30%** | **53%** | **59%** |
+| Cross-package tracing | **24%** | **46%** | **66%** |
+
+Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command.
 
 ## Install
 
