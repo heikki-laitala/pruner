@@ -1,92 +1,95 @@
 {
   "repo_url": "https://github.com/openclaw/openclaw.git",
   "index_stats": {
-    "files": 9575,
-    "symbols": 30295,
-    "imports": 31469,
-    "calls": 164890,
-    "edges": 515769
+    "files": 9794,
+    "symbols": 30695,
+    "imports": 32015,
+    "calls": 166150,
+    "edges": 534749
   },
   "queries": [
     {
       "category": "cross_package",
       "query": "how does a message flow from webhook to channel handler",
-      "key_files": 50,
-      "key_symbols": 100,
+      "key_files": 25,
+      "key_symbols": 40,
       "execution_paths": 11,
-      "snippets": 100,
-      "relevant_tests": 20,
+      "snippets": 40,
+      "relevant_tests": 10,
       "subsystems": [
-        "docs",
+        "commands",
         "extensions",
-        "ui"
+        "infra"
       ],
-      "pruner_context_tokens": 86384,
-      "duration_secs": 0.210449125
+      "pruner_context_tokens": 53542,
+      "duration_secs": 0.208636792
     },
     {
       "category": "narrow_fix",
       "query": "fix WebSocket reconnection timeout",
-      "key_files": 50,
-      "key_symbols": 100,
-      "execution_paths": 9,
-      "snippets": 100,
-      "relevant_tests": 20,
+      "key_files": 25,
+      "key_symbols": 40,
+      "execution_paths": 11,
+      "snippets": 40,
+      "relevant_tests": 10,
       "subsystems": [
+        "agents",
         "apps",
-        "docs",
+        "browser",
+        "cli",
+        "cron",
         "extensions",
-        "test"
+        "infra",
+        "node-host",
+        "process",
+        "test",
+        "utils"
       ],
-      "pruner_context_tokens": 78041,
-      "duration_secs": 0.207963167
+      "pruner_context_tokens": 53881,
+      "duration_secs": 0.210486792
     },
     {
       "category": "understanding",
       "query": "how does the skill execution pipeline work",
-      "key_files": 50,
-      "key_symbols": 100,
+      "key_files": 25,
+      "key_symbols": 40,
       "execution_paths": 15,
-      "snippets": 100,
-      "relevant_tests": 20,
+      "snippets": 40,
+      "relevant_tests": 10,
       "subsystems": [
-        "docs",
         "extensions",
-        "skills",
-        "ui"
+        "skills"
       ],
-      "pruner_context_tokens": 99417,
-      "duration_secs": 0.206613333
+      "pruner_context_tokens": 63532,
+      "duration_secs": 0.205390375
     },
     {
       "category": "cross_cutting",
       "query": "add correlation ID across middleware and handlers",
-      "key_files": 50,
-      "key_symbols": 100,
-      "execution_paths": 15,
-      "snippets": 100,
-      "relevant_tests": 20,
+      "key_files": 25,
+      "key_symbols": 40,
+      "execution_paths": 18,
+      "snippets": 40,
+      "relevant_tests": 10,
       "subsystems": [
-        "docs",
-        "test",
+        "browser",
+        "extensions",
         "ui"
       ],
-      "pruner_context_tokens": 173360,
-      "duration_secs": 0.416596583
+      "pruner_context_tokens": 68426,
+      "duration_secs": 0.207357125
     },
     {
       "category": "data_flow",
       "query": "how does authentication token validation work",
-      "key_files": 50,
-      "key_symbols": 100,
+      "key_files": 25,
+      "key_symbols": 40,
       "execution_paths": 11,
-      "snippets": 100,
-      "relevant_tests": 16,
+      "snippets": 40,
+      "relevant_tests": 10,
       "subsystems": [
         "agents",
-        "apps",
         "auto-reply",
-        "browser",
         "cli",
         "commands",
         "config",
@@ -94,12 +97,11 @@
         "extensions",
         "gateway",
         "infra",
-        "line",
         "plugins",
         "test-utils"
       ],
-      "pruner_context_tokens": 338117,
-      "duration_secs": 0.10539125
+      "pruner_context_tokens": 255138,
+      "duration_secs": 0.105400125
     }
   ]
 }

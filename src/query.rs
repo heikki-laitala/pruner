@@ -3,14 +3,17 @@
 
 use crate::db::{FileRow, IndexDb, SymbolRow, TraceRow};
 use anyhow::Result;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 const MAX_TRACED_SYMBOLS: usize = 20;
-const MAX_RESULT_SYMBOLS: usize = 100;
-const MAX_RESULT_FILES: usize = 50;
-const MAX_RESULT_TESTS: usize = 20;
+const MAX_RESULT_SYMBOLS: usize = 40;
+const MAX_RESULT_FILES: usize = 25;
+const MAX_RESULT_TESTS: usize = 10;
+/// Minimum relevance score for a file/symbol to be included in results.
+const MIN_FILE_SCORE: i32 = 10;
+const MIN_SYMBOL_SCORE: i32 = 15;
 const TRACE_TIME_BUDGET: Duration = Duration::from_secs(10);
 
 /// Result of analyzing a natural language query against the index.
@@ -102,24 +105,26 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         }
     }
 
-    // Score and rank symbols, then cap results
+    // Score and rank symbols, then filter by threshold and cap
     let scored_symbols = score_and_rank_symbols(&matching_symbols, &keywords);
     let top_symbols: Vec<&SymbolRow> = scored_symbols
         .iter()
+        .filter(|(_, score)| *score >= MIN_SYMBOL_SCORE)
         .take(MAX_TRACED_SYMBOLS)
         .map(|(sym, _)| *sym)
         .collect();
 
-    // Cap matching_symbols to top N by relevance score
     let matching_symbols: Vec<SymbolRow> = scored_symbols
         .into_iter()
+        .filter(|(_, score)| *score >= MIN_SYMBOL_SCORE)
         .take(MAX_RESULT_SYMBOLS)
         .map(|(sym, _)| sym.clone())
         .collect();
 
-    // Score and rank files, then cap results
+    // Score and rank files, then filter by threshold and cap
     let matching_files: Vec<FileRow> = score_and_rank_files(&matching_files, &keywords)
         .into_iter()
+        .filter(|(_, score)| *score >= MIN_FILE_SCORE)
         .take(MAX_RESULT_FILES)
         .map(|(f, _)| f.clone())
         .collect();
@@ -152,6 +157,10 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     })
 }
 
+/// Minimum length for sub-keywords split from compound identifiers.
+/// Short fragments like "web" from "WebSocket" cause overly broad matches.
+const MIN_SUB_KEYWORD_LEN: usize = 4;
+
 /// Extract search keywords from a natural language query.
 pub fn extract_keywords(ask: &str) -> Vec<String> {
     let mut keywords = Vec::new();
@@ -171,10 +180,15 @@ pub fn extract_keywords(ask: &str) -> Vec<String> {
             keywords.push(lower);
         }
 
-        // Split camelCase / snake_case
+        // Split camelCase / snake_case — only keep sub-parts that are long enough
+        // to be meaningful on their own. Short fragments like "web" from "WebSocket"
+        // cause overly broad LIKE matches.
         for sub in split_identifier(word) {
             let sub_lower = sub.to_lowercase();
-            if !STOP_WORDS.contains(sub_lower.as_str()) && seen.insert(sub_lower.clone()) {
+            if sub_lower.len() >= MIN_SUB_KEYWORD_LEN
+                && !STOP_WORDS.contains(sub_lower.as_str())
+                && seen.insert(sub_lower.clone())
+            {
                 keywords.push(sub_lower);
             }
         }
@@ -257,6 +271,7 @@ fn score_and_rank_symbols<'a>(
 fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
     let path_lower = file.path.to_lowercase();
     let mut score: i32 = 0;
+    let mut filename_hits = 0;
 
     // Extract filename (last path component without extension)
     let filename = path_lower
@@ -272,11 +287,19 @@ fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
         // Filename matches are most valuable
         if stem == *kw {
             score += 100; // exact filename match
+            filename_hits += 1;
         } else if stem.contains(kw.as_str()) {
             score += 40; // filename contains keyword
+            filename_hits += 1;
         } else if path_lower.contains(kw.as_str()) {
-            score += 10; // keyword somewhere in path
+            score += 5; // keyword only in directory path — weak signal
         }
+    }
+
+    // Multi-keyword filename match bonus: files matching multiple keywords
+    // in the filename are much more likely to be relevant
+    if filename_hits >= 2 {
+        score += 30 * (filename_hits - 1);
     }
 
     // Penalize non-source directories
@@ -293,11 +316,10 @@ fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
 
     // Bonus for source code files (have a recognized language)
     if file.language.is_some() {
-        score += 15;
+        score += 20;
     }
 
-    // Small bonus for test files when query might be about testing
-    // (otherwise neutral — tests are useful context)
+    // Test files are useful but secondary
     if file.is_test {
         score -= 5;
     }
@@ -306,6 +328,8 @@ fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
 }
 
 /// Score and rank files by relevance, returning (file, score) pairs sorted descending.
+/// Applies diminishing returns for files sharing the same filename to prevent
+/// e.g. 25 SKILL.md files crowding out actual source code.
 fn score_and_rank_files<'a>(
     files: &'a [FileRow],
     keywords: &[String],
@@ -314,6 +338,19 @@ fn score_and_rank_files<'a>(
         .iter()
         .map(|f| (f, score_file(f, keywords)))
         .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Penalize duplicate filenames: 3rd+ file with same name gets halved score
+    let mut name_counts: HashMap<&str, usize> = HashMap::new();
+    for (file, score) in &mut scored {
+        let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
+        let count = name_counts.entry(filename).or_insert(0);
+        *count += 1;
+        if *count > 2 {
+            *score /= 2;
+        }
+    }
+    // Re-sort after penalty
     scored.sort_by(|a, b| b.1.cmp(&a.1));
     scored
 }
@@ -619,8 +656,8 @@ mod tests {
             language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
-        // 100 exact filename + 15 language bonus = 115
-        assert_eq!(score, 115);
+        // 100 exact filename + 20 language bonus = 120
+        assert_eq!(score, 120);
     }
 
     #[test]
@@ -667,10 +704,27 @@ mod tests {
             language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
         };
         let score = score_file(&file, &["auth".to_string(), "token".to_string(), "validator".to_string()]);
-        // "token_validator" stem contains "token" (40) and "validator" (40)
-        // "auth" in path (10)
-        // + 15 language
-        assert_eq!(score, 105);
+        // "token_validator" stem contains "token" (40) and "validator" (40) → 2 filename hits → +30 multi bonus
+        // "auth" in path only (5)
+        // + 20 language
+        assert_eq!(score, 135);
+    }
+
+    #[test]
+    fn test_score_file_dir_only_match_below_threshold() {
+        // A file that only matches a keyword in its directory path (not filename)
+        // should score below MIN_FILE_SCORE and get filtered out
+        let file = FileRow {
+            id: 1, path: "src/auth/utils.rs".into(),
+            language: Some("rust".into()), size: 100, line_count: 20, is_test: false,
+        };
+        let score = score_file(&file, &["auth".to_string()]);
+        // "auth" only in dir path (5) + 20 language = 25
+        assert_eq!(score, 25);
+        // But with a generic keyword like "handler" that doesn't match at all:
+        let score2 = score_file(&file, &["handler".to_string()]);
+        // no match + 20 language = 20
+        assert_eq!(score2, 20);
     }
 
     #[test]
