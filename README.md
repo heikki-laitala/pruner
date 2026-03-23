@@ -31,10 +31,10 @@ Options:
 
 ```bash
 # Install with Claude Code hook (best performance)
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --hook --global
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --hook --global
 
 # Install to a custom directory
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --dir /usr/local/bin
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --dir /usr/local/bin
 
 # Install a specific version
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --version v0.1.0
