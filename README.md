@@ -227,7 +227,7 @@ src/
 2. Detect language from file extension
 3. Parse supported languages with tree-sitter
 4. Extract symbols (functions, classes, methods), imports, and call sites
-5. Build graph edges: contains, calls, imports, tests
+5. Build graph edges: contains, calls, tests. Store imports separately
 6. Store everything in SQLite with WAL journaling
 
 **Incremental updates:** On subsequent runs, pruner compares file modification times against the index. Only new/modified files are re-parsed; deleted files are removed. If the index was checked within the last 5 minutes, the walk is skipped entirely.
