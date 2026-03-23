@@ -40,12 +40,12 @@ struct IndexStats {
     edges: i64,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct QueryMetrics {
     category: String,
     query: String,
     #[serde(default)]
-    mode: String, // "full" or "brief"
+    mode: String, // "focused", "full", or "brief"
     key_files: usize,
     key_symbols: usize,
     execution_paths: usize,
@@ -54,24 +54,6 @@ struct QueryMetrics {
     subsystems: Vec<String>,
     pruner_context_tokens: usize,
     duration_secs: f64,
-}
-
-impl QueryMetrics {
-    fn empty(category: &str, query: &str, mode: &str, duration_secs: f64) -> Self {
-        Self {
-            category: category.to_string(),
-            query: query.to_string(),
-            mode: mode.to_string(),
-            key_files: 0,
-            key_symbols: 0,
-            execution_paths: 0,
-            snippets: 0,
-            relevant_tests: 0,
-            subsystems: Vec::new(),
-            pruner_context_tokens: 0,
-            duration_secs,
-        }
-    }
 }
 
 fn pruner_bin() -> PathBuf {
@@ -194,7 +176,7 @@ fn bench_real_repo() {
                 Some(o) => o,
                 None => {
                     eprintln!("  TIMEOUT after {}s — skipping", QUERY_TIMEOUT.as_secs());
-                    queries.push(QueryMetrics::empty(category, query, mode, QUERY_TIMEOUT.as_secs_f64()));
+                    queries.push(QueryMetrics { category: category.to_string(), query: query.to_string(), mode: mode.to_string(), duration_secs: QUERY_TIMEOUT.as_secs_f64(), ..Default::default() });
                     continue;
                 }
             };
@@ -207,7 +189,7 @@ fn bench_real_repo() {
                 Err(e) => {
                     eprintln!("  WARN: failed to parse JSON ({e}), stderr: {}",
                         String::from_utf8_lossy(&output.stderr).lines().take(3).collect::<Vec<_>>().join(" | "));
-                    queries.push(QueryMetrics::empty(category, query, mode, duration.as_secs_f64()));
+                    queries.push(QueryMetrics { category: category.to_string(), query: query.to_string(), mode: mode.to_string(), duration_secs: duration.as_secs_f64(), ..Default::default() });
                     continue;
                 }
             };
