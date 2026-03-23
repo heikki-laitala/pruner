@@ -374,9 +374,3 @@ Several tools tackle the same problem. The key difference is **how** they delive
 - **Automatic execution path inference** — traces through the call graph to show how code flows
 - **No LLM for indexing** — purely structural
 - **Tradeoff** — MCP servers are more flexible (LLM can ask follow-ups), but cost more turns. Pruner is simpler and cheaper per query.
-
-## Future work
-
-- More language parsers (Go, Java, Ruby)
-- Semantic search (embeddings) for queries that don't match symbol/file names
-- Optional tiktoken integration for exact token counts
