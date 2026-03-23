@@ -79,14 +79,36 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let mut seen_symbol_ids = HashSet::new();
 
     for kw in &keywords {
+        // 1) Path-based file matching
         for file in db.search_files(kw)? {
             if seen_file_ids.insert(file.id) {
                 matching_files.push(file);
             }
         }
+        // 2) Symbol name matching
         for sym in db.search_symbols(kw)? {
             if seen_symbol_ids.insert(sym.id) {
                 matching_symbols.push(sym);
+            }
+        }
+        // 3) Signature matching — finds functions with keyword in params/types
+        for sym in db.search_symbols_by_signature(kw)? {
+            if seen_symbol_ids.insert(sym.id) {
+                matching_symbols.push(sym);
+            }
+        }
+        // 4) Call graph matching — finds callers of functions matching keyword
+        for sym in db.search_callers_of(kw)? {
+            if seen_symbol_ids.insert(sym.id) {
+                matching_symbols.push(sym);
+            }
+        }
+        // 5) Import matching — finds files that import modules matching keyword
+        for file_id in db.search_importing_files(kw)? {
+            if seen_file_ids.insert(file_id) {
+                if let Some(file) = db.get_file_by_path_id(file_id)? {
+                    matching_files.push(file);
+                }
             }
         }
     }

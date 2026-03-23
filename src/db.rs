@@ -245,6 +245,43 @@ impl IndexDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Search symbols by keyword in signature (parameter names, types).
+    pub fn search_symbols_by_signature(&self, keyword: &str) -> Result<Vec<SymbolRow>> {
+        let pattern = format!("%{keyword}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end, s.signature, f.path
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE s.signature LIKE ?1 AND s.name NOT LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![pattern], SymbolRow::from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find file IDs that import a module matching a keyword.
+    pub fn search_importing_files(&self, keyword: &str) -> Result<Vec<i64>> {
+        let pattern = format!("%{keyword}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT file_id FROM imports WHERE module LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![pattern], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    /// Find symbols (callers) that call a function matching a keyword.
+    /// Returns the caller symbol rows.
+    pub fn search_callers_of(&self, keyword: &str) -> Result<Vec<SymbolRow>> {
+        let pattern = format!("%{keyword}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end, s.signature, f.path
+             FROM calls c
+             JOIN symbols s ON c.caller_symbol_id = s.id
+             JOIN files f ON s.file_id = f.id
+             WHERE c.callee_name LIKE ?1 AND s.name NOT LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![pattern], SymbolRow::from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Find edges targeting a file.
     pub fn edges_to_file(&self, file_id: i64, kind: &str) -> Result<Vec<EdgeRow>> {
         let mut stmt = self.conn.prepare(
