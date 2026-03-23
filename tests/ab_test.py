@@ -56,6 +56,10 @@ TASKS = {
         "How does authentication and token validation work in this repo? "
         "List the key files and describe the flow."
     ),
+    "implement": (
+        "Implement a health check endpoint that returns JSON with the server version "
+        "and uptime. Find where HTTP routes are registered and add it there."
+    ),
 }
 
 
