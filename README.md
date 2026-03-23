@@ -37,7 +37,7 @@ curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.s
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --dir /usr/local/bin
 
 # Install a specific version
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | sh -s -- --version v0.1.0
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --version v0.1.0
 ```
 
 ### Build from source
