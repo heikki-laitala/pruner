@@ -1,10 +1,14 @@
 //! Keyword extraction + heuristic relevance matching.
 //!
 
-use crate::db::{FileRow, IndexDb, SymbolRow};
+use crate::db::{FileRow, IndexDb, SymbolRow, TraceRow};
 use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
+const MAX_TRACED_SYMBOLS: usize = 20;
+const TRACE_TIME_BUDGET: Duration = Duration::from_secs(10);
 
 /// Result of analyzing a natural language query against the index.
 #[derive(Debug)]
@@ -27,6 +31,19 @@ pub struct PathStep {
     pub file_path: String,
     pub line_start: i64,
     pub depth: usize,
+}
+
+impl From<TraceRow> for PathStep {
+    fn from(row: TraceRow) -> Self {
+        Self {
+            symbol_id: row.id,
+            name: row.name,
+            kind: row.kind,
+            file_path: row.file_path,
+            line_start: row.line_start,
+            depth: row.depth,
+        }
+    }
 }
 
 impl QueryResult {
@@ -82,10 +99,22 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         }
     }
 
-    // Trace execution paths from matching symbols
+    // Score and cap symbols before tracing
+    let scored_symbols = score_and_rank_symbols(&matching_symbols, &keywords);
+    let top_symbols: Vec<&SymbolRow> = scored_symbols
+        .iter()
+        .take(MAX_TRACED_SYMBOLS)
+        .map(|(sym, _)| *sym)
+        .collect();
+
+    // Trace execution paths with time budget
     let mut execution_paths = Vec::new();
-    for sym in &matching_symbols {
-        let path = trace_execution_path(sym, db, 5)?;
+    let trace_deadline = Instant::now() + TRACE_TIME_BUDGET;
+    for sym in &top_symbols {
+        if Instant::now() >= trace_deadline {
+            break;
+        }
+        let path = trace_execution_path_cte(sym, db, 5)?;
         if path.len() > 1 {
             execution_paths.push(path);
         }
@@ -166,12 +195,54 @@ fn split_identifier(s: &str) -> Vec<String> {
     if parts.len() > 1 { parts } else { Vec::new() }
 }
 
-/// DFS through call graph from a symbol.
-fn trace_execution_path(
+/// Score a symbol's relevance to the query keywords.
+/// Higher score = more relevant.
+fn score_symbol(sym: &SymbolRow, keywords: &[String]) -> i32 {
+    let name_lower = sym.name.to_lowercase();
+    let mut score: i32 = 0;
+
+    for kw in keywords {
+        if name_lower == *kw {
+            score += 100; // exact match
+        } else if name_lower.starts_with(kw) {
+            score += 50; // prefix match
+        } else if name_lower.contains(kw) {
+            score += 10; // substring match
+        }
+    }
+
+    // Bonus for callable symbols (more likely to have useful execution paths)
+    match sym.kind.as_str() {
+        "function" | "method" => score += 20,
+        "class" | "struct" | "trait" | "interface" => score += 5,
+        _ => {}
+    }
+
+    score
+}
+
+/// Score and rank symbols by relevance, returning (symbol, score) pairs sorted descending.
+fn score_and_rank_symbols<'a>(
+    symbols: &'a [SymbolRow],
+    keywords: &[String],
+) -> Vec<(&'a SymbolRow, i32)> {
+    let mut scored: Vec<(&SymbolRow, i32)> = symbols
+        .iter()
+        .map(|s| (s, score_symbol(s, keywords)))
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored
+}
+
+/// Trace call graph from a symbol using a single SQL recursive CTE.
+/// Replaces the per-step DFS that caused millions of DB round-trips on large repos.
+fn trace_execution_path_cte(
     start: &SymbolRow,
     db: &IndexDb,
     max_depth: usize,
 ) -> Result<Vec<PathStep>> {
+    let rows = db.trace_call_graph(start.id, max_depth)?;
+
     let mut path = vec![PathStep {
         symbol_id: start.id,
         name: start.name.clone(),
@@ -180,55 +251,9 @@ fn trace_execution_path(
         line_start: start.line_start,
         depth: 0,
     }];
-
-    let mut visited = HashSet::new();
-    visited.insert(start.id);
-
-    trace_calls_dfs(start.id, db, &mut path, &mut visited, 1, max_depth)?;
+    path.extend(rows.into_iter().map(PathStep::from));
 
     Ok(path)
-}
-
-fn trace_calls_dfs(
-    symbol_id: i64,
-    db: &IndexDb,
-    path: &mut Vec<PathStep>,
-    visited: &mut HashSet<i64>,
-    depth: usize,
-    max_depth: usize,
-) -> Result<()> {
-    if depth > max_depth {
-        return Ok(());
-    }
-
-    let calls = db.calls_by_symbol(symbol_id)?;
-    let mut branch_count = 0;
-
-    for call in &calls {
-        if branch_count >= 3 {
-            break;
-        }
-
-        // Try to resolve callee
-        let targets = db.search_symbols(&call.callee_name)?;
-        if let Some(target) = targets.first()
-            && visited.insert(target.id)
-        {
-            path.push(PathStep {
-                symbol_id: target.id,
-                name: target.name.clone(),
-                kind: target.kind.clone(),
-                file_path: target.file_path.clone(),
-                line_start: target.line_start,
-                depth,
-            });
-            branch_count += 1;
-
-            trace_calls_dfs(target.id, db, path, visited, depth + 1, max_depth)?;
-        }
-    }
-
-    Ok(())
 }
 
 /// Infer subsystems from file paths.
@@ -277,6 +302,7 @@ static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::IndexDb;
 
     #[test]
     fn test_extract_keywords_basic() {
@@ -324,6 +350,201 @@ mod tests {
     }
 
     #[test]
+    fn test_score_symbol_exact_match() {
+        let sym = SymbolRow {
+            id: 1, file_id: 1, name: "login".into(), kind: "function".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["login".to_string()]);
+        assert_eq!(score, 120); // 100 exact + 20 function bonus
+    }
+
+    #[test]
+    fn test_score_symbol_prefix_match() {
+        let sym = SymbolRow {
+            id: 1, file_id: 1, name: "login_user".into(), kind: "function".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["login".to_string()]);
+        assert_eq!(score, 70); // 50 prefix + 20 function bonus
+    }
+
+    #[test]
+    fn test_score_symbol_substring_match() {
+        let sym = SymbolRow {
+            id: 1, file_id: 1, name: "handle_login_request".into(), kind: "struct".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["login".to_string()]);
+        assert_eq!(score, 15); // 10 substring + 5 struct bonus
+    }
+
+    #[test]
+    fn test_score_and_rank_symbols() {
+        let symbols = vec![
+            SymbolRow {
+                id: 1, file_id: 1, name: "handle_timeout".into(), kind: "function".into(),
+                line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+            },
+            SymbolRow {
+                id: 2, file_id: 1, name: "timeout".into(), kind: "function".into(),
+                line_start: 20, line_end: 30, signature: None, file_path: "a.rs".into(),
+            },
+            SymbolRow {
+                id: 3, file_id: 1, name: "timeout_handler".into(), kind: "function".into(),
+                line_start: 40, line_end: 50, signature: None, file_path: "a.rs".into(),
+            },
+        ];
+        let ranked = score_and_rank_symbols(&symbols, &["timeout".to_string()]);
+        assert_eq!(ranked[0].0.id, 2); // exact match first (100 + 20 = 120)
+        assert_eq!(ranked[1].0.id, 3); // prefix match second (50 + 20 = 70)
+        assert_eq!(ranked[2].0.id, 1); // substring match last (10 + 20 = 30)
+    }
+
+    #[test]
+    fn test_extract_keywords_empty() {
+        let kws = extract_keywords("");
+        assert!(kws.is_empty());
+    }
+
+    #[test]
+    fn test_extract_keywords_all_stop_words() {
+        let kws = extract_keywords("the is a an");
+        assert!(kws.is_empty());
+    }
+
+    #[test]
+    fn test_extract_keywords_mixed_separators() {
+        let kws = extract_keywords("auth/login.handler");
+        assert!(kws.contains(&"auth".to_string()));
+        assert!(kws.contains(&"login".to_string()));
+        assert!(kws.contains(&"handler".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_hyphenated() {
+        let kws = extract_keywords("rate-limiter");
+        assert!(kws.contains(&"rate-limiter".to_string()));
+    }
+
+    #[test]
+    fn test_split_identifier_no_split() {
+        // Single word — nothing to split
+        let parts = split_identifier("login");
+        assert!(parts.is_empty());
+    }
+
+    #[test]
+    fn test_split_identifier_all_upper() {
+        // Each uppercase char triggers a split: "A", "P", "I"
+        let parts = split_identifier("API");
+        assert_eq!(parts, vec!["A", "P", "I"]);
+    }
+
+    #[test]
+    fn test_score_symbol_no_match() {
+        let sym = SymbolRow {
+            id: 1, file_id: 1, name: "unrelated".into(), kind: "function".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["login".to_string()]);
+        assert_eq!(score, 20); // only function bonus, no keyword match
+    }
+
+    #[test]
+    fn test_score_symbol_multiple_keywords() {
+        let sym = SymbolRow {
+            id: 1, file_id: 1, name: "login_handler".into(), kind: "method".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["login".to_string(), "handler".to_string()]);
+        // login: prefix 50, handler: substring 10 => 60 + 20 method bonus
+        assert_eq!(score, 80);
+    }
+
+    #[test]
+    fn test_score_symbol_unknown_kind() {
+        let sym = SymbolRow {
+            id: 1, file_id: 1, name: "login".into(), kind: "variable".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["login".to_string()]);
+        assert_eq!(score, 100); // exact match, no kind bonus
+    }
+
+    #[test]
+    fn test_score_and_rank_empty() {
+        let ranked = score_and_rank_symbols(&[], &["login".to_string()]);
+        assert!(ranked.is_empty());
+    }
+
+    #[test]
+    fn test_all_relevant_file_ids() {
+        let result = QueryResult {
+            ask: "test".into(),
+            keywords: vec![],
+            matching_files: vec![
+                FileRow { id: 1, path: "a.rs".into(), language: None, size: 0, line_count: 0, is_test: false },
+            ],
+            matching_symbols: vec![
+                SymbolRow { id: 10, file_id: 2, name: "foo".into(), kind: "function".into(),
+                    line_start: 1, line_end: 10, signature: None, file_path: "b.rs".into() },
+            ],
+            related_tests: vec![
+                FileRow { id: 3, path: "test_a.rs".into(), language: None, size: 0, line_count: 0, is_test: true },
+            ],
+            execution_paths: vec![],
+            subsystems: vec![],
+        };
+        let ids = result.all_relevant_file_ids();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&2));
+        assert!(ids.contains(&3));
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn test_all_relevant_file_ids_dedup() {
+        let result = QueryResult {
+            ask: "test".into(),
+            keywords: vec![],
+            matching_files: vec![
+                FileRow { id: 1, path: "a.rs".into(), language: None, size: 0, line_count: 0, is_test: false },
+            ],
+            matching_symbols: vec![
+                SymbolRow { id: 10, file_id: 1, name: "foo".into(), kind: "function".into(),
+                    line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into() },
+            ],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec![],
+        };
+        let ids = result.all_relevant_file_ids();
+        assert_eq!(ids.len(), 1); // same file_id deduped
+    }
+
+    #[test]
+    fn test_infer_subsystems_root_file_becomes_subsystem() {
+        // "Makefile" has no dot, so it gets picked as a subsystem
+        let files = vec![
+            FileRow { id: 1, path: "Makefile".into(), language: None, size: 0, line_count: 0, is_test: false },
+        ];
+        let subs = infer_subsystems(&files);
+        assert_eq!(subs, vec!["Makefile"]);
+    }
+
+    #[test]
+    fn test_infer_subsystems_dedup() {
+        let files = vec![
+            FileRow { id: 1, path: "src/auth/login.py".into(), language: None, size: 0, line_count: 0, is_test: false },
+            FileRow { id: 2, path: "src/auth/register.py".into(), language: None, size: 0, line_count: 0, is_test: false },
+        ];
+        let subs = infer_subsystems(&files);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0], "auth");
+    }
+
+    #[test]
     fn test_infer_subsystems() {
         let files = vec![
             FileRow { id: 1, path: "src/auth/login.py".into(), language: None, size: 0, line_count: 0, is_test: false },
@@ -333,5 +554,126 @@ mod tests {
         assert!(subs.contains(&"auth".to_string()));
         assert!(subs.contains(&"api".to_string()));
         assert!(!subs.contains(&"src".to_string()));
+    }
+
+    #[test]
+    fn test_analyze_query_finds_files_and_symbols() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("src/auth/login.rs", Some("rust"), 100, 20, false, 0)?;
+        db.insert_symbol(fid, "login", "function", 1, 10, None, None)?;
+        db.insert_symbol(fid, "verify_password", "function", 11, 20, None, None)?;
+
+        let result = analyze_query("login authentication", &db)?;
+        assert!(result.matching_files.iter().any(|f| f.path.contains("login")));
+        assert!(result.matching_symbols.iter().any(|s| s.name == "login"));
+        assert!(result.keywords.contains(&"login".to_string()));
+        assert!(result.keywords.contains(&"authentication".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_query_deduplicates() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("src/login.rs", Some("rust"), 100, 20, false, 0)?;
+        // "login" keyword matches both the file path and symbol name
+        db.insert_symbol(fid, "login", "function", 1, 10, None, None)?;
+
+        let result = analyze_query("login", &db)?;
+        // File should appear only once even though it matches on path
+        let login_files: Vec<_> = result.matching_files.iter().filter(|f| f.path.contains("login")).collect();
+        assert_eq!(login_files.len(), 1);
+        // Symbol should appear only once
+        let login_syms: Vec<_> = result.matching_symbols.iter().filter(|s| s.name == "login").collect();
+        assert_eq!(login_syms.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_query_finds_related_tests() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        let src = db.insert_file("src/auth.rs", Some("rust"), 100, 20, false, 0)?;
+        let test = db.insert_file("tests/test_auth.rs", Some("rust"), 50, 10, true, 0)?;
+        db.insert_edge("tests", Some(test), None, Some(src), None, None)?;
+
+        let result = analyze_query("auth", &db)?;
+        assert!(!result.related_tests.is_empty());
+        assert!(result.related_tests.iter().any(|t| t.path.contains("test_auth")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_query_traces_execution_paths() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("src/handler.rs", Some("rust"), 200, 50, false, 0)?;
+        let handler = db.insert_symbol(fid, "handle_request", "function", 1, 10, None, None)?;
+        db.insert_symbol(fid, "validate", "function", 11, 20, None, None)?;
+        db.insert_call(handler, "validate", 5)?;
+
+        let result = analyze_query("handle_request", &db)?;
+        assert!(!result.execution_paths.is_empty());
+        // First path should start with handle_request and include validate
+        let path = &result.execution_paths[0];
+        assert!(path.iter().any(|s| s.name == "handle_request"));
+        assert!(path.iter().any(|s| s.name == "validate"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_query_no_matches() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        db.insert_file("src/main.rs", Some("rust"), 100, 10, false, 0)?;
+
+        let result = analyze_query("nonexistent_symbol", &db)?;
+        assert!(result.matching_symbols.is_empty());
+        assert!(result.execution_paths.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_query_infers_subsystems() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        db.insert_file("src/auth/login.rs", Some("rust"), 100, 20, false, 0)?;
+        db.insert_file("src/api/handler.rs", Some("rust"), 200, 40, false, 0)?;
+
+        let result = analyze_query("auth api", &db)?;
+        assert!(result.subsystems.contains(&"auth".to_string()));
+        assert!(result.subsystems.contains(&"api".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_trace_execution_path_cte_builds_path() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
+        let a = db.insert_symbol(fid, "a", "function", 1, 10, None, None)?;
+        db.insert_symbol(fid, "b", "function", 11, 20, None, None)?;
+        db.insert_call(a, "b", 5)?;
+
+        let start = SymbolRow {
+            id: a, file_id: fid, name: "a".into(), kind: "function".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "src/lib.rs".into(),
+        };
+        let path = trace_execution_path_cte(&start, &db, 5)?;
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].name, "a");
+        assert_eq!(path[0].depth, 0);
+        assert_eq!(path[1].name, "b");
+        assert_eq!(path[1].depth, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_trace_execution_path_cte_no_calls() -> anyhow::Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
+        let a = db.insert_symbol(fid, "isolated", "function", 1, 10, None, None)?;
+
+        let start = SymbolRow {
+            id: a, file_id: fid, name: "isolated".into(), kind: "function".into(),
+            line_start: 1, line_end: 10, signature: None, file_path: "src/lib.rs".into(),
+        };
+        let path = trace_execution_path_cte(&start, &db, 5)?;
+        assert_eq!(path.len(), 1); // only the start node
+        Ok(())
     }
 }

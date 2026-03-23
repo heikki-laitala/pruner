@@ -395,6 +395,47 @@ impl IndexDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Trace the call graph from a symbol using a recursive CTE.
+    /// Returns callee symbols reachable within `max_depth` hops, ordered by depth.
+    /// This replaces per-step DFS with a single SQL query, eliminating millions of
+    /// round-trips on large repos.
+    pub fn trace_call_graph(&self, start_symbol_id: i64, max_depth: usize) -> Result<Vec<TraceRow>> {
+        let mut stmt = self.conn.prepare(
+            "WITH RECURSIVE cg(symbol_id, depth) AS (
+                SELECT ?1, 0
+                UNION
+                SELECT s.id, cg.depth + 1
+                FROM cg
+                JOIN calls c ON c.caller_symbol_id = cg.symbol_id
+                JOIN symbols s ON s.name = c.callee_name
+                WHERE cg.depth < ?2
+                  AND s.id != ?1
+            )
+            SELECT DISTINCT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end,
+                   s.signature, f.path, cg.depth
+            FROM cg
+            JOIN symbols s ON s.id = cg.symbol_id
+            JOIN files f ON s.file_id = f.id
+            WHERE cg.depth > 0
+            ORDER BY cg.depth, s.id
+            LIMIT 50",
+        )?;
+        let rows = stmt.query_map(params![start_symbol_id, max_depth as i64], |row| {
+            Ok(TraceRow {
+                id: row.get(0)?,
+                file_id: row.get(1)?,
+                name: row.get(2)?,
+                kind: row.get(3)?,
+                line_start: row.get(4)?,
+                line_end: row.get(5)?,
+                signature: row.get(6)?,
+                file_path: row.get(7)?,
+                depth: row.get::<_, i64>(8)? as usize,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Get symbols for a file.
     pub fn symbols_for_file(&self, file_id: i64) -> Result<Vec<SymbolRow>> {
         let mut stmt = self.conn.prepare(
@@ -462,6 +503,20 @@ pub struct CallRow {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
+pub struct TraceRow {
+    pub id: i64,
+    pub file_id: i64,
+    pub name: String,
+    pub kind: String,
+    pub line_start: i64,
+    pub line_end: i64,
+    pub signature: Option<String>,
+    pub file_path: String,
+    pub depth: usize,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct EdgeRow {
     pub id: i64,
     pub kind: String,
@@ -523,6 +578,55 @@ mod tests {
     }
 
     #[test]
+    fn test_trace_call_graph_cte() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let f = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
+        let a = db.insert_symbol(f, "a", "function", 1, 10, None, None)?;
+        let b = db.insert_symbol(f, "b", "function", 11, 20, None, None)?;
+        let c = db.insert_symbol(f, "c", "function", 21, 30, None, None)?;
+        // a -> b -> c
+        db.insert_call(a, "b", 5)?;
+        db.insert_call(b, "c", 15)?;
+
+        let trace = db.trace_call_graph(a, 5)?;
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].name, "b");
+        assert_eq!(trace[0].depth, 1);
+        assert_eq!(trace[1].name, "c");
+        assert_eq!(trace[1].depth, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_trace_call_graph_respects_max_depth() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let f = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
+        let a = db.insert_symbol(f, "a", "function", 1, 10, None, None)?;
+        let b = db.insert_symbol(f, "b", "function", 11, 20, None, None)?;
+        let c = db.insert_symbol(f, "c", "function", 21, 30, None, None)?;
+        db.insert_call(a, "b", 5)?;
+        db.insert_call(b, "c", 15)?;
+
+        let trace = db.trace_call_graph(a, 1)?;
+        assert_eq!(trace.len(), 1);
+        assert_eq!(trace[0].name, "b");
+        Ok(())
+    }
+
+    #[test]
+    fn test_trace_call_graph_no_self_loops() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let f = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
+        let a = db.insert_symbol(f, "a", "function", 1, 10, None, None)?;
+        // a calls itself
+        db.insert_call(a, "a", 5)?;
+
+        let trace = db.trace_call_graph(a, 5)?;
+        assert!(trace.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn test_edges() -> Result<()> {
         let db = IndexDb::open_memory()?;
         let f1 = db.insert_file("src/a.py", Some("python"), 100, 10, false, 0)?;
@@ -542,6 +646,164 @@ mod tests {
         assert_eq!(db.file_count()?, 1);
         db.clear()?;
         assert_eq!(db.file_count()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_delete_file_cascades() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("src/main.rs", Some("rust"), 100, 10, false, 0)?;
+        let sid = db.insert_symbol(fid, "main", "function", 1, 10, None, None)?;
+        db.insert_call(sid, "helper", 5)?;
+        db.insert_import(fid, "std::io", Some("Read"))?;
+        db.insert_edge("tests", None, None, Some(fid), None, None)?;
+
+        assert_eq!(db.symbol_count()?, 1);
+        assert_eq!(db.call_count()?, 1);
+        assert_eq!(db.import_count()?, 1);
+
+        db.delete_file(fid)?;
+        assert_eq!(db.file_count()?, 0);
+        assert_eq!(db.symbol_count()?, 0);
+        assert_eq!(db.call_count()?, 0);
+        assert_eq!(db.import_count()?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_all_file_mtimes() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        db.insert_file("a.rs", Some("rust"), 100, 10, false, 1000)?;
+        db.insert_file("b.rs", Some("rust"), 200, 20, false, 2000)?;
+
+        let mtimes = db.all_file_mtimes()?;
+        assert_eq!(mtimes.len(), 2);
+        assert_eq!(mtimes["a.rs"].1, 1000); // (id, mtime) — check mtime
+        assert_eq!(mtimes["b.rs"].1, 2000);
+        Ok(())
+    }
+
+    #[test]
+    fn test_clear_edges() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let f1 = db.insert_file("a.rs", Some("rust"), 100, 10, false, 0)?;
+        let f2 = db.insert_file("test_a.rs", Some("rust"), 50, 5, true, 0)?;
+        let s = db.insert_symbol(f1, "foo", "function", 1, 10, None, None)?;
+        db.insert_call(s, "bar", 5)?;
+        db.insert_edge("tests", Some(f2), None, Some(f1), None, None)?;
+
+        assert_eq!(db.call_count()?, 1);
+        assert_eq!(db.edge_count()?, 1);
+
+        db.clear_edges()?;
+        assert_eq!(db.call_count()?, 0);
+        assert_eq!(db.edge_count()?, 0);
+        // files and symbols should remain
+        assert_eq!(db.file_count()?, 2);
+        assert_eq!(db.symbol_count()?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_all_files() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        db.insert_file("a.rs", Some("rust"), 100, 10, false, 0)?;
+        db.insert_file("b.py", Some("python"), 200, 20, true, 0)?;
+
+        let files = db.all_files()?;
+        assert_eq!(files.len(), 2);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"a.rs"));
+        assert!(paths.contains(&"b.py"));
+        assert!(files.iter().any(|f| f.is_test));
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_file_by_path_id() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let id = db.insert_file("src/lib.rs", Some("rust"), 100, 10, false, 0)?;
+
+        let found = db.get_file_by_path_id(id)?;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().path, "src/lib.rs");
+
+        let missing = db.get_file_by_path_id(9999)?;
+        assert!(missing.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_file_by_path_not_found() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let result = db.get_file_by_path("nonexistent.rs")?;
+        assert!(result.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_imports_for_file() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("main.py", Some("python"), 100, 10, false, 0)?;
+        db.insert_import(fid, "os", None)?;
+        db.insert_import(fid, "sys", Some("argv, exit"))?;
+
+        let imports = db.imports_for_file(fid)?;
+        assert_eq!(imports.len(), 2);
+        assert!(imports.iter().any(|i| i.module == "os" && i.names.is_none()));
+        assert!(imports.iter().any(|i| i.module == "sys" && i.names.as_deref() == Some("argv, exit")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_symbols_for_file() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("lib.rs", Some("rust"), 200, 50, false, 0)?;
+        db.insert_symbol(fid, "foo", "function", 1, 10, None, None)?;
+        db.insert_symbol(fid, "bar", "function", 11, 20, None, None)?;
+
+        let other_fid = db.insert_file("other.rs", Some("rust"), 100, 10, false, 0)?;
+        db.insert_symbol(other_fid, "baz", "function", 1, 5, None, None)?;
+
+        let syms = db.symbols_for_file(fid)?;
+        assert_eq!(syms.len(), 2);
+        assert!(syms.iter().all(|s| s.file_path == "lib.rs"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_files() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        db.insert_file("src/auth/login.rs", Some("rust"), 100, 10, false, 0)?;
+        db.insert_file("src/api/routes.rs", Some("rust"), 200, 20, false, 0)?;
+        db.insert_file("tests/test_auth.rs", Some("rust"), 50, 5, true, 0)?;
+
+        let results = db.search_files("auth")?;
+        assert_eq!(results.len(), 2); // login.rs path contains "auth", test_auth.rs too
+        assert!(results.iter().all(|f| f.path.contains("auth")));
+
+        let empty = db.search_files("nonexistent")?;
+        assert!(empty.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_search_symbols_empty() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let results = db.search_symbols("anything")?;
+        assert!(results.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parent_symbol() -> Result<()> {
+        let db = IndexDb::open_memory()?;
+        let fid = db.insert_file("lib.rs", Some("rust"), 200, 50, false, 0)?;
+        let parent = db.insert_symbol(fid, "MyStruct", "struct", 1, 20, None, None)?;
+        db.insert_symbol(fid, "my_method", "method", 5, 15, Some(parent), Some("fn my_method(&self)"))?;
+
+        let syms = db.symbols_for_file(fid)?;
+        assert_eq!(syms.len(), 2);
         Ok(())
     }
 }

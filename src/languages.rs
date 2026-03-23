@@ -99,3 +99,88 @@ static IGNORED_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .into_iter()
     .collect()
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_detect_language_js_variants() {
+        assert_eq!(detect_language(Path::new("app.mjs")), Some(Language::JavaScript));
+        assert_eq!(detect_language(Path::new("app.cjs")), Some(Language::JavaScript));
+        assert_eq!(detect_language(Path::new("app.js")), Some(Language::JavaScript));
+    }
+
+    #[test]
+    fn test_detect_language_tsx_jsx() {
+        assert_eq!(detect_language(Path::new("App.tsx")), Some(Language::Tsx));
+        assert_eq!(detect_language(Path::new("App.jsx")), Some(Language::Tsx));
+    }
+
+    #[test]
+    fn test_detect_language_unsupported() {
+        assert_eq!(detect_language(Path::new("file.go")), None);
+        assert_eq!(detect_language(Path::new("file.java")), None);
+    }
+
+    #[test]
+    fn test_detect_language_no_extension() {
+        assert_eq!(detect_language(Path::new("Makefile")), None);
+    }
+
+    #[test]
+    fn test_is_test_file_prefix() {
+        assert!(is_test_file(Path::new("test_main.py")));
+    }
+
+    #[test]
+    fn test_is_test_file_infixes() {
+        assert!(is_test_file(Path::new("auth_test.py")));
+        assert!(is_test_file(Path::new("auth.test.js")));
+        assert!(is_test_file(Path::new("auth_spec.rb")));
+        assert!(is_test_file(Path::new("auth.spec.ts")));
+    }
+
+    #[test]
+    fn test_is_test_file_directories() {
+        assert!(is_test_file(Path::new("tests/main.py")));
+        assert!(is_test_file(Path::new("__tests__/App.test.js")));
+        assert!(is_test_file(Path::new("spec/models.rb")));
+    }
+
+    #[test]
+    fn test_is_test_file_not_test() {
+        assert!(!is_test_file(Path::new("src/main.py")));
+        assert!(!is_test_file(Path::new("lib/auth.rs")));
+    }
+
+    #[test]
+    fn test_is_ignored_file_binary() {
+        assert!(is_ignored_file(Path::new("lib.so")));
+        assert!(is_ignored_file(Path::new("app.exe")));
+        assert!(is_ignored_file(Path::new("image.png")));
+        assert!(is_ignored_file(Path::new("Cargo.lock")));
+    }
+
+    #[test]
+    fn test_is_ignored_file_no_extension() {
+        assert!(!is_ignored_file(Path::new("Makefile")));
+    }
+
+    #[test]
+    fn test_is_ignored_file_code() {
+        assert!(!is_ignored_file(Path::new("main.py")));
+        assert!(!is_ignored_file(Path::new("app.rs")));
+    }
+
+    #[test]
+    fn test_is_ignored_dir() {
+        assert!(is_ignored_dir("node_modules"));
+        assert!(is_ignored_dir(".git"));
+        assert!(is_ignored_dir("__pycache__"));
+        assert!(is_ignored_dir("target"));
+        assert!(!is_ignored_dir("src"));
+        assert!(!is_ignored_dir("lib"));
+    }
+}

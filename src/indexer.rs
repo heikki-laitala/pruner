@@ -415,4 +415,184 @@ mod tests {
         assert_eq!(stats.files, 1); // only app.py
         Ok(())
     }
+
+    #[test]
+    fn test_index_verbose_mode() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = IndexDb::open_memory()?;
+        fs::write(dir.path().join("app.py"), "def run(): pass\n")?;
+
+        let stats = index_repo(dir.path(), &db, true)?;
+        assert_eq!(stats.files, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_incremental_no_changes() -> Result<()> {
+        let (dir, db) = setup_test_repo();
+        index_repo(dir.path(), &db, false)?;
+
+        // Second call with no changes should return None
+        let result = index_repo_incremental(dir.path(), &db, false)?;
+        assert!(result.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_incremental_new_file() -> Result<()> {
+        let (dir, db) = setup_test_repo();
+        index_repo(dir.path(), &db, false)?;
+        let initial_count = db.file_count()?;
+
+        // Add a new file
+        fs::write(dir.path().join("new_module.py"), "def new_func():\n    pass\n")?;
+
+        let result = index_repo_incremental(dir.path(), &db, false)?;
+        assert!(result.is_some());
+        let stats = result.unwrap();
+        assert!(stats.files >= 1); // at least the new file was indexed
+
+        assert!(db.file_count()? > initial_count);
+        Ok(())
+    }
+
+    #[test]
+    fn test_incremental_deleted_file() -> Result<()> {
+        let (dir, db) = setup_test_repo();
+        index_repo(dir.path(), &db, false)?;
+        let initial_count = db.file_count()?;
+
+        // Delete a file
+        fs::remove_file(dir.path().join("main.py"))?;
+
+        let result = index_repo_incremental(dir.path(), &db, false)?;
+        assert!(result.is_some());
+        let stats = result.unwrap();
+        assert!(stats.deleted >= 1);
+
+        assert!(db.file_count()? < initial_count);
+        Ok(())
+    }
+
+    #[test]
+    fn test_incremental_modified_file() -> Result<()> {
+        let (dir, db) = setup_test_repo();
+        index_repo(dir.path(), &db, false)?;
+
+        // Modify a file (need to change mtime)
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(
+            dir.path().join("main.py"),
+            "def hello():\n    greet()\n\ndef greet():\n    print('hi')\n\ndef new_func():\n    pass\n",
+        )?;
+
+        let result = index_repo_incremental(dir.path(), &db, false)?;
+        assert!(result.is_some());
+        let stats = result.unwrap();
+        assert!(stats.files >= 1); // modified file re-indexed
+        Ok(())
+    }
+
+    #[test]
+    fn test_index_skips_binary_files() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = IndexDb::open_memory()?;
+
+        fs::write(dir.path().join("app.py"), "def run(): pass\n")?;
+        fs::write(dir.path().join("image.png"), &[0x89, 0x50, 0x4e, 0x47])?;
+        fs::write(dir.path().join("lib.so"), &[0x7f, 0x45, 0x4c, 0x46])?;
+
+        let stats = index_repo(dir.path(), &db, false)?;
+        assert_eq!(stats.files, 1); // only app.py
+        assert!(stats.skipped >= 2); // png + so
+        Ok(())
+    }
+
+    #[test]
+    fn test_index_unsupported_language() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = IndexDb::open_memory()?;
+
+        // .go is unsupported — file gets indexed but no symbols parsed
+        fs::write(dir.path().join("main.go"), "package main\nfunc main() {}\n")?;
+
+        let stats = index_repo(dir.path(), &db, false)?;
+        assert_eq!(stats.files, 1);
+        assert_eq!(stats.symbols, 0); // no tree-sitter support
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_mtime_nonexistent() {
+        let mtime = file_mtime(Path::new("/nonexistent/path/file.rs"));
+        assert_eq!(mtime, 0);
+    }
+
+    #[test]
+    fn test_file_mtime_real_file() -> Result<()> {
+        let dir = TempDir::new()?;
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "hello")?;
+        let mtime = file_mtime(&path);
+        assert!(mtime > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_incremental_skips_ignored_in_walk() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = IndexDb::open_memory()?;
+
+        fs::write(dir.path().join("app.py"), "def run(): pass\n")?;
+        // Create an ignored file extension
+        fs::write(dir.path().join("data.lock"), "locked")?;
+
+        let stats = index_repo(dir.path(), &db, false)?;
+        assert_eq!(stats.files, 1);
+
+        // Incremental: add ignored file — should not trigger changes
+        fs::write(dir.path().join("another.lock"), "locked2")?;
+        let result = index_repo_incremental(dir.path(), &db, false)?;
+        assert!(result.is_none()); // no changes to code files
+        Ok(())
+    }
+
+    #[test]
+    fn test_index_verbose_parse_error() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = IndexDb::open_memory()?;
+
+        // Valid file
+        fs::write(dir.path().join("good.py"), "def hello(): pass\n")?;
+        // Binary content in a .py file — parser may error
+        fs::write(dir.path().join("bad.py"), &[0x00, 0x01, 0x02, 0xff])?;
+
+        let stats = index_repo(dir.path(), &db, true)?;
+        // At least the good file should be indexed
+        assert!(stats.files >= 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_incremental_collects_calls_from_unchanged() -> Result<()> {
+        let dir = TempDir::new()?;
+        let db = IndexDb::open_memory()?;
+
+        // Create two files that call each other
+        fs::write(dir.path().join("a.py"), "def foo():\n    bar()\n")?;
+        fs::write(dir.path().join("b.py"), "def bar():\n    pass\n")?;
+
+        index_repo(dir.path(), &db, false)?;
+
+        // Add a new file to trigger incremental
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(dir.path().join("c.py"), "def baz():\n    foo()\n")?;
+
+        let result = index_repo_incremental(dir.path(), &db, false)?;
+        assert!(result.is_some());
+
+        // Calls from unchanged files should be preserved
+        assert!(db.call_count()? >= 2);
+        Ok(())
+    }
 }

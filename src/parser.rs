@@ -678,4 +678,272 @@ import path from 'path';
         assert_eq!(result.imports[1].module, "path");
         Ok(())
     }
+
+    #[test]
+    fn test_parse_js_class_and_method() -> anyhow::Result<()> {
+        let src = r#"
+class UserService {
+    getUser(id) {
+        return findById(id);
+    }
+}
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert!(result.symbols.iter().any(|s| s.name == "UserService" && s.kind == "class"));
+        assert!(result.symbols.iter().any(|s| s.name == "getUser" && s.kind == "method"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "findById"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_enum() -> anyhow::Result<()> {
+        let src = r#"
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        assert!(result.symbols.iter().any(|s| s.name == "Color" && s.kind == "enum"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_trait() -> anyhow::Result<()> {
+        let src = r#"
+trait Drawable {
+    fn draw(&self) {}
+    fn resize(&mut self, w: u32, h: u32) {}
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        assert!(result.symbols.iter().any(|s| s.name == "Drawable" && s.kind == "trait"));
+        // Methods with bodies inside trait should be parsed as children
+        let draw = result.symbols.iter().find(|s| s.name == "draw");
+        assert!(draw.is_some(), "draw should be found; symbols: {:?}",
+            result.symbols.iter().map(|s| format!("{} ({})", s.name, s.kind)).collect::<Vec<_>>());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_use_declaration() -> anyhow::Result<()> {
+        let src = r#"
+use std::collections::HashMap;
+use anyhow::Result;
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.imports.iter().any(|i| i.module.contains("HashMap")));
+        assert!(result.imports.iter().any(|i| i.module.contains("Result")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_macro_invocation() -> anyhow::Result<()> {
+        let src = r#"
+fn main() {
+    println!("hello");
+    vec![1, 2, 3];
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "println"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "vec"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_method_call() -> anyhow::Result<()> {
+        let src = r#"
+fn process(items: Vec<String>) {
+    items.iter().map(|x| x.len()).collect();
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        // field_expression calls: iter, map, collect
+        assert!(result.calls.iter().any(|c| c.callee_name == "iter"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "map"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_scoped_call() -> anyhow::Result<()> {
+        let src = r#"
+fn build() {
+    let x = String::from("hello");
+    let y = std::fs::read_to_string("file");
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "from"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "read_to_string"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_python_attribute_call() -> anyhow::Result<()> {
+        let src = r#"
+def process(data):
+    result = data.transform()
+    result.save()
+"#;
+        let result = parse_source(src, Language::Python)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "transform"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "save"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_js_member_call() -> anyhow::Result<()> {
+        let src = r#"
+function handler(req) {
+    const body = req.json();
+    console.log(body);
+}
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "json"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "log"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_tsx() -> anyhow::Result<()> {
+        let src = r#"
+function App() {
+    return <div>Hello</div>;
+}
+"#;
+        let result = parse_source(src, Language::Tsx)?;
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "App");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_python_aliased_import() -> anyhow::Result<()> {
+        let src = r#"
+from collections import OrderedDict as OD
+"#;
+        let result = parse_source(src, Language::Python)?;
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].module, "collections");
+        assert!(result.imports[0].names.as_ref().unwrap().contains("OrderedDict"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_js_named_imports() -> anyhow::Result<()> {
+        let src = r#"
+import { useState, useEffect } from 'react';
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert_eq!(result.imports.len(), 1);
+        let names = result.imports[0].names.as_ref().unwrap();
+        assert!(names.contains("useState"));
+        assert!(names.contains("useEffect"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_impl_without_matching_struct() -> anyhow::Result<()> {
+        // impl for a type not defined in this file
+        let src = r#"
+impl ExternalType {
+    fn method(&self) {}
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        let method = result.symbols.iter().find(|s| s.name == "method");
+        assert!(method.is_some());
+        // Parent should be None since ExternalType isn't defined here
+        assert!(method.unwrap().parent_index.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_js_export_function() -> anyhow::Result<()> {
+        let src = r#"
+export function serve(port) {
+    listen(port);
+}
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert!(result.symbols.iter().any(|s| s.name == "serve"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "listen"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_rust_impl_for_enum() -> anyhow::Result<()> {
+        let src = r#"
+enum Status {
+    Active,
+    Inactive,
+}
+
+impl Status {
+    fn is_active(&self) -> bool {
+        matches!(self, Status::Active)
+    }
+}
+"#;
+        let result = parse_source(src, Language::Rust)?;
+        assert!(result.symbols.iter().any(|s| s.name == "Status" && s.kind == "enum"));
+        let method = result.symbols.iter().find(|s| s.name == "is_active").unwrap();
+        // Parent should be the enum
+        assert_eq!(method.parent_index, Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_ts_function() -> anyhow::Result<()> {
+        let src = r#"
+function greet(name: string): string {
+    return format(name);
+}
+"#;
+        let result = parse_source(src, Language::TypeScript)?;
+        assert!(result.symbols.iter().any(|s| s.name == "greet"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "format"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_js_class_in_export() -> anyhow::Result<()> {
+        let src = r#"
+export class Router {
+    route(path) {
+        return match(path);
+    }
+}
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert!(result.symbols.iter().any(|s| s.name == "Router" && s.kind == "class"));
+        assert!(result.symbols.iter().any(|s| s.name == "route" && s.kind == "method"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_python_nested_calls() -> anyhow::Result<()> {
+        let src = r#"
+def process():
+    result = transform(parse(read_file("data.txt")))
+"#;
+        let result = parse_source(src, Language::Python)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "transform"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "parse"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "read_file"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_empty_source() -> anyhow::Result<()> {
+        let result = parse_source("", Language::Python)?;
+        assert!(result.symbols.is_empty());
+        assert!(result.calls.is_empty());
+        assert!(result.imports.is_empty());
+        Ok(())
+    }
 }

@@ -285,3 +285,188 @@ pub fn format_context_summary(ctx: &ContextPackage) -> String {
 pub fn format_context_json(ctx: &ContextPackage) -> Result<String> {
     Ok(serde_json::to_string_pretty(ctx)?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_context() -> ContextPackage {
+        ContextPackage {
+            ask: "how does login work".to_string(),
+            keywords: vec!["login".to_string(), "auth".to_string()],
+            subsystems: vec!["auth".to_string()],
+            execution_paths: vec![vec![
+                PathEntry { symbol: "handle_login".into(), kind: "function".into(), file: "src/auth.rs".into(), line: 10, depth: 0 },
+                PathEntry { symbol: "verify".into(), kind: "function".into(), file: "src/auth.rs".into(), line: 25, depth: 1 },
+            ]],
+            key_files: vec![KeyFile {
+                path: "src/auth.rs".into(), language: Some("rust".into()), lines: 50, is_test: false,
+            }],
+            key_symbols: vec![
+                KeySymbol {
+                    name: "handle_login".into(), kind: "function".into(), file: "src/auth.rs".into(),
+                    line_start: 10, line_end: 20, signature: Some("fn handle_login(req: Request)".into()),
+                },
+                KeySymbol {
+                    name: "verify".into(), kind: "function".into(), file: "src/auth.rs".into(),
+                    line_start: 25, line_end: 35, signature: None,
+                },
+            ],
+            relevant_tests: vec![TestFile { path: "tests/test_auth.rs".into() }],
+            snippets: vec![Snippet {
+                file: "src/auth.rs".into(), symbol: "handle_login".into(),
+                line_start: 10, line_end: 15, code: "fn handle_login(req: Request) {\n    verify(req);\n}".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn test_format_context_text_contains_sections() {
+        let ctx = sample_context();
+        let text = format_context_text(&ctx);
+
+        assert!(text.contains("# Context: how does login work"));
+        assert!(text.contains("**Keywords:** login, auth"));
+        assert!(text.contains("## Execution Paths"));
+        assert!(text.contains("handle_login"));
+        assert!(text.contains("## Key Files"));
+        assert!(text.contains("src/auth.rs"));
+        assert!(text.contains("## Key Symbols"));
+        assert!(text.contains("fn handle_login(req: Request)"));
+        assert!(text.contains("## Related Tests"));
+        assert!(text.contains("test_auth.rs"));
+        assert!(text.contains("## Code Snippets"));
+        assert!(text.contains("verify(req)"));
+    }
+
+    #[test]
+    fn test_format_context_text_empty() {
+        let ctx = ContextPackage {
+            ask: "nothing".into(),
+            keywords: vec![],
+            subsystems: vec![],
+            execution_paths: vec![],
+            key_files: vec![],
+            key_symbols: vec![],
+            relevant_tests: vec![],
+            snippets: vec![],
+        };
+        let text = format_context_text(&ctx);
+        assert!(text.contains("# Context: nothing"));
+        assert!(!text.contains("## Execution Paths"));
+        assert!(!text.contains("## Key Files"));
+    }
+
+    #[test]
+    fn test_format_context_summary() {
+        let ctx = sample_context();
+        let summary = format_context_summary(&ctx);
+
+        assert!(summary.contains("Keywords: login, auth"));
+        assert!(summary.contains("Subsystems: auth"));
+        assert!(summary.contains("Execution paths: 1"));
+        assert!(summary.contains("Key files:"));
+        assert!(summary.contains("src/auth.rs"));
+        assert!(summary.contains("Key symbols:"));
+        assert!(summary.contains("handle_login (function)"));
+        assert!(summary.contains("Related tests:"));
+        assert!(summary.contains("test_auth.rs"));
+    }
+
+    #[test]
+    fn test_format_context_summary_empty() {
+        let ctx = ContextPackage {
+            ask: "nothing".into(),
+            keywords: vec![],
+            subsystems: vec![],
+            execution_paths: vec![],
+            key_files: vec![],
+            key_symbols: vec![],
+            relevant_tests: vec![],
+            snippets: vec![],
+        };
+        let summary = format_context_summary(&ctx);
+        assert!(!summary.contains("Key files:"));
+        assert!(!summary.contains("Key symbols:"));
+    }
+
+    #[test]
+    fn test_format_context_json_valid() {
+        let ctx = sample_context();
+        let json_str = format_context_json(&ctx).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed["ask"], "how does login work");
+        assert!(parsed["key_files"].as_array().unwrap().len() > 0);
+        assert!(parsed["execution_paths"].as_array().unwrap().len() > 0);
+    }
+
+    #[test]
+    fn test_format_context_text_test_file_marker() {
+        let ctx = ContextPackage {
+            ask: "test".into(),
+            keywords: vec![],
+            subsystems: vec![],
+            execution_paths: vec![],
+            key_files: vec![KeyFile {
+                path: "tests/test_auth.rs".into(), language: Some("rust".into()), lines: 30, is_test: true,
+            }],
+            key_symbols: vec![],
+            relevant_tests: vec![],
+            snippets: vec![],
+        };
+        let text = format_context_text(&ctx);
+        assert!(text.contains("[test]"));
+    }
+
+    #[test]
+    fn test_generate_context_brief_mode() {
+        use crate::db::IndexDb;
+        use crate::query;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("login.rs"), "fn login() {\n    verify();\n}\nfn verify() {}\n").unwrap();
+
+        let db_path = tmp.path().join(".pruner");
+        std::fs::create_dir_all(&db_path).unwrap();
+        let db = IndexDb::open(&db_path.join("index.db")).unwrap();
+
+        let fid = db.insert_file("src/login.rs", Some("rust"), 50, 4, false, 0).unwrap();
+        let s = db.insert_symbol(fid, "login", "function", 1, 3, None, None).unwrap();
+        db.insert_symbol(fid, "verify", "function", 4, 4, None, None).unwrap();
+        db.insert_call(s, "verify", 2).unwrap();
+
+        let result = query::analyze_query("login", &db).unwrap();
+        let ctx = generate_context(&result, &db, tmp.path(), 50, true).unwrap();
+
+        assert!(!ctx.key_files.is_empty());
+        // Brief mode limits snippets to 10 lines
+        for snippet in &ctx.snippets {
+            let line_count = snippet.code.lines().count();
+            assert!(line_count <= 10);
+        }
+    }
+
+    #[test]
+    fn test_format_context_text_symbol_without_signature() {
+        let ctx = ContextPackage {
+            ask: "test".into(),
+            keywords: vec![],
+            subsystems: vec![],
+            execution_paths: vec![],
+            key_files: vec![],
+            key_symbols: vec![KeySymbol {
+                name: "foo".into(), kind: "function".into(), file: "a.rs".into(),
+                line_start: 1, line_end: 5, signature: None,
+            }],
+            relevant_tests: vec![],
+            snippets: vec![],
+        };
+        let text = format_context_text(&ctx);
+        // When no signature, should use the name
+        assert!(text.contains("`foo` (function)"));
+    }
+}
