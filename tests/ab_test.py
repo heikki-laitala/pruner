@@ -61,6 +61,13 @@ TASKS = {
         "Implement a health check endpoint that returns JSON with the server version "
         "and uptime. Find where HTTP routes are registered and add it there."
     ),
+    "implement_large": (
+        "Add a rate limiting system for incoming messages. Create a RateLimiter class "
+        "that tracks per-channel message counts with a sliding window (default: 30 messages "
+        "per 60 seconds). Integrate it into the message routing pipeline so that messages "
+        "exceeding the limit are rejected with a user-friendly reply. Add configuration "
+        "options to set custom limits per channel. Include unit tests."
+    ),
 }
 
 

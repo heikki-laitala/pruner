@@ -1,13 +1,122 @@
 {
   "repo_url": "https://github.com/openclaw/openclaw.git",
   "index_stats": {
-    "files": 9794,
+    "files": 9797,
     "symbols": 30695,
     "imports": 32015,
     "calls": 166150,
-    "edges": 534749
+    "edges": 534752
   },
   "queries": [
+    {
+      "category": "cross_package",
+      "query": "how does a message flow from webhook to channel handler",
+      "mode": "focused",
+      "key_files": 10,
+      "key_symbols": 20,
+      "execution_paths": 5,
+      "snippets": 20,
+      "relevant_tests": 8,
+      "subsystems": [
+        "agents",
+        "commands",
+        "extensions",
+        "ui",
+        "utils"
+      ],
+      "pruner_context_tokens": 13152,
+      "duration_secs": 0.525455625
+    },
+    {
+      "category": "narrow_fix",
+      "query": "fix WebSocket reconnection timeout",
+      "mode": "focused",
+      "key_files": 10,
+      "key_symbols": 20,
+      "execution_paths": 5,
+      "snippets": 20,
+      "relevant_tests": 8,
+      "subsystems": [
+        "agents",
+        "apps",
+        "browser",
+        "cli",
+        "cron",
+        "extensions",
+        "infra",
+        "node-host",
+        "process",
+        "test",
+        "utils"
+      ],
+      "pruner_context_tokens": 12973,
+      "duration_secs": 0.525578708
+    },
+    {
+      "category": "understanding",
+      "query": "how does the skill execution pipeline work",
+      "mode": "focused",
+      "key_files": 10,
+      "key_symbols": 20,
+      "execution_paths": 5,
+      "snippets": 20,
+      "relevant_tests": 8,
+      "subsystems": [
+        "agents",
+        "config",
+        "extensions",
+        "infra",
+        "security",
+        "skills",
+        "ui"
+      ],
+      "pruner_context_tokens": 13154,
+      "duration_secs": 0.41409075
+    },
+    {
+      "category": "cross_cutting",
+      "query": "add correlation ID across middleware and handlers",
+      "mode": "focused",
+      "key_files": 10,
+      "key_symbols": 20,
+      "execution_paths": 5,
+      "snippets": 20,
+      "relevant_tests": 8,
+      "subsystems": [
+        "acp",
+        "agents",
+        "browser",
+        "extensions",
+        "ui"
+      ],
+      "pruner_context_tokens": 12038,
+      "duration_secs": 0.525589917
+    },
+    {
+      "category": "data_flow",
+      "query": "how does authentication token validation work",
+      "mode": "focused",
+      "key_files": 10,
+      "key_symbols": 20,
+      "execution_paths": 5,
+      "snippets": 20,
+      "relevant_tests": 8,
+      "subsystems": [
+        "agents",
+        "cli",
+        "commands",
+        "config",
+        "docs",
+        "extensions",
+        "gateway",
+        "infra",
+        "plugins",
+        "test-utils",
+        "ui"
+      ],
+      "pruner_context_tokens": 12047,
+      "duration_secs": 0.3142865
+    },
     {
       "category": "cross_package",
       "query": "how does a message flow from webhook to channel handler",
@@ -25,7 +134,7 @@
         "utils"
       ],
       "pruner_context_tokens": 54172,
-      "duration_secs": 0.525439166
+      "duration_secs": 0.520579875
     },
     {
       "category": "narrow_fix",
@@ -50,7 +159,7 @@
         "utils"
       ],
       "pruner_context_tokens": 56666,
-      "duration_secs": 0.418334208
+      "duration_secs": 0.520229583
     },
     {
       "category": "understanding",
@@ -71,7 +180,7 @@
         "ui"
       ],
       "pruner_context_tokens": 63630,
-      "duration_secs": 0.414380292
+      "duration_secs": 0.419620875
     },
     {
       "category": "cross_cutting",
@@ -90,7 +199,7 @@
         "ui"
       ],
       "pruner_context_tokens": 68440,
-      "duration_secs": 0.523915959
+      "duration_secs": 0.523251291
     },
     {
       "category": "data_flow",
@@ -103,7 +212,6 @@
       "relevant_tests": 10,
       "subsystems": [
         "agents",
-        "auto-reply",
         "cli",
         "commands",
         "config",
@@ -112,10 +220,11 @@
         "gateway",
         "infra",
         "plugins",
-        "test-utils"
+        "test-utils",
+        "ui"
       ],
-      "pruner_context_tokens": 59773,
-      "duration_secs": 0.314583292
+      "pruner_context_tokens": 59767,
+      "duration_secs": 0.30819725
     },
     {
       "category": "cross_package",
@@ -134,7 +243,7 @@
         "utils"
       ],
       "pruner_context_tokens": 3332,
-      "duration_secs": 0.521188667
+      "duration_secs": 0.522808792
     },
     {
       "category": "narrow_fix",
@@ -159,7 +268,7 @@
         "utils"
       ],
       "pruner_context_tokens": 3000,
-      "duration_secs": 0.525594291
+      "duration_secs": 0.524636625
     },
     {
       "category": "understanding",
@@ -180,7 +289,7 @@
         "ui"
       ],
       "pruner_context_tokens": 2944,
-      "duration_secs": 0.4139895
+      "duration_secs": 0.42060725
     },
     {
       "category": "cross_cutting",
@@ -199,7 +308,7 @@
         "ui"
       ],
       "pruner_context_tokens": 2827,
-      "duration_secs": 0.420433417
+      "duration_secs": 0.5207115
     },
     {
       "category": "data_flow",
@@ -212,7 +321,6 @@
       "relevant_tests": 5,
       "subsystems": [
         "agents",
-        "auto-reply",
         "cli",
         "commands",
         "config",
@@ -221,10 +329,11 @@
         "gateway",
         "infra",
         "plugins",
-        "test-utils"
+        "test-utils",
+        "ui"
       ],
       "pruner_context_tokens": 2885,
-      "duration_secs": 0.315399291
+      "duration_secs": 0.310603542
     }
   ]
 }

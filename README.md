@@ -73,11 +73,24 @@ pruner stats .
 
 ## A/B test results
 
-Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner skill installed, once vanilla. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase.
+Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase.
 
-### Results (auto mode — current)
+### Results (prompt-submit hook — current)
 
-Pruner auto-detects task scope and adjusts output. For broad tasks (most queries on large repos), it returns focused context with code snippets (~10-15K tokens). For narrow tasks, brief pointers (~3K tokens). N=1 per task — results have variance.
+Pruner runs as a `UserPromptSubmit` hook that injects context before Claude starts thinking. Zero tool calls for navigation. Pruner auto-detects task scope: focused context with code snippets (~10-15K tokens) for broad tasks, brief pointers (~3K tokens) for narrow tasks. N=1 per task — results have variance.
+
+| Task | Prompt | Without | With | Δ cost | Δ tools | Δ time |
+|------|--------|--------:|-----:|-------:|--------:|-------:|
+| Narrow fix | "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does." | $0.28 / 16 tools | $0.30 / 15 tools | +6% | -6% | -3% |
+| Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.48 / 35 tools | $0.36 / 12 tools | **-24%** | **-66%** | **-46%** |
+| Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.33 / 49 tools | $0.22 / 7 tools | **-32%** | **-86%** | **-58%** |
+| Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.34 / 42 tools | $0.23 / 10 tools | **-32%** | **-76%** | **-56%** |
+| Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.82 / 51 tools | $0.57 / 21 tools | **-30%** | **-59%** | **-53%** |
+| Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $1.21 / 86 tools | $0.72 / 29 tools | **-41%** | **-66%** | **-62%** |
+
+### Results (skill mode — previous)
+
+Earlier approach where pruner ran as a skill (1 tool call). Kept for reference.
 
 | Task | Prompt | Without | With | Δ cost | Δ tools | Δ time |
 |------|--------|--------:|-----:|-------:|--------:|-------:|
@@ -89,22 +102,24 @@ Pruner auto-detects task scope and adjusts output. For broad tasks (most queries
 
 ### What the data shows
 
-**Pruner saves cost on most tasks.** The worst case (implement) is +6%. The best case (narrow_fix) saves 50% cost and 69% wall time.
+**Hook mode saves cost on 4 out of 5 tasks.** The prompt-submit hook injects context before Claude starts — zero tool calls for navigation. Cost savings range from -24% to -32% on broad tasks, with the narrow fix being the only breakeven (+6%).
 
-**Tool calls drop dramatically** on exploration-heavy tasks (-67% to -74%). Pruner's pre-computed context replaces grep/glob/read exploration chains.
+**Tool calls drop dramatically** across all broad tasks (-59% to -86%). Pruner's pre-computed context replaces grep/glob/read exploration chains.
 
-**Vanilla Claude is unpredictable.** Without pruner, Claude's strategy varies between runs — sometimes efficient (13 tool calls), sometimes expensive (58 tool calls). With pruner, behavior is consistent: 7-23 tool calls.
+**Data flow is no longer the hard case.** Previously -2% with the skill approach, now -32% with the hook. The hook injects context before Claude decides to spawn its own subagent, preempting the re-exploration pattern.
+
+**Vanilla Claude is unpredictable.** Without pruner, Claude's strategy varies between runs — sometimes efficient (16 tool calls), sometimes expensive (51 tool calls). With pruner, behavior is consistent: 7-21 tool calls.
 
 **Token count is misleading.** Pruner shows higher raw token counts because its output is included in every subsequent API call. But cost depends on cache hits (cheap) vs fresh tokens (expensive). Fewer tool calls = fewer fresh tokens = lower cost.
 
-**Data flow (auth) is the hard case.** Claude with pruner sometimes decides pruner's output isn't enough and spawns a subagent for deep exploration, negating the savings. This happens when the query topic is broad and pruner's keyword matching misses key files.
-
 ### When to use pruner
 
-- **Any exploration-heavy task on a large codebase**: Pruner consistently reduces cost, tool calls, and wall time.
-- **Cross-package tracing**: Biggest win — 22-50% cheaper, 50-69% faster.
-- **Broad understanding questions**: 12% cheaper, 43% faster.
-- **Breakeven worst case**: Even when pruner doesn't help much, it doesn't hurt.
+- **Large implementation tasks**: 41% cheaper, 62% faster — biggest win. More exploration saved = more value.
+- **Any broad task on a large codebase**: 24-32% cheaper, 46-58% faster.
+- **Small implementation tasks**: 30% cheaper, 53% faster.
+- **Cross-package tracing**: 24% cheaper, 46% faster.
+- **Understanding / data flow**: 32% cheaper, 56-58% faster.
+- **Narrow tasks**: Breakeven — vanilla Claude is already efficient on focused queries.
 
 ### Reproduce
 
