@@ -172,14 +172,15 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 ### Reproduce
 
 ```bash
-# Install pruner in PATH first
-cargo build --release && ln -sf $(pwd)/target/release/pruner /usr/local/bin/pruner
+# Install pruner
+make install
 
 # Run real A/B test (requires claude CLI, ~$2 per run)
-python3 tests/ab_test.py                          # all tasks
-python3 tests/ab_test.py --task cross_package      # single task
-python3 tests/ab_test.py --task narrow_fix --save-raw  # with raw output
-python3 tests/ab_test.py /path/to/repo             # any repo
+python3 tests/ab_test.py                                    # all tasks, hook mode
+python3 tests/ab_test.py --task cross_package               # single task
+python3 tests/ab_test.py --task implement --mode skill      # skill mode
+python3 tests/ab_test.py --task narrow_fix --save-raw       # save raw output
+python3 tests/ab_test.py /path/to/repo                      # any repo
 
 # Quick benchmark (no claude CLI needed)
 make bench
