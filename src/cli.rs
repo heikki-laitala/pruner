@@ -273,7 +273,7 @@ fn cmd_context(
     let db = open_or_create_db(repo, false)?;
     let repo_path = repo.canonicalize()?;
     let result = query::analyze_query(ask, &db)?;
-    let ctx = context::generate_context(&result, &db, &repo_path, max_snippet_lines, brief)?;
+    let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, brief)?;
 
     if brief {
         // Write full context to .pruner/context.md

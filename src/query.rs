@@ -571,15 +571,19 @@ fn score_and_rank_files<'a>(
 
     // 3rd+ file with same name gets halved score
     let mut name_counts: HashMap<&str, usize> = HashMap::new();
+    let mut had_dupes = false;
     for (file, score) in &mut scored {
         let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
         let count = name_counts.entry(filename).or_insert(0);
         *count += 1;
         if *count > 2 {
             *score /= 2;
+            had_dupes = true;
         }
     }
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    if had_dupes {
+        scored.sort_by(|a, b| b.1.cmp(&a.1));
+    }
     scored
 }
 

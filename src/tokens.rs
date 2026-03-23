@@ -60,7 +60,7 @@ pub fn measure(
     max_snippet_lines: usize,
 ) -> Result<Measurement> {
     // Generate pruner context
-    let ctx = generate_context(query_result, db, repo_path, max_snippet_lines, false)?;
+    let ctx = generate_context(query_result, repo_path, max_snippet_lines, false)?;
     let text_output = format_context_text(&ctx);
     let json_output = context::format_context_json(&ctx)?;
 
@@ -275,7 +275,7 @@ pub fn estimate_claude_session(
     // --- WITH pruner ---
 
     // Step 1: pruner context output
-    let ctx = generate_context(query_result, db, repo_path, max_snippet_lines, false)?;
+    let ctx = generate_context(query_result, repo_path, max_snippet_lines, false)?;
     let pruner_text = format_context_text(&ctx);
     est.with_pruner_context_tokens = estimate_tokens(&pruner_text);
 

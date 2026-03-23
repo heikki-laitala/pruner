@@ -56,6 +56,24 @@ struct QueryMetrics {
     duration_secs: f64,
 }
 
+impl QueryMetrics {
+    fn empty(category: &str, query: &str, mode: &str, duration_secs: f64) -> Self {
+        Self {
+            category: category.to_string(),
+            query: query.to_string(),
+            mode: mode.to_string(),
+            key_files: 0,
+            key_symbols: 0,
+            execution_paths: 0,
+            snippets: 0,
+            relevant_tests: 0,
+            subsystems: Vec::new(),
+            pruner_context_tokens: 0,
+            duration_secs,
+        }
+    }
+}
+
 fn pruner_bin() -> PathBuf {
     // Prefer release binary for performance
     let release = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -174,19 +192,7 @@ fn bench_real_repo() {
                 Some(o) => o,
                 None => {
                     eprintln!("  TIMEOUT after {}s — skipping", QUERY_TIMEOUT.as_secs());
-                    queries.push(QueryMetrics {
-                        category: category.to_string(),
-                        query: query.to_string(),
-                        mode: mode.to_string(),
-                        key_files: 0,
-                        key_symbols: 0,
-                        execution_paths: 0,
-                        snippets: 0,
-                        relevant_tests: 0,
-                        subsystems: Vec::new(),
-                        pruner_context_tokens: 0,
-                        duration_secs: QUERY_TIMEOUT.as_secs_f64(),
-                    });
+                    queries.push(QueryMetrics::empty(category, query, mode, QUERY_TIMEOUT.as_secs_f64()));
                     continue;
                 }
             };
@@ -199,19 +205,7 @@ fn bench_real_repo() {
                 Err(e) => {
                     eprintln!("  WARN: failed to parse JSON ({e}), stderr: {}",
                         String::from_utf8_lossy(&output.stderr).lines().take(3).collect::<Vec<_>>().join(" | "));
-                    queries.push(QueryMetrics {
-                        category: category.to_string(),
-                        query: query.to_string(),
-                        mode: mode.to_string(),
-                        key_files: 0,
-                        key_symbols: 0,
-                        execution_paths: 0,
-                        snippets: 0,
-                        relevant_tests: 0,
-                        subsystems: Vec::new(),
-                        pruner_context_tokens: 0,
-                        duration_secs: duration.as_secs_f64(),
-                    });
+                    queries.push(QueryMetrics::empty(category, query, mode, duration.as_secs_f64()));
                     continue;
                 }
             };

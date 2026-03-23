@@ -1,7 +1,6 @@
 //! Context package generation (text + JSON).
 //!
 
-use crate::db::IndexDb;
 use crate::query::QueryResult;
 use anyhow::Result;
 use serde::Serialize;
@@ -93,7 +92,6 @@ impl Limits {
 /// Generate a context package from query results.
 pub fn generate_context(
     query: &QueryResult,
-    _db: &IndexDb,
     repo_path: &Path,
     max_snippet_lines: usize,
     brief: bool,
@@ -461,7 +459,7 @@ mod tests {
         db.insert_call(s, "verify", 2).unwrap();
 
         let result = query::analyze_query("login", &db).unwrap();
-        let ctx = generate_context(&result, &db, tmp.path(), 50, true).unwrap();
+        let ctx = generate_context(&result, tmp.path(), 50, true).unwrap();
 
         assert!(!ctx.key_files.is_empty());
         // Brief mode limits snippets to 10 lines
