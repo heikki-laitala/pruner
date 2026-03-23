@@ -2,6 +2,8 @@
 
 Synthetic code context engine for LLM coding tasks. Indexes a repository structurally, infers relevant execution paths from natural language asks, and generates compact LLM-ready context packages — all without using an LLM for indexing.
 
+**Recommended setup for Claude Code:** install with `--hook` flag to inject context automatically via prompt-submit hook. Saves 24-41% cost and 46-62% time on broad tasks. For other agents (Codex, Copilot), use skill mode.
+
 ## Install
 
 ### Quick install (pre-built binary)
@@ -120,9 +122,9 @@ pruner stats .
 
 Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase.
 
-### Results (prompt-submit hook — current)
+### Results (prompt-submit hook — recommended)
 
-Pruner runs as a `UserPromptSubmit` hook that injects context before Claude starts thinking. Zero tool calls for navigation. Pruner auto-detects task scope: focused context with code snippets (~10-15K tokens) for broad tasks, brief pointers (~3K tokens) for narrow tasks. N=1 per task — results have variance.
+The recommended setup for Claude Code. Pruner runs as a `UserPromptSubmit` hook that injects context before Claude starts thinking. Zero tool calls for navigation. Pruner auto-detects task scope: focused context with code snippets (~10-15K tokens) for broad tasks, brief pointers (~3K tokens) for narrow tasks. N=1 per task — results have variance.
 
 | Task | Prompt | Without | With | Δ cost | Δ tools | Δ time |
 |------|--------|--------:|-----:|-------:|--------:|-------:|
@@ -133,9 +135,9 @@ Pruner runs as a `UserPromptSubmit` hook that injects context before Claude star
 | Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.82 / 51 tools | $0.57 / 21 tools | **-30%** | **-59%** | **-53%** |
 | Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $1.21 / 86 tools | $0.72 / 29 tools | **-41%** | **-66%** | **-62%** |
 
-### Results (skill mode — previous)
+### Results (skill mode — for Codex, Copilot, etc.)
 
-Earlier approach where pruner ran as a skill (1 tool call). Kept for reference.
+Skill mode where Claude calls `pruner context` as a tool. Works with any AI agent, not just Claude Code.
 
 | Task | Prompt | Without | With | Δ cost | Δ tools | Δ time |
 |------|--------|--------:|-----:|-------:|--------:|-------:|
