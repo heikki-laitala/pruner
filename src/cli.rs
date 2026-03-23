@@ -1,7 +1,7 @@
 //! CLI interface.
 //!
 
-use crate::context::{self, format_context_json, format_context_summary, format_context_text, ContextMode};
+use crate::context::{self, detect_mode, format_context_json, format_context_summary, format_context_text, ContextMode};
 use crate::db::IndexDb;
 use crate::indexer;
 use crate::query;
@@ -123,7 +123,7 @@ pub fn run() -> Result<()> {
         Commands::Index { repo, verbose } => cmd_index(&repo, verbose),
         Commands::Query { repo, ask, json_output } => cmd_query(&repo, &ask, json_output),
         Commands::Context { repo, ask, format, max_snippet_lines, brief, full, output } => {
-            let mode = if brief { ContextMode::Brief } else if full { ContextMode::Full } else { ContextMode::Focused };
+            let mode = if brief { ContextMode::Brief } else if full { ContextMode::Full } else { ContextMode::Auto };
             cmd_context(&repo, &ask, &format, max_snippet_lines, mode, output.as_deref())
         }
         Commands::ShowFile { repo, path } => cmd_show_file(&repo, &path),
@@ -277,9 +277,24 @@ fn cmd_context(
     let db = open_or_create_db(repo, false)?;
     let repo_path = repo.canonicalize()?;
     let result = query::analyze_query(ask, &db)?;
-    let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, mode)?;
 
-    if mode == ContextMode::Brief {
+    // Resolve auto mode and report the decision
+    let resolved = if mode == ContextMode::Auto {
+        let detected = detect_mode(&result);
+        let label = match detected {
+            ContextMode::Brief => "brief (narrow task: few files, single subsystem)",
+            ContextMode::Focused => "focused (broad task: multiple files/subsystems)",
+            _ => unreachable!(),
+        };
+        eprintln!("Mode: auto → {label}");
+        detected
+    } else {
+        mode
+    };
+
+    let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, resolved)?;
+
+    if resolved == ContextMode::Brief {
         // Write *full* context to .pruner/context.md so the LLM can drill deeper
         let full_ctx = context::generate_context(&result, &repo_path, max_snippet_lines, ContextMode::Full)?;
         let ctx_path = repo_path.join(INDEX_DIR).join("context.md");

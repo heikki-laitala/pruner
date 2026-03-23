@@ -64,12 +64,33 @@ pub struct Snippet {
 /// Output mode controls how much context is generated.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ContextMode {
+    /// Auto: detect from query results — brief for narrow, focused for broad
+    Auto,
     /// Brief: metadata only, no snippets (~3K tokens)
     Brief,
     /// Focused: metadata + key snippets (~10-15K tokens) — the default for agent use
     Focused,
     /// Full: everything, uncapped snippets (~50-70K tokens on large repos)
     Full,
+}
+
+/// Classify a query result as narrow or broad based on match spread.
+pub fn detect_mode(query: &QueryResult) -> ContextMode {
+    let file_count = query.matching_files.len();
+    let subsystem_count = query.subsystems.len();
+    let path_count = query.execution_paths.len();
+
+    // Narrow: few files concentrated in one subsystem
+    if file_count <= 3 && subsystem_count <= 1 {
+        return ContextMode::Brief;
+    }
+
+    // Also narrow: few files even across subsystems, no execution paths
+    if file_count <= 5 && path_count == 0 {
+        return ContextMode::Brief;
+    }
+
+    ContextMode::Focused
 }
 
 struct Limits {
@@ -86,6 +107,7 @@ struct Limits {
 impl Limits {
     fn for_mode(mode: ContextMode, max_snippet_lines: usize) -> Self {
         match mode {
+            ContextMode::Auto => Self::for_mode(ContextMode::Focused, max_snippet_lines),
             ContextMode::Brief => Self {
                 max_files: 8, max_symbols: 15, max_paths: 3, max_path_depth: 2,
                 max_steps_per_path: 10, max_tests: 5, max_snippets: 0, max_snippet_lines: 0,
@@ -110,7 +132,8 @@ pub fn generate_context(
     max_snippet_lines: usize,
     mode: ContextMode,
 ) -> Result<ContextPackage> {
-    let limits = Limits::for_mode(mode, max_snippet_lines);
+    let resolved = if mode == ContextMode::Auto { detect_mode(query) } else { mode };
+    let limits = Limits::for_mode(resolved, max_snippet_lines);
 
     // Execution paths
     let execution_paths: Vec<Vec<PathEntry>> = query
@@ -501,5 +524,48 @@ mod tests {
         let text = format_context_text(&ctx);
         // When no signature, should use the name
         assert!(text.contains("`foo` (function)"));
+    }
+
+    #[test]
+    fn test_detect_mode_narrow() {
+        use crate::db::FileRow;
+        let result = QueryResult {
+            ask: "fix login".into(),
+            keywords: vec!["login".into()],
+            matching_files: vec![FileRow {
+                id: 1, path: "src/auth.rs".into(), language: Some("rust".into()),
+                size: 100, line_count: 50, is_test: false,
+            }],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec!["src".into()],
+        };
+        assert_eq!(detect_mode(&result), ContextMode::Brief);
+    }
+
+    #[test]
+    fn test_detect_mode_broad() {
+        use crate::db::FileRow;
+        let make_file = |id, path: &str| FileRow {
+            id, path: path.into(), language: Some("rust".into()),
+            size: 100, line_count: 50, is_test: false,
+        };
+        let result = QueryResult {
+            ask: "how does auth flow work".into(),
+            keywords: vec!["auth".into(), "flow".into()],
+            matching_files: vec![
+                make_file(1, "src/auth/login.rs"),
+                make_file(2, "src/auth/token.rs"),
+                make_file(3, "src/middleware/session.rs"),
+                make_file(4, "src/api/handler.rs"),
+                make_file(5, "src/gateway/validate.rs"),
+            ],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![vec![]],
+            subsystems: vec!["auth".into(), "middleware".into(), "api".into()],
+        };
+        assert_eq!(detect_mode(&result), ContextMode::Focused);
     }
 }

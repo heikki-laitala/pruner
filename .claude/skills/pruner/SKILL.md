@@ -8,7 +8,9 @@ user-invocable: false
 
 # Pruner — Code Context Engine
 
-Run one command to get focused context (~10-15K tokens) with key files, symbols, execution paths, and relevant code snippets. This replaces manual grep/glob exploration.
+Run one command to get context. Pruner auto-detects whether the task is narrow or broad and adjusts output accordingly:
+- **Narrow tasks** (few files, single subsystem): brief output (~3K tokens) — just pointers
+- **Broad tasks** (many files, multiple subsystems): focused output (~10-15K tokens) — includes code snippets
 
 ## Usage
 
@@ -18,17 +20,9 @@ pruner context /absolute/path/to/repo "<the user's ask>"
 
 IMPORTANT: Always pass the repo as an absolute path argument. Do NOT use `cd <repo> && pruner context .` — the shell sandbox may reset the working directory.
 
-This prints a focused context package containing:
-- Keywords and subsystems
-- Execution paths through the call graph
-- Key files (top 10)
-- Key symbols with locations (top 20)
-- Code snippets for matched symbols (top 20, up to 30 lines each)
-- Related tests
-
 ## After running pruner
 
-1. **Read the output** — it contains the actual code snippets you need. In most cases you can proceed directly to the task.
+1. **Read the output** — for broad tasks it contains actual code snippets. For narrow tasks it gives file/symbol pointers.
 2. **Read source files only if needed** — if a snippet is truncated or you need surrounding context, use the file:line pointers from the output.
 3. **Do NOT re-explore** — pruner already searched the index. Do not grep or glob for the same keywords.
 
