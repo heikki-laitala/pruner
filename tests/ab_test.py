@@ -1,123 +1,289 @@
 #!/usr/bin/env python3
-"""A/B test: brief+read vs full-dump vs no-pruner (simulated) on a real repo.
+"""A/B test: real Claude Code sessions with and without pruner on a real repo.
+
+Sets up two clones of the test repo:
+  A — with pruner skill + CLAUDE.md instructions installed
+  B — vanilla (no pruner)
+
+Runs Claude Code (opus) on identical tasks in parallel, measures actual
+token usage, tool calls, cost, and turns.
 
 Usage:
     python3 tests/ab_test.py [/path/to/repo]
 
-Defaults to /tmp/pruner-bench/openclaw. Requires `pruner` release binary.
+Requires:
+  - `claude` CLI installed and logged in
+  - `pruner` release binary built (cargo build --release)
+
+Default repo: /tmp/pruner-bench/openclaw
 """
 
-import subprocess, json, re, os, sys
+import subprocess, json, os, sys, time, shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 REPO = sys.argv[1] if len(sys.argv) > 1 else "/tmp/pruner-bench/openclaw"
-BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../target/release/pruner")
+PRUNER_DIR = Path(__file__).resolve().parent.parent
+PRUNER_BIN = PRUNER_DIR / "target" / "release" / "pruner"
+SKILL_SRC = PRUNER_DIR / ".claude" / "skills" / "pruner" / "SKILL.md"
+CLAUDE_TEMPLATE = PRUNER_DIR / "CLAUDE.template.md"
 
-QUERIES = [
-    ("cross_package", "how does a message flow from webhook to channel handler"),
-    ("narrow_fix", "fix WebSocket reconnection timeout"),
-    ("understanding", "how does the skill execution pipeline work"),
-    ("cross_cutting", "add correlation ID across middleware and handlers"),
-    ("data_flow", "how does authentication token validation work"),
+# Test workspace: two clones — one with pruner, one without
+WORK_DIR = Path("/tmp/pruner-bench/ab-workspace")
+CLONE_WITH = WORK_DIR / "with-pruner"
+CLONE_WITHOUT = WORK_DIR / "without-pruner"
+
+MODEL = "opus"
+MAX_TURNS = 15
+
+# Tasks to test — designed to require different exploration strategies.
+# Prompts reference "this repo" since claude runs inside the clone.
+TASKS = [
+    (
+        "narrow_fix",
+        "What files handle WebSocket reconnection in this repo? "
+        "List the file paths and briefly explain what each does.",
+    ),
+    (
+        "cross_package",
+        "How does a message flow from a webhook received by an extension "
+        "to the core message handler in this repo? Trace the path through the key files.",
+    ),
+    (
+        "understanding",
+        "How does the plugin/extension loading system work in this repo? "
+        "What are the key files and entry points?",
+    ),
+    (
+        "data_flow",
+        "How does authentication and token validation work in this repo? "
+        "List the key files and describe the flow.",
+    ),
 ]
 
 
-def estimate_tokens(text):
-    return len(re.findall(r"\w+|[^\w\s]|\n", text))
+def setup_clones():
+    """Create two copies of the repo: one with pruner, one without."""
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+    for clone_path, label in [(CLONE_WITH, "with-pruner"), (CLONE_WITHOUT, "without-pruner")]:
+        if clone_path.exists():
+            print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
+            continue
+        print(f"  Copying {REPO} -> {clone_path} ...", file=sys.stderr)
+        shutil.copytree(REPO, clone_path, symlinks=True,
+                        ignore=shutil.ignore_patterns('.pruner'))
+
+    # Install pruner in the "with" clone
+    skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(SKILL_SRC, skill_dir / "SKILL.md")
+
+    # Append pruner instructions to CLAUDE.md
+    claude_md = CLONE_WITH / "CLAUDE.md"
+    template_text = CLAUDE_TEMPLATE.read_text()
+    current = claude_md.read_text() if claude_md.exists() else ""
+    if "pruner context" not in current:
+        with open(claude_md, "a") as f:
+            f.write("\n" + template_text)
+
+    # Index the with-pruner clone
+    print("  Indexing with-pruner clone ...", file=sys.stderr)
+    subprocess.run(
+        [str(PRUNER_BIN), "index", str(CLONE_WITH)],
+        capture_output=True, check=True,
+    )
+
+    # Remove any pruner artifacts from the "without" clone
+    for p in [CLONE_WITHOUT / ".claude" / "skills" / "pruner",
+              CLONE_WITHOUT / ".pruner"]:
+        if p.exists():
+            shutil.rmtree(p)
+
+    print("  Setup complete.", file=sys.stderr)
 
 
-def run_cmd(args):
-    r = subprocess.run(args, capture_output=True, text=True, timeout=120)
-    return r.stdout, r.stderr
+def run_claude(prompt, repo_dir, label=""):
+    """Run claude -p inside the repo directory and return parsed results."""
+    # Use a wrapper script to cd into the repo before running claude,
+    # ensuring Claude picks up that repo's CLAUDE.md and skills.
+    wrapper = WORK_DIR / "run_claude.sh"
+    if not wrapper.exists():
+        wrapper.write_text("#!/bin/bash\ncd \"$1\" && shift && exec claude \"$@\"\n")
+        wrapper.chmod(0o755)
+
+    args = [
+        str(wrapper), str(repo_dir),
+        "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--max-turns", str(MAX_TURNS),
+        "--model", MODEL,
+        "--permission-mode", "bypassPermissions",
+        "--no-session-persistence",
+    ]
+
+    start = time.time()
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    wall_time = time.time() - start
+
+    tools = []
+    result_data = None
+
+    for line in proc.stdout.splitlines():
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if d.get("type") == "assistant":
+            for c in d.get("message", {}).get("content", []):
+                if c.get("type") == "tool_use":
+                    tools.append({
+                        "name": c["name"],
+                        "input_preview": str(c.get("input", {}))[:200],
+                    })
+
+        if d.get("type") == "result":
+            result_data = d
+
+    if not result_data:
+        print(f"  WARN [{label}]: no result data", file=sys.stderr)
+        return None
+
+    u = result_data.get("usage", {})
+    input_tokens = (
+        u.get("input_tokens", 0)
+        + u.get("cache_read_input_tokens", 0)
+        + u.get("cache_creation_input_tokens", 0)
+    )
+    output_tokens = u.get("output_tokens", 0)
+
+    return {
+        "turns": result_data.get("num_turns", 0),
+        "cost_usd": result_data.get("total_cost_usd", 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "tool_calls": len(tools),
+        "tools": tools,
+        "wall_time_s": round(wall_time, 1),
+        "result_preview": result_data.get("result", "")[:300],
+    }
 
 
-def get_file_tokens(repo, path):
-    """Read a file and estimate its tokens."""
-    full = os.path.join(repo, path)
-    try:
-        with open(full) as f:
-            return estimate_tokens(f.read())
-    except Exception:
-        return 0
+def run_task(category, prompt):
+    """Run one task with and without pruner (in parallel)."""
+    print(f"\n=== [{category}] Starting both modes in parallel ===", file=sys.stderr)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_without = pool.submit(
+            run_claude, prompt, CLONE_WITHOUT, f"{category}/without"
+        )
+        future_with = pool.submit(
+            run_claude, prompt, CLONE_WITH, f"{category}/with"
+        )
+
+        without = future_without.result()
+        with_p = future_with.result()
+
+    if without:
+        print(
+            f"  WITHOUT: turns={without['turns']} tools={without['tool_calls']} "
+            f"tokens={without['total_tokens']:,} cost=${without['cost_usd']:.4f} "
+            f"time={without['wall_time_s']}s",
+            file=sys.stderr,
+        )
+        for t in without["tools"]:
+            print(f"    {t['name']}: {t['input_preview'][:80]}", file=sys.stderr)
+
+    if with_p:
+        print(
+            f"  WITH:    turns={with_p['turns']} tools={with_p['tool_calls']} "
+            f"tokens={with_p['total_tokens']:,} cost=${with_p['cost_usd']:.4f} "
+            f"time={with_p['wall_time_s']}s",
+            file=sys.stderr,
+        )
+        for t in with_p["tools"]:
+            print(f"    {t['name']}: {t['input_preview'][:80]}", file=sys.stderr)
+
+    return without, with_p
 
 
 def main():
-    assert os.path.exists(BIN), f"pruner binary not found at {BIN} — run cargo build --release"
-    assert os.path.isdir(REPO), f"repo not found at {REPO}"
+    assert shutil.which("claude"), "claude CLI not found"
+    assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
+    assert Path(REPO).is_dir(), f"repo not found at {REPO}"
 
-    # Ensure indexed
-    subprocess.run([BIN, "index", REPO], capture_output=True, check=True)
+    print("Setting up test clones ...", file=sys.stderr)
+    setup_clones()
 
     results = []
 
-    for category, query in QUERIES:
-        print(f"\n=== [{category}] {query} ===", file=sys.stderr)
+    for category, prompt in TASKS:
+        without, with_p = run_task(category, prompt)
 
-        # Strategy A: Brief + targeted reads
-        brief_out, _ = run_cmd([BIN, "context", REPO, query, "--brief", "--format", "json"])
-        brief_json = json.loads(brief_out)
-        brief_tokens = estimate_tokens(brief_out)
+        if without and with_p:
+            token_delta = (
+                (with_p["total_tokens"] - without["total_tokens"])
+                / without["total_tokens"] * 100
+                if without["total_tokens"] else 0
+            )
+            cost_delta = (
+                (with_p["cost_usd"] - without["cost_usd"])
+                / without["cost_usd"] * 100
+                if without["cost_usd"] else 0
+            )
+            results.append({
+                "category": category,
+                "without": without,
+                "with_pruner": with_p,
+                "token_delta_pct": round(token_delta, 1),
+                "cost_delta_pct": round(cost_delta, 1),
+            })
+        else:
+            results.append({
+                "category": category,
+                "without": without,
+                "with_pruner": with_p,
+                "token_delta_pct": None,
+                "cost_delta_pct": None,
+            })
 
-        key_files = [f["path"] for f in brief_json["key_files"]]
-        read_tokens = sum(get_file_tokens(REPO, p) for p in key_files)
-        strategy_a = brief_tokens + read_tokens
-
-        # Strategy B: Full context dump
-        full_out, _ = run_cmd([BIN, "context", REPO, query, "--format", "json"])
-        full_tokens = estimate_tokens(full_out)
-
-        # Strategy C: No pruner — simulated vanilla Claude Code exploration
-        # (glob for structure, grep for keywords, read relevant + some irrelevant files)
-        est_out, _ = run_cmd([BIN, "estimate", REPO, query, "--json-output"])
-        est = json.loads(est_out)
-        no_pruner_tokens = est["without_pruner"]["total_tokens"]
-
-        print(f"  Brief:         {brief_tokens:>6} tokens ({len(key_files)} files listed)", file=sys.stderr)
-        print(f"  + File reads:  {read_tokens:>6} tokens", file=sys.stderr)
-        print(f"  = Strategy A:  {strategy_a:>6} tokens (brief + read {len(key_files)} files)", file=sys.stderr)
-        print(f"  Strategy B:    {full_tokens:>6} tokens (full context dump)", file=sys.stderr)
-        print(f"  Strategy C:    {no_pruner_tokens:>6} tokens (no pruner, explore)", file=sys.stderr)
-
-        a_vs_b = ((strategy_a - full_tokens) / full_tokens * 100) if full_tokens else 0
-        a_vs_c = ((strategy_a - no_pruner_tokens) / no_pruner_tokens * 100) if no_pruner_tokens else 0
-        b_vs_c = ((full_tokens - no_pruner_tokens) / no_pruner_tokens * 100) if no_pruner_tokens else 0
-
-        results.append({
-            "category": category,
-            "query": query,
-            "brief_tokens": brief_tokens,
-            "read_tokens": read_tokens,
-            "key_files": len(key_files),
-            "strategy_a": strategy_a,
-            "strategy_b": full_tokens,
-            "strategy_c": no_pruner_tokens,
-            "a_vs_b_pct": round(a_vs_b, 1),
-            "a_vs_c_pct": round(a_vs_c, 1),
-            "b_vs_c_pct": round(b_vs_c, 1),
-        })
-
-    # Print JSON results to stdout
+    # JSON to stdout
     print(json.dumps(results, indent=2))
 
-    # Print summary table to stderr
+    # Summary table to stderr
     print("\n=== Summary ===", file=sys.stderr)
-    print(f"{'Category':<16} {'A (brief+read)':>14} {'B (full dump)':>14} {'C (no pruner)':>14} {'A vs B':>8} {'A vs C':>8}", file=sys.stderr)
-    print("-" * 82, file=sys.stderr)
-    for r in results:
+    valid = [r for r in results if r["token_delta_pct"] is not None]
+    print(
+        f"{'Task':<16} {'W/O tokens':>12} {'W/ tokens':>12} {'Δ tokens':>10} "
+        f"{'W/O cost':>10} {'W/ cost':>10} {'Δ cost':>10} "
+        f"{'W/O tools':>10} {'W/ tools':>10}",
+        file=sys.stderr,
+    )
+    print("-" * 112, file=sys.stderr)
+    for r in valid:
+        w = r["without"]
+        p = r["with_pruner"]
         print(
-            f"{r['category']:<16} {r['strategy_a']:>14,} {r['strategy_b']:>14,} {r['strategy_c']:>14,} {r['a_vs_b_pct']:>+7.1f}% {r['a_vs_c_pct']:>+7.1f}%",
+            f"{r['category']:<16} {w['total_tokens']:>12,} {p['total_tokens']:>12,} "
+            f"{r['token_delta_pct']:>+9.1f}% "
+            f"${w['cost_usd']:>9.4f} ${p['cost_usd']:>9.4f} "
+            f"{r['cost_delta_pct']:>+9.1f}% "
+            f"{w['tool_calls']:>10} {p['tool_calls']:>10}",
             file=sys.stderr,
         )
 
-    avg_a = sum(r["strategy_a"] for r in results) // len(results)
-    avg_b = sum(r["strategy_b"] for r in results) // len(results)
-    avg_c = sum(r["strategy_c"] for r in results) // len(results)
-    avg_a_vs_b = sum(r["a_vs_b_pct"] for r in results) / len(results)
-    avg_a_vs_c = sum(r["a_vs_c_pct"] for r in results) / len(results)
-    print("-" * 82, file=sys.stderr)
-    print(
-        f"{'Average':<16} {avg_a:>14,} {avg_b:>14,} {avg_c:>14,} {avg_a_vs_b:>+7.1f}% {avg_a_vs_c:>+7.1f}%",
-        file=sys.stderr,
-    )
+    if valid:
+        avg_token = sum(r["token_delta_pct"] for r in valid) / len(valid)
+        avg_cost = sum(r["cost_delta_pct"] for r in valid) / len(valid)
+        print("-" * 112, file=sys.stderr)
+        print(
+            f"{'Average':<16} {'':>12} {'':>12} {avg_token:>+9.1f}% "
+            f"{'':>10} {'':>10} {avg_cost:>+9.1f}%",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":
