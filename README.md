@@ -142,9 +142,9 @@ pruner show-symbol . login
 pruner stats .
 ```
 
-## A/B test results
+## A/B test results (Claude Code)
 
-Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase.
+All results below are from real **Claude Code** sessions using the **opus** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla Claude Code. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase. Results for other agents (Codex, Copilot) have not been measured yet — pruner works with them via skill mode but performance numbers may differ.
 
 ### Results (prompt-submit hook — recommended)
 
