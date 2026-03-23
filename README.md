@@ -79,12 +79,12 @@ Real Claude Code (opus) sessions on [openclaw/openclaw](https://github.com/openc
 
 Pruner auto-detects task scope and adjusts output. For broad tasks (most queries on large repos), it returns focused context with code snippets (~10-15K tokens). For narrow tasks, brief pointers (~3K tokens). N=1 per task — results have variance.
 
-| Task | Without pruner | With pruner | Δ cost | Δ tool calls | Δ wall time |
-|------|---------------:|------------:|-------:|-------------:|------------:|
-| Narrow fix (WebSocket) | $0.45 / 27 tools | $0.22 / 7 tools | **-50%** | **-74%** | **-69%** |
-| Cross-package flow | $0.61 / 58 tools | $0.48 / 19 tools | **-22%** | **-67%** | **-50%** |
-| Understanding (plugins) | $0.40 / 57 tools | $0.35 / 19 tools | **-12%** | **-67%** | **-43%** |
-| Data flow (auth) | $0.45 / 55 tools | $0.44 / 54 tools | -2% | -2% | 0% |
+| Task | Prompt | Without | With | Δ cost | Δ tools | Δ time |
+|------|--------|--------:|-----:|-------:|--------:|-------:|
+| Narrow fix | "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does." | $0.45 / 27 tools | $0.22 / 7 tools | **-50%** | **-74%** | **-69%** |
+| Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.61 / 58 tools | $0.48 / 19 tools | **-22%** | **-67%** | **-50%** |
+| Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.40 / 57 tools | $0.35 / 19 tools | **-12%** | **-67%** | **-43%** |
+| Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.45 / 55 tools | $0.44 / 54 tools | -2% | -2% | 0% |
 
 ### What the data shows
 
