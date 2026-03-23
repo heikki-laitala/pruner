@@ -98,6 +98,18 @@ enum Commands {
         #[arg(long)]
         json_output: bool,
     },
+    /// Set up pruner in a project (skill, hook, CLAUDE.md)
+    Init {
+        /// Path to the project
+        #[arg(default_value = ".")]
+        repo: PathBuf,
+        /// Install prompt-submit hook (Claude Code only, better performance)
+        #[arg(long)]
+        hook: bool,
+        /// Install globally (~/.claude/) instead of project-local
+        #[arg(long)]
+        global: bool,
+    },
     /// Estimate realistic Claude Code token usage with and without pruner
     Estimate {
         /// Path to the repository
@@ -120,6 +132,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init { repo, hook, global } => cmd_init(&repo, hook, global),
         Commands::Index { repo, verbose } => cmd_index(&repo, verbose),
         Commands::Query { repo, ask, json_output } => cmd_query(&repo, &ask, json_output),
         Commands::Context { repo, ask, format, max_snippet_lines, brief, full, output } => {
@@ -224,6 +237,86 @@ fn format_index_age(repo: &Path) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+const SKILL_SKILL_MD: &str = include_str!("../.claude/skills/pruner/SKILL.skill.md");
+const SKILL_HOOK_MD: &str = include_str!("../.claude/skills/pruner/SKILL.hook.md");
+const HOOK_SCRIPT: &str = include_str!("../.claude/hooks/pruner-context.sh");
+const CLAUDE_TEMPLATE: &str = include_str!("../CLAUDE.template.md");
+
+fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
+    let base = if global {
+        dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+            .join(".claude")
+    } else {
+        repo.join(".claude")
+    };
+
+    // Install skill
+    let skill_dir = base.join("skills").join("pruner");
+    fs::create_dir_all(&skill_dir)?;
+    let skill_content = if hook { SKILL_HOOK_MD } else { SKILL_SKILL_MD };
+    fs::write(skill_dir.join("SKILL.md"), skill_content)?;
+    println!("Installed skill -> {}", skill_dir.join("SKILL.md").display());
+
+    // Install hook if requested
+    if hook {
+        let hook_dir = base.join("hooks");
+        fs::create_dir_all(&hook_dir)?;
+        let hook_path = hook_dir.join("pruner-context.sh");
+        fs::write(&hook_path, HOOK_SCRIPT)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
+        }
+        println!("Installed hook  -> {}", hook_path.display());
+
+        // Write hook settings
+        let settings_path = base.join("settings.json");
+        let mut settings: serde_json::Value = if settings_path.exists() {
+            serde_json::from_str(&fs::read_to_string(&settings_path)?)?
+        } else {
+            serde_json::json!({})
+        };
+        settings["hooks"] = serde_json::json!({
+            "UserPromptSubmit": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": hook_path.to_str().unwrap(),
+                    "timeout": 60
+                }]
+            }]
+        });
+        fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+        println!("Updated settings -> {}", settings_path.display());
+    }
+
+    // Append CLAUDE.md instructions (project-local only)
+    if !global {
+        let claude_md = repo.join("CLAUDE.md");
+        let current = if claude_md.exists() {
+            fs::read_to_string(&claude_md)?
+        } else {
+            String::new()
+        };
+        if !current.contains("pruner context") {
+            let mut f = fs::OpenOptions::new().create(true).append(true).open(&claude_md)?;
+            use std::io::Write;
+            write!(f, "\n{CLAUDE_TEMPLATE}")?;
+            println!("Updated CLAUDE.md -> {}", claude_md.display());
+        } else {
+            println!("CLAUDE.md already has pruner instructions");
+        }
+    }
+
+    if !global {
+        println!("\nNext: pruner index {}", repo.display());
+    }
+
+    Ok(())
 }
 
 fn cmd_index(repo: &Path, verbose: bool) -> Result<()> {
