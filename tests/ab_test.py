@@ -29,6 +29,7 @@ from pathlib import Path
 PRUNER_DIR = Path(__file__).resolve().parent.parent
 PRUNER_BIN = PRUNER_DIR / "target" / "release" / "pruner"
 SKILL_SRC = PRUNER_DIR / ".claude" / "skills" / "pruner" / "SKILL.md"
+HOOK_SRC = PRUNER_DIR / ".claude" / "hooks" / "pruner-context.sh"
 CLAUDE_TEMPLATE = PRUNER_DIR / "CLAUDE.template.md"
 
 WORK_DIR = Path("/tmp/pruner-bench/ab-workspace")
@@ -88,7 +89,35 @@ def setup_clones(repo):
         shutil.copytree(repo, clone_path, symlinks=True,
                         ignore=shutil.ignore_patterns('.pruner'))
 
-    # Install pruner in the "with" clone
+    # Install pruner hook in the "with" clone
+    hook_dir = CLONE_WITH / ".claude" / "hooks"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(HOOK_SRC, hook_dir / "pruner-context.sh")
+    (hook_dir / "pruner-context.sh").chmod(0o755)
+
+    # Install hook settings
+    settings_dir = CLONE_WITH / ".claude"
+    settings_file = settings_dir / "settings.json"
+    settings = {}
+    if settings_file.exists():
+        settings = json.loads(settings_file.read_text())
+    settings["hooks"] = {
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": str(hook_dir / "pruner-context.sh"),
+                        "timeout": 60,
+                    }
+                ],
+            }
+        ]
+    }
+    settings_file.write_text(json.dumps(settings, indent=2))
+
+    # Also install skill (hook injects context, skill provides show-symbol/show-file)
     skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
     skill_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(SKILL_SRC, skill_dir / "SKILL.md")
@@ -110,9 +139,16 @@ def setup_clones(repo):
 
     # Remove any pruner artifacts from the "without" clone
     for p in [CLONE_WITHOUT / ".claude" / "skills" / "pruner",
+              CLONE_WITHOUT / ".claude" / "hooks",
               CLONE_WITHOUT / ".pruner"]:
         if p.exists():
             shutil.rmtree(p)
+    # Remove hook settings if present
+    without_settings = CLONE_WITHOUT / ".claude" / "settings.json"
+    if without_settings.exists():
+        s = json.loads(without_settings.read_text())
+        s.pop("hooks", None)
+        without_settings.write_text(json.dumps(s, indent=2))
 
     print("  Setup complete.", file=sys.stderr)
 

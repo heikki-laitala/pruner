@@ -8,23 +8,18 @@ user-invocable: false
 
 # Pruner — Code Context Engine
 
-Run one command to get context. Pruner auto-detects whether the task is narrow or broad and adjusts output accordingly:
-- **Narrow tasks** (few files, single subsystem): brief output (~3K tokens) — just pointers
-- **Broad tasks** (many files, multiple subsystems): focused output (~10-15K tokens) — includes code snippets
+Pruner context is **automatically injected** into your conversation via a prompt-submit hook. You do NOT need to run `pruner context` manually — it has already run before you see the user's message.
 
-## Usage
+## How it works
 
-```bash
-pruner context /absolute/path/to/repo "<the user's ask>"
-```
+A hook runs `pruner context` on every prompt submit and injects the output as additional context. Look for the "Pruner context (pre-computed codebase analysis)" section in the conversation — that's the pruner output.
 
-IMPORTANT: Always pass the repo as an absolute path argument. Do NOT use `cd <repo> && pruner context .` — the shell sandbox may reset the working directory.
+## Working with pruner context
 
-## After running pruner
-
-1. **Read the output** — for broad tasks it contains actual code snippets. For narrow tasks it gives file/symbol pointers.
+1. **Use the injected context directly** — it contains relevant files, symbols, execution paths, and code snippets.
 2. **Read source files only if needed** — if a snippet is truncated or you need surrounding context, use the file:line pointers from the output.
 3. **Do NOT re-explore** — pruner already searched the index. Do not grep or glob for the same keywords.
+4. **Do NOT run `pruner context` again** — it already ran via the hook.
 
 ## When you need more detail
 
