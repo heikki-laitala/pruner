@@ -7,16 +7,69 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+// ---------------------------------------------------------------------------
+// Result caps and thresholds
+// ---------------------------------------------------------------------------
+
 const MAX_TRACED_SYMBOLS: usize = 20;
 const MAX_RESULT_SYMBOLS: usize = 40;
 const MAX_RESULT_FILES: usize = 25;
 const MAX_RESULT_TESTS: usize = 10;
-/// Minimum relevance score for a file/symbol to be included in results.
 const MIN_FILE_SCORE: i32 = 10;
 const MIN_SYMBOL_SCORE: i32 = 15;
-/// Dynamic cutoff: drop results scoring below this fraction of the top result.
+/// Drop results scoring below this fraction of the top result.
 const SCORE_CUTOFF_RATIO: f64 = 0.25;
 const TRACE_TIME_BUDGET: Duration = Duration::from_secs(10);
+
+// ---------------------------------------------------------------------------
+// Scoring weights — keyword matches
+// ---------------------------------------------------------------------------
+
+const EXACT_MATCH: i32 = 100;
+const PREFIX_MATCH: i32 = 50;
+const SUBSTRING_MATCH: i32 = 10;
+
+// ---------------------------------------------------------------------------
+// Scoring weights — file
+// ---------------------------------------------------------------------------
+
+const FILE_EXACT_STEM: i32 = 100;
+const FILE_STEM_CONTAINS: i32 = 40;
+const FILE_DIR_CONTAINS: i32 = 5;
+const FILE_MULTI_KEYWORD_BONUS: i32 = 30;
+const FILE_LANGUAGE_BONUS: i32 = 20;
+const FILE_TEST_PENALTY: i32 = -5;
+
+// Directory penalties
+const DIR_DOCS_PENALTY: i32 = -30;
+const DIR_LOCALE_PENALTY: i32 = -50;
+const DIR_VENDOR_PENALTY: i32 = -40;
+const DIR_EXAMPLES_PENALTY: i32 = -15;
+const DIR_ASSETS_PENALTY: i32 = -40;
+
+// Minified/bundled penalties
+const MINIFIED_EXT_PENALTY: i32 = -60;
+const MINIFIED_RATIO_SEVERE: i32 = -200; // bytes_per_line > 1000
+const MINIFIED_RATIO_MODERATE: i32 = -80; // bytes_per_line > 500
+
+// ---------------------------------------------------------------------------
+// Scoring weights — symbol
+// ---------------------------------------------------------------------------
+
+const SYM_FUNCTION_BONUS: i32 = 20;
+const SYM_TYPE_BONUS: i32 = 5;
+
+// ---------------------------------------------------------------------------
+// Keyword extraction
+// ---------------------------------------------------------------------------
+
+/// Minimum length for sub-keywords split from compound identifiers.
+/// Short fragments like "web" from "WebSocket" cause overly broad matches.
+const MIN_SUB_KEYWORD_LEN: usize = 4;
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
 
 /// Result of analyzing a natural language query against the index.
 #[derive(Debug)]
@@ -67,122 +120,29 @@ impl QueryResult {
         for t in &self.related_tests {
             ids.insert(t.id);
         }
-        // execution_paths don't carry file_id yet
         ids
     }
 }
 
+// ---------------------------------------------------------------------------
+// analyze_query — main entry point
+// ---------------------------------------------------------------------------
+
 /// Analyze a natural language query against the index.
 pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let keywords = extract_keywords(ask);
-    let mut matching_files = Vec::new();
-    let mut matching_symbols = Vec::new();
-    let mut seen_file_ids = HashSet::new();
-    let mut seen_symbol_ids = HashSet::new();
 
-    for kw in &keywords {
-        // 1) Path-based file matching
-        for file in db.search_files(kw)? {
-            if seen_file_ids.insert(file.id) {
-                matching_files.push(file);
-            }
-        }
-        // 2) Symbol name matching
-        for sym in db.search_symbols(kw)? {
-            if seen_symbol_ids.insert(sym.id) {
-                matching_symbols.push(sym);
-            }
-        }
-        // 3) Signature matching — finds functions with keyword in params/types
-        for sym in db.search_symbols_by_signature(kw)? {
-            if seen_symbol_ids.insert(sym.id) {
-                matching_symbols.push(sym);
-            }
-        }
-        // 4) Call graph matching — finds callers of functions matching keyword
-        for sym in db.search_callers_of(kw)? {
-            if seen_symbol_ids.insert(sym.id) {
-                matching_symbols.push(sym);
-            }
-        }
-        // 5) Import matching — finds files that import modules matching keyword
-        for file_id in db.search_importing_files(kw)? {
-            if seen_file_ids.insert(file_id) {
-                if let Some(file) = db.get_file_by_path_id(file_id)? {
-                    matching_files.push(file);
-                }
-            }
-        }
-    }
+    let (matching_files, matching_symbols) = gather_candidates(&keywords, db)?;
+    let related_tests = find_related_tests(&matching_files, db)?;
+    let file_scores = build_file_scores(&matching_files, &matching_symbols, &keywords, db)?;
 
-    // Find related tests
-    let mut related_tests = Vec::new();
-    let mut seen_test_ids = HashSet::new();
-    for file in &matching_files {
-        for edge in db.edges_to_file(file.id, "tests")? {
-            if let Some(src_file_id) = edge.source_file_id
-                && seen_test_ids.insert(src_file_id)
-                && let Some(tf) = db.get_file_by_path_id(src_file_id)?
-            {
-                related_tests.push(tf);
-            }
-        }
-    }
-
-    // Score files first — we use file scores to penalize symbols from low-quality files.
-    // Include files from matched symbols that weren't in matching_files.
-    let scored_files = score_and_rank_files(&matching_files, &keywords);
-    let mut file_scores: HashMap<i64, i32> = scored_files.iter().map(|(f, s)| (f.id, *s)).collect();
-    for sym in &matching_symbols {
-        if !file_scores.contains_key(&sym.file_id) {
-            if let Ok(Some(f)) = db.get_file_by_path_id(sym.file_id) {
-                let s = score_file(&f, &keywords);
-                file_scores.insert(f.id, s);
-            }
-        }
-    }
-
-    // Score and rank symbols, cross-referencing file quality
-    let scored_symbols = score_and_rank_symbols(&matching_symbols, &keywords, &file_scores);
-    let symbol_cutoff = dynamic_cutoff(&scored_symbols, MIN_SYMBOL_SCORE);
-    let top_symbols: Vec<&SymbolRow> = scored_symbols
-        .iter()
-        .filter(|(_, score)| *score >= symbol_cutoff)
-        .take(MAX_TRACED_SYMBOLS)
-        .map(|(sym, _)| *sym)
-        .collect();
-
-    let matching_symbols: Vec<SymbolRow> = scored_symbols
-        .into_iter()
-        .filter(|(_, score)| *score >= symbol_cutoff)
-        .take(MAX_RESULT_SYMBOLS)
-        .map(|(sym, _)| sym.clone())
-        .collect();
-
-    // Apply dynamic cutoff and cap to files
-    let file_cutoff = dynamic_cutoff(&scored_files, MIN_FILE_SCORE);
-    let matching_files: Vec<FileRow> = scored_files
-        .into_iter()
-        .filter(|(_, score)| *score >= file_cutoff)
-        .take(MAX_RESULT_FILES)
-        .map(|(f, _)| f.clone())
-        .collect();
+    let (matching_symbols, top_symbols) =
+        rank_and_filter_symbols(&matching_symbols, &keywords, &file_scores);
+    let matching_files = rank_and_filter_files(&matching_files, &keywords);
+    let mut related_tests = related_tests;
     related_tests.truncate(MAX_RESULT_TESTS);
 
-    // Trace execution paths with time budget
-    let mut execution_paths = Vec::new();
-    let trace_deadline = Instant::now() + TRACE_TIME_BUDGET;
-    for sym in &top_symbols {
-        if Instant::now() >= trace_deadline {
-            break;
-        }
-        let path = trace_execution_path_cte(sym, db, 5)?;
-        if path.len() > 1 {
-            execution_paths.push(path);
-        }
-    }
-
-    // Infer subsystems
+    let execution_paths = trace_paths(&top_symbols, db)?;
     let subsystems = infer_subsystems(&matching_files);
 
     Ok(QueryResult {
@@ -196,242 +156,163 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     })
 }
 
-/// Minimum length for sub-keywords split from compound identifiers.
-/// Short fragments like "web" from "WebSocket" cause overly broad matches.
-const MIN_SUB_KEYWORD_LEN: usize = 4;
+// ---------------------------------------------------------------------------
+// Phase 1: Gather candidates from DB
+// ---------------------------------------------------------------------------
 
-/// Extract search keywords from a natural language query.
-pub fn extract_keywords(ask: &str) -> Vec<String> {
-    let mut keywords = Vec::new();
-    let mut seen = HashSet::new();
-
-    // Split on non-alphanumeric (keep underscores/hyphens)
-    for word in ask.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
-        let word = word.trim();
-        if word.is_empty() {
-            continue;
-        }
-        let lower = word.to_lowercase();
-        if STOP_WORDS.contains(lower.as_str()) {
-            continue;
-        }
-        if seen.insert(lower.clone()) {
-            keywords.push(lower);
-        }
-
-        // Split camelCase / snake_case — only keep sub-parts that are long enough
-        // to be meaningful on their own. Short fragments like "web" from "WebSocket"
-        // cause overly broad LIKE matches.
-        for sub in split_identifier(word) {
-            let sub_lower = sub.to_lowercase();
-            if sub_lower.len() >= MIN_SUB_KEYWORD_LEN
-                && !STOP_WORDS.contains(sub_lower.as_str())
-                && seen.insert(sub_lower.clone())
-            {
-                keywords.push(sub_lower);
-            }
-        }
-    }
-
-    keywords
-}
-
-/// Split a camelCase or snake_case identifier into parts.
-fn split_identifier(s: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-
-    // snake_case split
-    if s.contains('_') {
-        for part in s.split('_') {
-            if !part.is_empty() {
-                parts.push(part.to_string());
-            }
-        }
-        return parts;
-    }
-
-    // camelCase split
-    let mut current = String::new();
-    for ch in s.chars() {
-        if ch.is_uppercase() && !current.is_empty() {
-            parts.push(std::mem::take(&mut current));
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        parts.push(current);
-    }
-
-    // Only return if we actually split something
-    if parts.len() > 1 { parts } else { Vec::new() }
-}
-
-/// Score a symbol's relevance to the query keywords.
-/// Higher score = more relevant. Uses file scores to penalize symbols
-/// from low-quality files (minified, bundled, docs).
-fn score_symbol(sym: &SymbolRow, keywords: &[String], file_scores: &HashMap<i64, i32>) -> i32 {
-    let name_lower = sym.name.to_lowercase();
-    let mut score: i32 = 0;
+/// Search files and symbols across all keyword-matching strategies.
+fn gather_candidates(
+    keywords: &[String],
+    db: &IndexDb,
+) -> Result<(Vec<FileRow>, Vec<SymbolRow>)> {
+    let mut files = Vec::new();
+    let mut symbols = Vec::new();
+    let mut seen_files = HashSet::new();
+    let mut seen_symbols = HashSet::new();
 
     for kw in keywords {
-        if name_lower == *kw {
-            score += 100; // exact match
-        } else if name_lower.starts_with(kw) {
-            score += 50; // prefix match
-        } else if name_lower.contains(kw) {
-            score += 10; // substring match
+        collect_dedup(&mut files, &mut seen_files, db.search_files(kw)?, |f| f.id);
+
+        collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols(kw)?, |s| s.id);
+        collect_dedup(&mut symbols, &mut seen_symbols, db.search_symbols_by_signature(kw)?, |s| s.id);
+        collect_dedup(&mut symbols, &mut seen_symbols, db.search_callers_of(kw)?, |s| s.id);
+
+        for file_id in db.search_importing_files(kw)? {
+            if seen_files.insert(file_id)
+                && let Some(file) = db.get_file_by_path_id(file_id)?
+            {
+                files.push(file);
+            }
         }
     }
 
-    // Bonus for callable symbols (more likely to have useful execution paths)
-    match sym.kind.as_str() {
-        "function" | "method" => score += 20,
-        "class" | "struct" | "trait" | "interface" => score += 5,
-        _ => {}
-    }
-
-    // Cross-reference: penalize symbols from low-quality files
-    if let Some(&file_score) = file_scores.get(&sym.file_id) {
-        if file_score < 0 {
-            score += file_score; // propagate negative file score
-        }
-    }
-
-    score
+    Ok((files, symbols))
 }
 
-/// Score and rank symbols by relevance, returning (symbol, score) pairs sorted descending.
-fn score_and_rank_symbols<'a>(
-    symbols: &'a [SymbolRow],
+/// Append items to `dest`, skipping duplicates based on an ID extractor.
+fn collect_dedup<T>(
+    dest: &mut Vec<T>,
+    seen: &mut HashSet<i64>,
+    items: Vec<T>,
+    id_fn: fn(&T) -> i64,
+) {
+    for item in items {
+        if seen.insert(id_fn(&item)) {
+            dest.push(item);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Find related tests
+// ---------------------------------------------------------------------------
+
+fn find_related_tests(files: &[FileRow], db: &IndexDb) -> Result<Vec<FileRow>> {
+    let mut tests = Vec::new();
+    let mut seen = HashSet::new();
+    for file in files {
+        for edge in db.edges_to_file(file.id, "tests")? {
+            if let Some(src_file_id) = edge.source_file_id
+                && seen.insert(src_file_id)
+                && let Some(tf) = db.get_file_by_path_id(src_file_id)?
+            {
+                tests.push(tf);
+            }
+        }
+    }
+    Ok(tests)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: Score and rank
+// ---------------------------------------------------------------------------
+
+/// Build a file_id → score map covering both matched files and symbol host files.
+fn build_file_scores(
+    files: &[FileRow],
+    symbols: &[SymbolRow],
+    keywords: &[String],
+    db: &IndexDb,
+) -> Result<HashMap<i64, i32>> {
+    let scored = score_and_rank_files(files, keywords);
+    let mut map: HashMap<i64, i32> = scored.iter().map(|(f, s)| (f.id, *s)).collect();
+
+    // Score files that host matched symbols but weren't in the file results.
+    for sym in symbols {
+        if !map.contains_key(&sym.file_id)
+            && let Some(f) = db.get_file_by_path_id(sym.file_id)?
+        {
+            map.insert(f.id, score_file(&f, keywords));
+        }
+    }
+    Ok(map)
+}
+
+/// Score, apply dynamic cutoff, and cap symbols. Returns (capped list, top symbols for tracing).
+fn rank_and_filter_symbols(
+    symbols: &[SymbolRow],
     keywords: &[String],
     file_scores: &HashMap<i64, i32>,
-) -> Vec<(&'a SymbolRow, i32)> {
-    let mut scored: Vec<(&SymbolRow, i32)> = symbols
+) -> (Vec<SymbolRow>, Vec<SymbolRow>) {
+    let scored = score_and_rank_symbols(symbols, keywords, file_scores);
+    let cutoff = dynamic_cutoff(&scored, MIN_SYMBOL_SCORE);
+
+    let top: Vec<SymbolRow> = scored
         .iter()
-        .map(|s| (s, score_symbol(s, keywords, file_scores)))
+        .filter(|(_, s)| *s >= cutoff)
+        .take(MAX_TRACED_SYMBOLS)
+        .map(|(sym, _)| (*sym).clone())
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    scored
-}
 
-/// Score a file's relevance to the query keywords.
-/// Higher score = more relevant.
-fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
-    let path_lower = file.path.to_lowercase();
-    let mut score: i32 = 0;
-    let mut filename_hits = 0;
-
-    // Extract filename (last path component without extension)
-    let filename = path_lower
-        .rsplit('/')
-        .next()
-        .unwrap_or(&path_lower);
-    let stem = filename
-        .rsplit_once('.')
-        .map(|(s, _)| s)
-        .unwrap_or(filename);
-
-    for kw in keywords {
-        // Filename matches are most valuable
-        if stem == *kw {
-            score += 100; // exact filename match
-            filename_hits += 1;
-        } else if stem.contains(kw.as_str()) {
-            score += 40; // filename contains keyword
-            filename_hits += 1;
-        } else if path_lower.contains(kw.as_str()) {
-            score += 5; // keyword only in directory path — weak signal
-        }
-    }
-
-    // Multi-keyword filename match bonus: files matching multiple keywords
-    // in the filename are much more likely to be relevant
-    if filename_hits >= 2 {
-        score += 30 * (filename_hits - 1);
-    }
-
-    // Penalize non-source directories and bundled/generated assets
-    for segment in path_lower.split('/') {
-        match segment {
-            "docs" | "doc" | "documentation" => score -= 30,
-            "zh-cn" | "zh-tw" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "ru"
-            | "locale" | "locales" | "i18n" | "translations" | "l10n" => score -= 50,
-            "vendor" | "node_modules" | "third_party" | "third-party" => score -= 40,
-            "examples" | "example" | "samples" | "sample" => score -= 15,
-            "assets" | "dist" | "build" | "out" | "generated" | ".generated" => score -= 40,
-            _ => {}
-        }
-    }
-
-    // Penalize minified/bundled files
-    if path_lower.ends_with(".min.js") || path_lower.ends_with(".min.css")
-        || path_lower.ends_with(".bundle.js") || path_lower.ends_with(".bundle.css")
-    {
-        score -= 60;
-    }
-
-    // Penalize likely bundled files (very high size-to-line ratio suggests minified)
-    if file.line_count > 0 {
-        let bytes_per_line = file.size / file.line_count;
-        if bytes_per_line > 1000 {
-            score -= 200; // almost certainly minified/generated — effectively exclude
-        } else if bytes_per_line > 500 {
-            score -= 80;
-        }
-    }
-
-    // Bonus for source code files (have a recognized language)
-    if file.language.is_some() {
-        score += 20;
-    }
-
-    // Test files are useful but secondary
-    if file.is_test {
-        score -= 5;
-    }
-
-    score
-}
-
-/// Score and rank files by relevance, returning (file, score) pairs sorted descending.
-/// Applies diminishing returns for files sharing the same filename to prevent
-/// e.g. 25 SKILL.md files crowding out actual source code.
-fn score_and_rank_files<'a>(
-    files: &'a [FileRow],
-    keywords: &[String],
-) -> Vec<(&'a FileRow, i32)> {
-    let mut scored: Vec<(&FileRow, i32)> = files
-        .iter()
-        .map(|f| (f, score_file(f, keywords)))
+    let all: Vec<SymbolRow> = scored
+        .into_iter()
+        .filter(|(_, s)| *s >= cutoff)
+        .take(MAX_RESULT_SYMBOLS)
+        .map(|(sym, _)| sym.clone())
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Penalize duplicate filenames: 3rd+ file with same name gets halved score
-    let mut name_counts: HashMap<&str, usize> = HashMap::new();
-    for (file, score) in &mut scored {
-        let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
-        let count = name_counts.entry(filename).or_insert(0);
-        *count += 1;
-        if *count > 2 {
-            *score /= 2;
-        }
-    }
-    // Re-sort after penalty
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
-    scored
+    (all, top)
 }
 
-/// Compute a dynamic score cutoff: the higher of `min_score` or
-/// `SCORE_CUTOFF_RATIO` × the top result's score. This naturally returns
-/// fewer results for narrow queries and more for broad ones.
+/// Score, apply dynamic cutoff, and cap files.
+fn rank_and_filter_files(files: &[FileRow], keywords: &[String]) -> Vec<FileRow> {
+    let scored = score_and_rank_files(files, keywords);
+    let cutoff = dynamic_cutoff(&scored, MIN_FILE_SCORE);
+
+    scored
+        .into_iter()
+        .filter(|(_, s)| *s >= cutoff)
+        .take(MAX_RESULT_FILES)
+        .map(|(f, _)| f.clone())
+        .collect()
+}
+
+/// The higher of `min_score` or `SCORE_CUTOFF_RATIO` × the top result's score.
 fn dynamic_cutoff<T>(scored: &[(T, i32)], min_score: i32) -> i32 {
-    let top_score = scored.first().map(|(_, s)| *s).unwrap_or(0);
-    let ratio_cutoff = (top_score as f64 * SCORE_CUTOFF_RATIO) as i32;
-    min_score.max(ratio_cutoff)
+    let top = scored.first().map(|(_, s)| *s).unwrap_or(0);
+    min_score.max((top as f64 * SCORE_CUTOFF_RATIO) as i32)
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Trace execution paths
+// ---------------------------------------------------------------------------
+
+fn trace_paths(top_symbols: &[SymbolRow], db: &IndexDb) -> Result<Vec<Vec<PathStep>>> {
+    let mut paths = Vec::new();
+    let deadline = Instant::now() + TRACE_TIME_BUDGET;
+    for sym in top_symbols {
+        if Instant::now() >= deadline {
+            break;
+        }
+        let path = trace_execution_path_cte(sym, db, 5)?;
+        if path.len() > 1 {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
 }
 
 /// Trace call graph from a symbol using a single SQL recursive CTE.
-/// Replaces the per-step DFS that caused millions of DB round-trips on large repos.
 fn trace_execution_path_cte(
     start: &SymbolRow,
     db: &IndexDb,
@@ -452,7 +333,233 @@ fn trace_execution_path_cte(
     Ok(path)
 }
 
-/// Infer subsystems from file paths.
+// ---------------------------------------------------------------------------
+// Keyword extraction
+// ---------------------------------------------------------------------------
+
+/// Extract search keywords from a natural language query.
+pub fn extract_keywords(ask: &str) -> Vec<String> {
+    let mut keywords = Vec::new();
+    let mut seen = HashSet::new();
+
+    for word in ask.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+        let word = word.trim();
+        if word.is_empty() {
+            continue;
+        }
+        let lower = word.to_lowercase();
+        if STOP_WORDS.contains(lower.as_str()) {
+            continue;
+        }
+        if seen.insert(lower.clone()) {
+            keywords.push(lower);
+        }
+
+        // Split camelCase / snake_case — only keep sub-parts long enough
+        // to be meaningful. Short fragments cause overly broad LIKE matches.
+        for sub in split_identifier(word) {
+            let sub_lower = sub.to_lowercase();
+            if sub_lower.len() >= MIN_SUB_KEYWORD_LEN
+                && !STOP_WORDS.contains(sub_lower.as_str())
+                && seen.insert(sub_lower.clone())
+            {
+                keywords.push(sub_lower);
+            }
+        }
+    }
+
+    keywords
+}
+
+/// Split a camelCase or snake_case identifier into parts.
+fn split_identifier(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+
+    if s.contains('_') {
+        for part in s.split('_') {
+            if !part.is_empty() {
+                parts.push(part.to_string());
+            }
+        }
+        return parts;
+    }
+
+    let mut current = String::new();
+    for ch in s.chars() {
+        if ch.is_uppercase() && !current.is_empty() {
+            parts.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    if parts.len() > 1 { parts } else { Vec::new() }
+}
+
+// ---------------------------------------------------------------------------
+// Symbol scoring
+// ---------------------------------------------------------------------------
+
+fn score_symbol(sym: &SymbolRow, keywords: &[String], file_scores: &HashMap<i64, i32>) -> i32 {
+    let name_lower = sym.name.to_lowercase();
+    let mut score: i32 = 0;
+
+    for kw in keywords {
+        if name_lower == *kw {
+            score += EXACT_MATCH;
+        } else if name_lower.starts_with(kw) {
+            score += PREFIX_MATCH;
+        } else if name_lower.contains(kw) {
+            score += SUBSTRING_MATCH;
+        }
+    }
+
+    match sym.kind.as_str() {
+        "function" | "method" => score += SYM_FUNCTION_BONUS,
+        "class" | "struct" | "trait" | "interface" => score += SYM_TYPE_BONUS,
+        _ => {}
+    }
+
+    // Propagate negative file quality into symbol score
+    if let Some(&fs) = file_scores.get(&sym.file_id)
+        && fs < 0
+    {
+        score += fs;
+    }
+
+    score
+}
+
+fn score_and_rank_symbols<'a>(
+    symbols: &'a [SymbolRow],
+    keywords: &[String],
+    file_scores: &HashMap<i64, i32>,
+) -> Vec<(&'a SymbolRow, i32)> {
+    let mut scored: Vec<_> = symbols
+        .iter()
+        .map(|s| (s, score_symbol(s, keywords, file_scores)))
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored
+}
+
+// ---------------------------------------------------------------------------
+// File scoring
+// ---------------------------------------------------------------------------
+
+fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
+    let path_lower = file.path.to_lowercase();
+
+    let keyword_score = score_file_keywords(&path_lower, keywords);
+    let quality_score = score_file_quality(&path_lower, file);
+
+    keyword_score + quality_score
+}
+
+/// Score how well keywords match the file path/name.
+fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
+    let filename = path_lower.rsplit('/').next().unwrap_or(path_lower);
+    let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
+
+    let mut score: i32 = 0;
+    let mut filename_hits = 0;
+
+    for kw in keywords {
+        if stem == *kw {
+            score += FILE_EXACT_STEM;
+            filename_hits += 1;
+        } else if stem.contains(kw.as_str()) {
+            score += FILE_STEM_CONTAINS;
+            filename_hits += 1;
+        } else if path_lower.contains(kw.as_str()) {
+            score += FILE_DIR_CONTAINS;
+        }
+    }
+
+    if filename_hits >= 2 {
+        score += FILE_MULTI_KEYWORD_BONUS * (filename_hits - 1);
+    }
+
+    score
+}
+
+/// Score file quality: language, directory, minification, test status.
+fn score_file_quality(path_lower: &str, file: &FileRow) -> i32 {
+    let mut score: i32 = 0;
+
+    // Directory penalties
+    for segment in path_lower.split('/') {
+        score += match segment {
+            "docs" | "doc" | "documentation" => DIR_DOCS_PENALTY,
+            "zh-cn" | "zh-tw" | "ja" | "ko" | "fr" | "de" | "es" | "pt" | "ru"
+            | "locale" | "locales" | "i18n" | "translations" | "l10n" => DIR_LOCALE_PENALTY,
+            "vendor" | "node_modules" | "third_party" | "third-party" => DIR_VENDOR_PENALTY,
+            "examples" | "example" | "samples" | "sample" => DIR_EXAMPLES_PENALTY,
+            "assets" | "dist" | "build" | "out" | "generated" | ".generated" => DIR_ASSETS_PENALTY,
+            _ => 0,
+        };
+    }
+
+    // Minified file extension
+    if path_lower.ends_with(".min.js")
+        || path_lower.ends_with(".min.css")
+        || path_lower.ends_with(".bundle.js")
+        || path_lower.ends_with(".bundle.css")
+    {
+        score += MINIFIED_EXT_PENALTY;
+    }
+
+    // High bytes-per-line ratio suggests minified/generated content
+    if file.line_count > 0 {
+        let bpl = file.size / file.line_count;
+        if bpl > 1000 {
+            score += MINIFIED_RATIO_SEVERE;
+        } else if bpl > 500 {
+            score += MINIFIED_RATIO_MODERATE;
+        }
+    }
+
+    if file.language.is_some() {
+        score += FILE_LANGUAGE_BONUS;
+    }
+    if file.is_test {
+        score += FILE_TEST_PENALTY;
+    }
+
+    score
+}
+
+/// Score and rank files, penalizing duplicate filenames.
+fn score_and_rank_files<'a>(
+    files: &'a [FileRow],
+    keywords: &[String],
+) -> Vec<(&'a FileRow, i32)> {
+    let mut scored: Vec<_> = files
+        .iter()
+        .map(|f| (f, score_file(f, keywords)))
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // 3rd+ file with same name gets halved score
+    let mut name_counts: HashMap<&str, usize> = HashMap::new();
+    for (file, score) in &mut scored {
+        let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
+        let count = name_counts.entry(filename).or_insert(0);
+        *count += 1;
+        if *count > 2 {
+            *score /= 2;
+        }
+    }
+    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored
+}
+
+// ---------------------------------------------------------------------------
+// Subsystem inference
+// ---------------------------------------------------------------------------
+
 fn infer_subsystems(files: &[FileRow]) -> Vec<String> {
     let mut subsystems = HashSet::new();
 
@@ -470,6 +577,10 @@ fn infer_subsystems(files: &[FileRow]) -> Vec<String> {
     result.sort();
     result
 }
+
+// ---------------------------------------------------------------------------
+// Static data
+// ---------------------------------------------------------------------------
 
 static SCAFFOLD_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     ["src", "lib", "app", "pkg", "cmd", "internal"]
@@ -499,6 +610,10 @@ static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .into_iter()
     .collect()
 });
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -561,7 +676,7 @@ mod tests {
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
-        assert_eq!(score, 120); // 100 exact + 20 function bonus
+        assert_eq!(score, EXACT_MATCH + SYM_FUNCTION_BONUS);
     }
 
     #[test]
@@ -571,7 +686,7 @@ mod tests {
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
-        assert_eq!(score, 70); // 50 prefix + 20 function bonus
+        assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
     }
 
     #[test]
@@ -581,7 +696,7 @@ mod tests {
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
-        assert_eq!(score, 15); // 10 substring + 5 struct bonus
+        assert_eq!(score, SUBSTRING_MATCH + SYM_TYPE_BONUS);
     }
 
     #[test]
@@ -601,9 +716,9 @@ mod tests {
             },
         ];
         let ranked = score_and_rank_symbols(&symbols, &["timeout".to_string()], &no_file_scores());
-        assert_eq!(ranked[0].0.id, 2); // exact match first (100 + 20 = 120)
-        assert_eq!(ranked[1].0.id, 3); // prefix match second (50 + 20 = 70)
-        assert_eq!(ranked[2].0.id, 1); // substring match last (10 + 20 = 30)
+        assert_eq!(ranked[0].0.id, 2); // exact match first
+        assert_eq!(ranked[1].0.id, 3); // prefix match second
+        assert_eq!(ranked[2].0.id, 1); // substring match last
     }
 
     #[test]
@@ -634,14 +749,12 @@ mod tests {
 
     #[test]
     fn test_split_identifier_no_split() {
-        // Single word — nothing to split
         let parts = split_identifier("login");
         assert!(parts.is_empty());
     }
 
     #[test]
     fn test_split_identifier_all_upper() {
-        // Each uppercase char triggers a split: "A", "P", "I"
         let parts = split_identifier("API");
         assert_eq!(parts, vec!["A", "P", "I"]);
     }
@@ -653,7 +766,7 @@ mod tests {
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
-        assert_eq!(score, 20); // only function bonus, no keyword match
+        assert_eq!(score, SYM_FUNCTION_BONUS);
     }
 
     #[test]
@@ -664,7 +777,7 @@ mod tests {
         };
         let score = score_symbol(&sym, &["login".to_string(), "handler".to_string()], &no_file_scores());
         // login: prefix 50, handler: substring 10 => 60 + 20 method bonus
-        assert_eq!(score, 80);
+        assert_eq!(score, PREFIX_MATCH + SUBSTRING_MATCH + SYM_FUNCTION_BONUS);
     }
 
     #[test]
@@ -674,7 +787,7 @@ mod tests {
             line_start: 1, line_end: 10, signature: None, file_path: "a.rs".into(),
         };
         let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
-        assert_eq!(score, 100); // exact match, no kind bonus
+        assert_eq!(score, EXACT_MATCH);
     }
 
     #[test]
@@ -725,7 +838,7 @@ mod tests {
             subsystems: vec![],
         };
         let ids = result.all_relevant_file_ids();
-        assert_eq!(ids.len(), 1); // same file_id deduped
+        assert_eq!(ids.len(), 1);
     }
 
     #[test]
@@ -735,8 +848,7 @@ mod tests {
             language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
-        // 100 exact filename + 20 language bonus = 120
-        assert_eq!(score, 120);
+        assert_eq!(score, FILE_EXACT_STEM + FILE_LANGUAGE_BONUS);
     }
 
     #[test]
@@ -746,8 +858,7 @@ mod tests {
             language: None, size: 500, line_count: 100, is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
-        // 100 exact filename - 30 docs penalty = 70
-        assert_eq!(score, 70);
+        assert_eq!(score, FILE_EXACT_STEM + DIR_DOCS_PENALTY);
     }
 
     #[test]
@@ -757,8 +868,7 @@ mod tests {
             language: None, size: 500, line_count: 100, is_test: false,
         };
         let score = score_file(&file, &["websocket".to_string()]);
-        // 100 exact filename - 30 docs - 50 zh-cn = 20
-        assert_eq!(score, 20);
+        assert_eq!(score, FILE_EXACT_STEM + DIR_DOCS_PENALTY + DIR_LOCALE_PENALTY);
     }
 
     #[test]
@@ -783,27 +893,22 @@ mod tests {
             language: Some("rust".into()), size: 200, line_count: 50, is_test: false,
         };
         let score = score_file(&file, &["auth".to_string(), "token".to_string(), "validator".to_string()]);
-        // "token_validator" stem contains "token" (40) and "validator" (40) → 2 filename hits → +30 multi bonus
-        // "auth" in path only (5)
-        // + 20 language
-        assert_eq!(score, 135);
+        // stem "token_validator" contains "token" (40) + "validator" (40) → 2 hits → +30 multi bonus
+        // "auth" dir only (5) + language (20)
+        let expected = FILE_STEM_CONTAINS * 2 + FILE_MULTI_KEYWORD_BONUS + FILE_DIR_CONTAINS + FILE_LANGUAGE_BONUS;
+        assert_eq!(score, expected);
     }
 
     #[test]
     fn test_score_file_dir_only_match_below_threshold() {
-        // A file that only matches a keyword in its directory path (not filename)
-        // should score below MIN_FILE_SCORE and get filtered out
         let file = FileRow {
             id: 1, path: "src/auth/utils.rs".into(),
             language: Some("rust".into()), size: 100, line_count: 20, is_test: false,
         };
         let score = score_file(&file, &["auth".to_string()]);
-        // "auth" only in dir path (5) + 20 language = 25
-        assert_eq!(score, 25);
-        // But with a generic keyword like "handler" that doesn't match at all:
+        assert_eq!(score, FILE_DIR_CONTAINS + FILE_LANGUAGE_BONUS);
         let score2 = score_file(&file, &["handler".to_string()]);
-        // no match + 20 language = 20
-        assert_eq!(score2, 20);
+        assert_eq!(score2, FILE_LANGUAGE_BONUS);
     }
 
     #[test]
@@ -821,7 +926,6 @@ mod tests {
 
     #[test]
     fn test_infer_subsystems_root_file_becomes_subsystem() {
-        // "Makefile" has no dot, so it gets picked as a subsystem
         let files = vec![
             FileRow { id: 1, path: "Makefile".into(), language: None, size: 0, line_count: 0, is_test: false },
         ];
@@ -871,14 +975,11 @@ mod tests {
     fn test_analyze_query_deduplicates() -> anyhow::Result<()> {
         let db = IndexDb::open_memory()?;
         let fid = db.insert_file("src/login.rs", Some("rust"), 100, 20, false, 0)?;
-        // "login" keyword matches both the file path and symbol name
         db.insert_symbol(fid, "login", "function", 1, 10, None, None)?;
 
         let result = analyze_query("login", &db)?;
-        // File should appear only once even though it matches on path
         let login_files: Vec<_> = result.matching_files.iter().filter(|f| f.path.contains("login")).collect();
         assert_eq!(login_files.len(), 1);
-        // Symbol should appear only once
         let login_syms: Vec<_> = result.matching_symbols.iter().filter(|s| s.name == "login").collect();
         assert_eq!(login_syms.len(), 1);
         Ok(())
@@ -907,7 +1008,6 @@ mod tests {
 
         let result = analyze_query("handle_request", &db)?;
         assert!(!result.execution_paths.is_empty());
-        // First path should start with handle_request and include validate
         let path = &result.execution_paths[0];
         assert!(path.iter().any(|s| s.name == "handle_request"));
         assert!(path.iter().any(|s| s.name == "validate"));
@@ -969,7 +1069,7 @@ mod tests {
             line_start: 1, line_end: 10, signature: None, file_path: "src/lib.rs".into(),
         };
         let path = trace_execution_path_cte(&start, &db, 5)?;
-        assert_eq!(path.len(), 1); // only the start node
+        assert_eq!(path.len(), 1);
         Ok(())
     }
 }
