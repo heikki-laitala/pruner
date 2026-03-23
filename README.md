@@ -206,7 +206,7 @@ python3 tests/ab_test.py --task implement --mode skill      # skill mode
 python3 tests/ab_test.py --task narrow_fix --save-raw       # save raw output
 python3 tests/ab_test.py /path/to/repo                      # any repo
 
-# Quick benchmark (no claude CLI needed)
+# Pruner performance benchmark (no claude CLI needed, ~2 min, clones openclaw)
 make bench
 ```
 
