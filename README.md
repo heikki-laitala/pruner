@@ -38,33 +38,21 @@ Returns matching files, symbols, related tests, and execution paths.
 
 ### Generate LLM context
 
-Pruner works in two phases: a cheap **brief** scan to orient, then **targeted reads** of source files.
-
-**Phase 1 — Orient with brief mode (~3K tokens):**
-
 ```bash
-pruner context . "fix WebSocket reconnection timeout" --brief
-```
-
-Prints a compact table of contents: key files, symbols with locations, shallow execution paths, and related tests. No snippets — just pointers. Also writes to `.pruner/context.md`.
-
-**Phase 2 — Read what matters:**
-
-Use the file paths and symbol locations from brief output to read only the relevant source files. For most tasks, reading 3-5 files is enough.
-
-**Full mode** (when you need deep detail):
-
-```bash
-pruner context . "fix the authentication flow"
+pruner context . "fix WebSocket reconnection timeout"
 pruner context . "add caching to the API" --format json
 ```
 
-Produces a complete context package with execution paths, key files, key symbols, related tests, and code snippets (~55-70K tokens on large repos).
+Pruner auto-detects task scope from query results and adjusts output:
 
-| Mode | Files | Symbols | Paths | Snippets | Tokens |
-|------|-------|---------|-------|----------|--------|
-| Brief | 8 | 15 | 3 (shallow) | 0 | ~3K |
-| Full | 25 | 40 | unlimited | 40 | ~55-70K |
+| Mode | When | Files | Symbols | Snippets | Tokens |
+|------|------|-------|---------|----------|--------|
+| **Brief** (auto) | Narrow task: ≤3 files, 1 subsystem | 8 | 15 | 0 | ~3K |
+| **Focused** (auto) | Broad task: many files/subsystems | 10 | 20 | 20 | ~10-15K |
+| `--full` | Manual override | 25 | 40 | 40 | ~55-70K |
+| `--brief` | Manual override | 8 | 15 | 0 | ~3K |
+
+The default (auto) mode is designed for agent use: one call returns everything the LLM needs without follow-up exploration.
 
 ### Measure token savings
 
@@ -169,9 +157,11 @@ src/
 
 ### Context generation
 
-1. Apply mode limits (brief: 8 files, 15 symbols, 3 shallow paths, 0 snippets; full: uncapped)
-2. Extract code snippets from source files (full mode only, capped at 4000 chars per snippet)
-3. Output as human-readable text and/or structured JSON
+1. Auto-detect task scope: narrow (≤3 files, 1 subsystem) → brief; broad → focused
+2. Apply mode limits (brief: 8 files, 0 snippets; focused: 10 files, 20 snippets; full: uncapped)
+3. Extract code snippets from source files (focused/full modes, capped at 4000 chars per snippet)
+4. Graph expansion: files discovered via execution paths added to candidates
+5. Output as human-readable text and/or structured JSON
 
 ## Supported languages
 
@@ -191,7 +181,7 @@ Basic indexing (files, metadata):
 - Query analysis uses keyword matching with heuristic scoring, not semantic understanding
 - Import resolution is heuristic (module name -> file path mapping)
 - Relevance scoring can miss results when keywords don't appear in file paths or symbol names (e.g., a function that handles authentication but is named `validateRequest`)
-- On very large repos (10K+ files), full mode produces ~55-70K tokens — use brief mode for orientation
+- On very large repos (10K+ files), full mode produces ~55-70K tokens — the default auto mode caps output at ~10-15K tokens
 
 ## Claude Code integration
 
@@ -241,13 +231,10 @@ pruner index /path/to/your-project -v
 
 Once set up, when you ask Claude Code to do something like "fix the login flow", Claude will:
 
-1. Run `pruner context . "fix the login flow" --brief` (~3K tokens — auto-indexes if needed)
-2. Read the brief output: key files, symbols with locations, execution paths, related tests
-3. Open the top 3-5 source files identified by pruner using file:line pointers
-4. If the task requires deeper understanding, run full mode or use `pruner show-symbol` for specific call graphs
-5. Proceed with the task, informed by focused context
-
-The key insight: brief mode tells the LLM **where to look** (~3K tokens), not **everything about the code** (~60K tokens). The LLM then reads only what it needs.
+1. Run `pruner context . "fix the login flow"` (auto-indexes if needed)
+2. Pruner auto-detects task scope and returns focused context with code snippets (~10-15K tokens) or brief pointers (~3K tokens)
+3. Claude works directly from the output — no grep/glob exploration needed
+4. If a snippet is truncated, Claude reads the specific file using the file:line pointers from the output
 
 ## Similar projects
 
@@ -271,7 +258,7 @@ Several tools tackle the same problem. The key difference is **how** they delive
 
 ### How pruner differs
 
-- **Standalone CLI, no server** — `pruner context . "task" --brief` and done
+- **Standalone CLI, no server** — `pruner context . "task"` and done
 - **Natural language -> context package** — takes a task description, infers execution paths, returns a complete package
 - **Automatic execution path inference** — traces through the call graph to show how code flows
 - **No LLM for indexing** — purely structural
