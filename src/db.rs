@@ -229,16 +229,7 @@ impl IndexDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, language, size, line_count, is_test FROM files WHERE path LIKE ?1",
         )?;
-        let rows = stmt.query_map(params![pattern], |row| {
-            Ok(FileRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                language: row.get(2)?,
-                size: row.get(3)?,
-                line_count: row.get(4)?,
-                is_test: row.get::<_, i32>(5)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(params![pattern], FileRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -250,18 +241,7 @@ impl IndexDb {
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name LIKE ?1",
         )?;
-        let rows = stmt.query_map(params![pattern], |row| {
-            Ok(SymbolRow {
-                id: row.get(0)?,
-                file_id: row.get(1)?,
-                name: row.get(2)?,
-                kind: row.get(3)?,
-                line_start: row.get(4)?,
-                line_end: row.get(5)?,
-                signature: row.get(6)?,
-                file_path: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![pattern], SymbolRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -310,18 +290,7 @@ impl IndexDb {
              JOIN files f ON s.file_id = f.id
              WHERE c.callee_name = ?1",
         )?;
-        let rows = stmt.query_map(params![name], |row| {
-            Ok(SymbolRow {
-                id: row.get(0)?,
-                file_id: row.get(1)?,
-                name: row.get(2)?,
-                kind: row.get(3)?,
-                line_start: row.get(4)?,
-                line_end: row.get(5)?,
-                signature: row.get(6)?,
-                file_path: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![name], SymbolRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -330,16 +299,7 @@ impl IndexDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, language, size, line_count, is_test FROM files",
         )?;
-        let rows = stmt.query_map([], |row| {
-            Ok(FileRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                language: row.get(2)?,
-                size: row.get(3)?,
-                line_count: row.get(4)?,
-                is_test: row.get::<_, i32>(5)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map([], FileRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -348,16 +308,7 @@ impl IndexDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, language, size, line_count, is_test FROM files WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(FileRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                language: row.get(2)?,
-                size: row.get(3)?,
-                line_count: row.get(4)?,
-                is_test: row.get::<_, i32>(5)? != 0,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![id], FileRow::from_row)?;
         Ok(rows.next().transpose()?)
     }
 
@@ -366,16 +317,7 @@ impl IndexDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, path, language, size, line_count, is_test FROM files WHERE path = ?1",
         )?;
-        let mut rows = stmt.query_map(params![path], |row| {
-            Ok(FileRow {
-                id: row.get(0)?,
-                path: row.get(1)?,
-                language: row.get(2)?,
-                size: row.get(3)?,
-                line_count: row.get(4)?,
-                is_test: row.get::<_, i32>(5)? != 0,
-            })
-        })?;
+        let mut rows = stmt.query_map(params![path], FileRow::from_row)?;
         Ok(rows.next().transpose()?)
     }
 
@@ -411,8 +353,7 @@ impl IndexDb {
                 WHERE cg.depth < ?2
                   AND s.id != ?1
             )
-            SELECT DISTINCT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end,
-                   s.signature, f.path, cg.depth
+            SELECT DISTINCT s.id, s.name, s.kind, f.path, s.line_start, cg.depth
             FROM cg
             JOIN symbols s ON s.id = cg.symbol_id
             JOIN files f ON s.file_id = f.id
@@ -423,14 +364,11 @@ impl IndexDb {
         let rows = stmt.query_map(params![start_symbol_id, max_depth as i64], |row| {
             Ok(TraceRow {
                 id: row.get(0)?,
-                file_id: row.get(1)?,
-                name: row.get(2)?,
-                kind: row.get(3)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                file_path: row.get(3)?,
                 line_start: row.get(4)?,
-                line_end: row.get(5)?,
-                signature: row.get(6)?,
-                file_path: row.get(7)?,
-                depth: row.get::<_, i64>(8)? as usize,
+                depth: row.get::<_, i64>(5)? as usize,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -442,18 +380,7 @@ impl IndexDb {
             "SELECT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end, s.signature, f.path
              FROM symbols s JOIN files f ON s.file_id = f.id WHERE s.file_id = ?1",
         )?;
-        let rows = stmt.query_map(params![file_id], |row| {
-            Ok(SymbolRow {
-                id: row.get(0)?,
-                file_id: row.get(1)?,
-                name: row.get(2)?,
-                kind: row.get(3)?,
-                line_start: row.get(4)?,
-                line_end: row.get(5)?,
-                signature: row.get(6)?,
-                file_path: row.get(7)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![file_id], SymbolRow::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -471,6 +398,20 @@ pub struct FileRow {
     pub is_test: bool,
 }
 
+impl FileRow {
+    /// Map a row from: SELECT id, path, language, size, line_count, is_test FROM files
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            language: row.get(2)?,
+            size: row.get(3)?,
+            line_count: row.get(4)?,
+            is_test: row.get::<_, i32>(5)? != 0,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SymbolRow {
     pub id: i64,
@@ -481,6 +422,22 @@ pub struct SymbolRow {
     pub line_end: i64,
     pub signature: Option<String>,
     pub file_path: String,
+}
+
+impl SymbolRow {
+    /// Map a row from: SELECT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end, s.signature, f.path
+    fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            file_id: row.get(1)?,
+            name: row.get(2)?,
+            kind: row.get(3)?,
+            line_start: row.get(4)?,
+            line_end: row.get(5)?,
+            signature: row.get(6)?,
+            file_path: row.get(7)?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -502,16 +459,12 @@ pub struct CallRow {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TraceRow {
     pub id: i64,
-    pub file_id: i64,
     pub name: String,
     pub kind: String,
-    pub line_start: i64,
-    pub line_end: i64,
-    pub signature: Option<String>,
     pub file_path: String,
+    pub line_start: i64,
     pub depth: usize,
 }
 
@@ -583,7 +536,7 @@ mod tests {
         let f = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
         let a = db.insert_symbol(f, "a", "function", 1, 10, None, None)?;
         let b = db.insert_symbol(f, "b", "function", 11, 20, None, None)?;
-        let c = db.insert_symbol(f, "c", "function", 21, 30, None, None)?;
+        db.insert_symbol(f, "c", "function", 21, 30, None, None)?;
         // a -> b -> c
         db.insert_call(a, "b", 5)?;
         db.insert_call(b, "c", 15)?;
@@ -603,7 +556,7 @@ mod tests {
         let f = db.insert_file("src/lib.rs", Some("rust"), 200, 50, false, 0)?;
         let a = db.insert_symbol(f, "a", "function", 1, 10, None, None)?;
         let b = db.insert_symbol(f, "b", "function", 11, 20, None, None)?;
-        let c = db.insert_symbol(f, "c", "function", 21, 30, None, None)?;
+        db.insert_symbol(f, "c", "function", 21, 30, None, None)?;
         db.insert_call(a, "b", 5)?;
         db.insert_call(b, "c", 15)?;
 

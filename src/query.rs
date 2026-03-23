@@ -258,13 +258,12 @@ fn trace_execution_path_cte(
 
 /// Infer subsystems from file paths.
 fn infer_subsystems(files: &[FileRow]) -> Vec<String> {
-    let scaffold = HashSet::from(["src", "lib", "app", "pkg", "cmd", "internal"]);
     let mut subsystems = HashSet::new();
 
     for f in files {
         let parts: Vec<&str> = f.path.split('/').collect();
         for part in &parts {
-            if !scaffold.contains(part) && !part.contains('.') && !part.is_empty() {
+            if !SCAFFOLD_DIRS.contains(part) && !part.contains('.') && !part.is_empty() {
                 subsystems.insert(part.to_string());
                 break;
             }
@@ -275,6 +274,12 @@ fn infer_subsystems(files: &[FileRow]) -> Vec<String> {
     result.sort();
     result
 }
+
+static SCAFFOLD_DIRS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    ["src", "lib", "app", "pkg", "cmd", "internal"]
+        .into_iter()
+        .collect()
+});
 
 static STOP_WORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
