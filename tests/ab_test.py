@@ -5,7 +5,7 @@ Sets up two clones of the test repo:
   A — with pruner installed (hook or skill mode)
   B — vanilla (no pruner)
 
-Runs Claude Code (opus) on identical tasks in parallel, measures actual
+Runs Claude Code (opus) on identical tasks sequentially, measures actual
 token usage, tool calls, cost, and turns.
 
 Usage:
@@ -24,7 +24,6 @@ Default repo: /tmp/pruner-bench/openclaw
 """
 
 import subprocess, json, os, sys, time, shutil, argparse
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PRUNER_DIR = Path(__file__).resolve().parent.parent
@@ -41,6 +40,7 @@ CLONE_WITHOUT = WORK_DIR / "without-pruner"
 
 MODEL = "opus"
 MAX_TURNS = 15
+PINNED_COMMIT = "fb602c9b02014ec9a8bc256c149b39861c1435ab"
 
 TASKS = {
     "narrow_fix": (
@@ -95,10 +95,17 @@ def setup_clones(repo, mode="hook"):
     for clone_path, label in [(CLONE_WITH, "with-pruner"), (CLONE_WITHOUT, "without-pruner")]:
         if clone_path.exists():
             print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
-            continue
-        print(f"  Copying {repo} -> {clone_path} ...", file=sys.stderr)
-        shutil.copytree(repo, clone_path, symlinks=True,
-                        ignore=shutil.ignore_patterns('.pruner'))
+        else:
+            print(f"  Copying {repo} -> {clone_path} ...", file=sys.stderr)
+            shutil.copytree(repo, clone_path, symlinks=True,
+                            ignore=shutil.ignore_patterns('.pruner'))
+        # Reset to pinned commit for reproducibility
+        subprocess.run(["git", "checkout", PINNED_COMMIT], cwd=clone_path,
+                        capture_output=True, check=True)
+        subprocess.run(["git", "checkout", "."], cwd=clone_path,
+                        capture_output=True, check=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=clone_path,
+                        capture_output=True, check=True)
 
     print(f"  Pruner mode: {mode}", file=sys.stderr)
 
@@ -302,13 +309,17 @@ def run_claude(prompt, repo_dir, label="", save_raw=False):
     proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
     wall_time = time.time() - start
 
-    save_path = None
-    if save_raw:
-        save_path = RAW_DIR / f"{label.replace('/', '_')}.jsonl"
+    save_path = RAW_DIR / f"{label.replace('/', '_')}.jsonl" if save_raw else None
 
     result = parse_stream(proc.stdout, label, save_path)
     if result:
         result["wall_time_s"] = round(wall_time, 1)
+    elif proc.stdout.strip():
+        # Save raw output on failure for debugging
+        fail_path = RAW_DIR / f"{label.replace('/', '_')}_FAILED.jsonl"
+        fail_path.parent.mkdir(parents=True, exist_ok=True)
+        fail_path.write_text(proc.stdout)
+        print(f"  WARN [{label}]: no result, raw saved to {fail_path}", file=sys.stderr)
 
     return result
 
@@ -347,8 +358,22 @@ def print_detailed_results(label, data):
         print(f"    {i}. {t['name']}: {t['input_preview'][:120]}", file=sys.stderr)
 
 
-def run_task(category, prompt, only=None, save_raw=False):
-    """Run one task with and without pruner."""
+def reset_clone(clone_path, reinstall_pruner=False, mode="hook"):
+    """Reset clone to pinned commit, discarding any changes from the previous task.
+
+    If reinstall_pruner is True, re-runs pruner init since git clean removes untracked files.
+    """
+    subprocess.run(["git", "checkout", "."], cwd=clone_path, capture_output=True, check=True)
+    subprocess.run(["git", "clean", "-fd"], cwd=clone_path, capture_output=True, check=True)
+    if reinstall_pruner:
+        init_args = [str(PRUNER_BIN), "init", str(clone_path)]
+        if mode == "hook":
+            init_args.append("--hook")
+        subprocess.run(init_args, check=True, capture_output=True, text=True)
+
+
+def run_task(category, prompt, mode="hook", only=None, save_raw=False):
+    """Run one task with and without pruner, sequentially."""
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"  Task: {category}", file=sys.stderr)
     print(f"{'='*60}", file=sys.stderr)
@@ -356,21 +381,12 @@ def run_task(category, prompt, only=None, save_raw=False):
     without = None
     with_p = None
 
-    if only == "with":
-        with_p = run_claude(prompt, CLONE_WITH, f"{category}/with", save_raw)
-    elif only == "without":
+    if only != "with":
+        reset_clone(CLONE_WITHOUT)
         without = run_claude(prompt, CLONE_WITHOUT, f"{category}/without", save_raw)
-    else:
-        # Run both in parallel
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            future_without = pool.submit(
-                run_claude, prompt, CLONE_WITHOUT, f"{category}/without", save_raw
-            )
-            future_with = pool.submit(
-                run_claude, prompt, CLONE_WITH, f"{category}/with", save_raw
-            )
-            without = future_without.result()
-            with_p = future_with.result()
+    if only != "without":
+        reset_clone(CLONE_WITH, reinstall_pruner=True, mode=mode)
+        with_p = run_claude(prompt, CLONE_WITH, f"{category}/with", save_raw)
 
     # Print detailed breakdown
     if without:
@@ -443,18 +459,18 @@ def main():
 
     results = []
     for category, prompt in tasks:
-        without, with_p = run_task(category, prompt, args.only, args.save_raw)
+        without, with_p = run_task(category, prompt, mode=args.mode, only=args.only, save_raw=args.save_raw)
 
         entry = {"category": category, "without": without, "with_pruner": with_p}
         if without and with_p:
             entry["token_delta_pct"] = round(
-                (with_p["total_tokens"] - without["total_tokens"])
-                / without["total_tokens"] * 100
+                ((with_p["total_tokens"] - without["total_tokens"])
+                 / without["total_tokens"] * 100)
                 if without["total_tokens"] else 0, 1
             )
             entry["cost_delta_pct"] = round(
-                (with_p["cost_usd"] - without["cost_usd"])
-                / without["cost_usd"] * 100
+                ((with_p["cost_usd"] - without["cost_usd"])
+                 / without["cost_usd"] * 100)
                 if without["cost_usd"] else 0, 1
             )
         results.append(entry)
