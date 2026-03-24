@@ -294,7 +294,9 @@ fn index_files(
     db.clear_edges()?;
 
     // Resolve calls to edges
-    for (caller_id, callee_name, line) in &pending_calls {
+    let total_calls = pending_calls.len();
+    let is_tty = std::io::stderr().is_terminal();
+    for (i, (caller_id, callee_name, line)) in pending_calls.iter().enumerate() {
         db.insert_call(*caller_id, callee_name, *line as i64)?;
 
         if let Some(targets) = symbol_map.get(callee_name.as_str()) {
@@ -319,6 +321,16 @@ fn index_files(
                 Some(callee_name),
             )?;
             stats.edges += 1;
+        }
+
+        if !verbose && is_tty && (i + 1) % 500 == 0 {
+            eprint!(
+                "\r  {} files indexed, resolving edges... {}/{}",
+                stats.files,
+                i + 1,
+                total_calls
+            );
+            let _ = std::io::stderr().flush();
         }
     }
 
