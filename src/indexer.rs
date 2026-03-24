@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
-use walkdir::WalkDir;
 
 /// Normalize a path string to use forward slashes (for cross-platform DB consistency).
 /// Only replaces backslashes on Windows where they are path separators.
@@ -66,7 +65,7 @@ pub fn index_repo_incremental(
     // Walk repo to find new/modified/deleted files
     for entry in walk_repo(repo_path) {
         let entry = entry?;
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
         let path = entry.path();
@@ -124,15 +123,21 @@ pub fn index_repo_incremental(
     Ok(Some(stats))
 }
 
-/// Walk the repo, filtering ignored directories.
-fn walk_repo(repo_path: &Path) -> impl Iterator<Item = walkdir::Result<walkdir::DirEntry>> {
-    WalkDir::new(repo_path).into_iter().filter_entry(|e| {
-        if e.file_type().is_dir() {
-            let name = e.file_name().to_string_lossy();
-            return !languages::is_ignored_dir(&name);
-        }
-        true
-    })
+/// Walk the repo, respecting .gitignore and filtering pruner's own ignored directories.
+fn walk_repo(repo_path: &Path) -> impl Iterator<Item = Result<ignore::DirEntry, ignore::Error>> {
+    ignore::WalkBuilder::new(repo_path)
+        .hidden(false) // don't skip dotfiles (e.g. .env, .eslintrc)
+        .git_ignore(true) // respect .gitignore
+        .git_global(true) // respect global gitignore
+        .git_exclude(true) // respect .git/info/exclude
+        .filter_entry(|e| {
+            if e.file_type().is_some_and(|ft| ft.is_dir()) {
+                let name = e.file_name().to_string_lossy();
+                return !languages::is_ignored_dir(&name);
+            }
+            true
+        })
+        .build()
 }
 
 /// Index files into the DB. If `only_paths` is Some, only index those relative paths
@@ -152,7 +157,7 @@ fn index_files(
 
     for entry in walk_repo(repo_path) {
         let entry = entry?;
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
 

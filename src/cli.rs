@@ -13,10 +13,12 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
 
 const INDEX_DIR: &str = ".pruner";
 const DB_NAME: &str = "index.db";
+const META_GIT_HEAD: &str = "git_head";
 
 #[derive(Parser)]
 #[command(
@@ -226,6 +228,9 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
         let db = IndexDb::open(&path)?;
         let repo_path = repo.canonicalize()?;
         let stats = indexer::index_repo(&repo_path, &db, verbose)?;
+        if let Some(head) = git_head(repo) {
+            db.set_metadata(META_GIT_HEAD, &head)?;
+        }
         eprintln!(
             "Indexed {} files, {} symbols, {} imports, {} calls, {} edges ({} skipped)",
             stats.files, stats.symbols, stats.imports, stats.calls, stats.edges, stats.skipped
@@ -233,21 +238,50 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
         return Ok(db);
     }
 
-    // Skip incremental walk if the index was checked recently
-    if is_index_fresh(&path) {
-        return IndexDb::open(&path);
+    let db = IndexDb::open(&path)?;
+    let repo_path = repo.canonicalize()?;
+
+    // Detect git branch/commit change — force incremental re-index
+    let head_changed = has_git_head_changed(&db, repo);
+
+    // Skip incremental walk if the index was checked recently and HEAD hasn't changed
+    if !head_changed && is_index_fresh(&path) {
+        return Ok(db);
     }
 
     // Try incremental update
-    let db = IndexDb::open(&path)?;
-    let repo_path = repo.canonicalize()?;
     if let Some(stats) = indexer::index_repo_incremental(&repo_path, &db, verbose)? {
         eprintln!(
             "Incremental update: {} new/modified, {} unchanged, {} deleted ({} skipped)",
             stats.files, stats.unchanged, stats.deleted, stats.skipped
         );
     }
+    if let Some(head) = git_head(repo) {
+        db.set_metadata(META_GIT_HEAD, &head)?;
+    }
     Ok(db)
+}
+
+/// Get the current git HEAD commit hash for a repo.
+fn git_head(repo: &Path) -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repo)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Check if git HEAD has changed since the last index.
+fn has_git_head_changed(db: &IndexDb, repo: &Path) -> bool {
+    let current = git_head(repo);
+    let stored = db.get_metadata(META_GIT_HEAD).ok().flatten();
+    match (current, stored) {
+        (Some(current), Some(stored)) => current != stored,
+        (Some(_), None) => true, // first time tracking HEAD
+        _ => false,              // not a git repo, skip
+    }
 }
 
 /// Check if the index DB was modified recently enough to skip re-checking.
