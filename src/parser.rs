@@ -809,40 +809,13 @@ fn extract_java_node(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "class_declaration" => {
+            kind @ ("class_declaration" | "interface_declaration" | "enum_declaration") => {
                 if let Some(name_node) = child.child_by_field_name("name") {
+                    let sym_kind = kind.strip_suffix("_declaration").unwrap_or(kind);
                     let idx = result.symbols.len();
                     result.symbols.push(Symbol {
                         name: node_text(name_node, src).to_string(),
-                        kind: "class".to_string(),
-                        line_start: child.start_position().row + 1,
-                        line_end: child.end_position().row + 1,
-                        parent_index,
-                        signature: None,
-                    });
-                    extract_java_node(child, src, result, Some(idx));
-                }
-            }
-            "interface_declaration" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let idx = result.symbols.len();
-                    result.symbols.push(Symbol {
-                        name: node_text(name_node, src).to_string(),
-                        kind: "interface".to_string(),
-                        line_start: child.start_position().row + 1,
-                        line_end: child.end_position().row + 1,
-                        parent_index,
-                        signature: None,
-                    });
-                    extract_java_node(child, src, result, Some(idx));
-                }
-            }
-            "enum_declaration" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
-                    let idx = result.symbols.len();
-                    result.symbols.push(Symbol {
-                        name: node_text(name_node, src).to_string(),
-                        kind: "enum".to_string(),
+                        kind: sym_kind.to_string(),
                         line_start: child.start_position().row + 1,
                         line_end: child.end_position().row + 1,
                         parent_index,
@@ -892,28 +865,14 @@ fn extract_java_node(
 }
 
 fn extract_java_import(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
-    // import_declaration contains scoped_identifier (or asterisk_import for wildcard)
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        match child.kind() {
-            "scoped_identifier" => {
-                let module = node_text(child, src).to_string();
-                result.imports.push(Import {
-                    module,
-                    names: None,
-                });
-                return;
-            }
-            "scoped_absolute_identifier" => {
-                // static imports: import static org.junit.Assert.assertEquals
-                let module = node_text(child, src).to_string();
-                result.imports.push(Import {
-                    module,
-                    names: None,
-                });
-                return;
-            }
-            _ => {}
+        if matches!(child.kind(), "scoped_identifier" | "scoped_absolute_identifier") {
+            result.imports.push(Import {
+                module: node_text(child, src).to_string(),
+                names: None,
+            });
+            return;
         }
     }
 }
@@ -926,52 +885,24 @@ fn extract_java_calls(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "method_invocation" {
-            // method_invocation children: [object.]name(args)
-            // The last identifier before argument_list is the method name
-            let name = extract_java_invocation_name(&child, src);
-            if let Some(name) = name {
-                result.calls.push(Call {
-                    caller_index,
-                    callee_name: name,
-                    line: child.start_position().row + 1,
-                });
-            }
-        }
-        if child.kind() == "object_creation_expression" {
-            // new Foo(...) — treat as call to constructor
-            if let Some(type_node) = child.child_by_field_name("type") {
-                let name = node_text(type_node, src).to_string();
-                result.calls.push(Call {
-                    caller_index,
-                    callee_name: name,
-                    line: child.start_position().row + 1,
-                });
-            }
+        let callee = match child.kind() {
+            "method_invocation" => child
+                .child_by_field_name("name")
+                .map(|n| node_text(n, src).to_string()),
+            "object_creation_expression" => child
+                .child_by_field_name("type")
+                .map(|n| node_text(n, src).to_string()),
+            _ => None,
+        };
+        if let Some(name) = callee {
+            result.calls.push(Call {
+                caller_index,
+                callee_name: name,
+                line: child.start_position().row + 1,
+            });
         }
         extract_java_calls(&child, src, result, caller_index);
     }
-}
-
-/// Extract the method name from a method_invocation node.
-/// Java method_invocation has children like: [object, ".", name, argument_list]
-/// or just [name, argument_list] for simple calls.
-fn extract_java_invocation_name(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
-    if let Some(name_node) = node.child_by_field_name("name") {
-        return Some(node_text(name_node, src).to_string());
-    }
-    // Fallback: find last identifier before argument_list
-    let mut cursor = node.walk();
-    let mut last_ident = None;
-    for child in node.children(&mut cursor) {
-        if child.kind() == "identifier" {
-            last_ident = Some(node_text(child, src).to_string());
-        }
-        if child.kind() == "argument_list" {
-            break;
-        }
-    }
-    last_ident
 }
 
 fn build_java_method_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
