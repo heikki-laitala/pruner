@@ -54,6 +54,12 @@ pub fn is_test_file(path: &Path) -> bool {
                 return true;
             }
         }
+        // Java convention: FooTest.java, FooTests.java
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if stem.ends_with("Test") || stem.ends_with("Tests") {
+                return true;
+            }
+        }
     }
 
     // The component check above handles both Unix and Windows separators.
@@ -187,6 +193,13 @@ mod tests {
         assert!(is_test_file(Path::new("auth.test.js")));
         assert!(is_test_file(Path::new("auth_spec.rb")));
         assert!(is_test_file(Path::new("auth.spec.ts")));
+    }
+
+    #[test]
+    fn test_is_test_file_java_suffix() {
+        assert!(is_test_file(Path::new("AuthHandlerTest.java")));
+        assert!(is_test_file(Path::new("AuthHandlerTests.java")));
+        assert!(!is_test_file(Path::new("TestUtils.java")));
     }
 
     #[test]

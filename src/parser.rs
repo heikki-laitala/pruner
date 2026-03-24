@@ -880,6 +880,17 @@ fn extract_java_import(node: &tree_sitter::Node, src: &[u8], result: &mut ParseR
     }
 }
 
+/// Normalize a Java type name to its simple base name for call resolution.
+/// e.g. `Box<String>` -> `Box`, `com.foo.User` -> `User`, `List<Map<K,V>>` -> `List`
+fn normalize_java_type_name(raw: &str) -> String {
+    let without_generics = raw.split('<').next().unwrap_or(raw);
+    let simple = without_generics
+        .rsplit('.')
+        .next()
+        .unwrap_or(without_generics);
+    simple.to_string()
+}
+
 fn extract_java_calls(
     node: &tree_sitter::Node,
     src: &[u8],
@@ -894,7 +905,7 @@ fn extract_java_calls(
                 .map(|n| node_text(n, src).to_string()),
             "object_creation_expression" => child
                 .child_by_field_name("type")
-                .map(|n| node_text(n, src).to_string()),
+                .map(|n| normalize_java_type_name(node_text(n, src))),
             _ => None,
         };
         if let Some(name) = callee {
@@ -1775,5 +1786,32 @@ class Foo {
             result.calls
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_generic_new_expression() -> anyhow::Result<()> {
+        let src = r#"
+class Foo {
+    public void bar() {
+        List<String> list = new ArrayList<String>();
+    }
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "ArrayList"),
+            "should normalize generic constructor to base name: {:?}",
+            result.calls
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_java_type_name() {
+        assert_eq!(normalize_java_type_name("User"), "User");
+        assert_eq!(normalize_java_type_name("Box<String>"), "Box");
+        assert_eq!(normalize_java_type_name("List<Map<K,V>>"), "List");
+        assert_eq!(normalize_java_type_name("com.foo.User"), "User");
+        assert_eq!(normalize_java_type_name("com.foo.Box<String>"), "Box");
     }
 }
