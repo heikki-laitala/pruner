@@ -444,6 +444,9 @@ fn cmd_index(repo: &Path, verbose: bool) -> Result<()> {
 
     eprintln!("Indexing {}...", repo_path.display());
     let stats = indexer::index_repo(&repo_path, &db, verbose)?;
+    if let Some(head) = git_head(repo) {
+        db.set_metadata(META_GIT_HEAD, &head)?;
+    }
     println!(
         "Indexed {} files, {} symbols, {} imports, {} calls, {} edges ({} skipped)",
         stats.files, stats.symbols, stats.imports, stats.calls, stats.edges, stats.skipped
