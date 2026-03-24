@@ -55,6 +55,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult> {
         Language::TypeScript | Language::Tsx => extract_js_ts(root, src),
         Language::Rust => extract_rust(root, src),
         Language::Go => extract_go(root, src),
+        Language::Java => extract_java(root, src),
     }
 }
 
@@ -66,6 +67,7 @@ fn ts_language_for(language: Language) -> tree_sitter::Language {
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Language::Rust => tree_sitter_rust::LANGUAGE.into(),
         Language::Go => tree_sitter_go::LANGUAGE.into(),
+        Language::Java => tree_sitter_java::LANGUAGE.into(),
     }
 }
 
@@ -790,6 +792,216 @@ fn build_go_method_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
     format!("func {receiver}{name}{params}{ret}")
 }
 
+// -- Java extraction --
+
+fn extract_java(root: tree_sitter::Node, src: &[u8]) -> Result<ParseResult> {
+    let mut result = ParseResult::default();
+    extract_java_node(root, src, &mut result, None);
+    Ok(result)
+}
+
+fn extract_java_node(
+    node: tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    parent_index: Option<usize>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "class".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    extract_java_node(child, src, result, Some(idx));
+                }
+            }
+            "interface_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "interface".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    extract_java_node(child, src, result, Some(idx));
+                }
+            }
+            "enum_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "enum".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    extract_java_node(child, src, result, Some(idx));
+                }
+            }
+            "method_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sig = build_java_method_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "method".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: Some(sig),
+                    });
+                    extract_java_calls(&child, src, result, idx);
+                }
+            }
+            "constructor_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sig = build_java_constructor_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "constructor".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: Some(sig),
+                    });
+                    extract_java_calls(&child, src, result, idx);
+                }
+            }
+            "import_declaration" => {
+                extract_java_import(&child, src, result);
+            }
+            _ => {
+                extract_java_node(child, src, result, parent_index);
+            }
+        }
+    }
+}
+
+fn extract_java_import(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    // import_declaration contains scoped_identifier (or asterisk_import for wildcard)
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "scoped_identifier" => {
+                let module = node_text(child, src).to_string();
+                result.imports.push(Import {
+                    module,
+                    names: None,
+                });
+                return;
+            }
+            "scoped_absolute_identifier" => {
+                // static imports: import static org.junit.Assert.assertEquals
+                let module = node_text(child, src).to_string();
+                result.imports.push(Import {
+                    module,
+                    names: None,
+                });
+                return;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_java_calls(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    caller_index: usize,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "method_invocation" {
+            // method_invocation children: [object.]name(args)
+            // The last identifier before argument_list is the method name
+            let name = extract_java_invocation_name(&child, src);
+            if let Some(name) = name {
+                result.calls.push(Call {
+                    caller_index,
+                    callee_name: name,
+                    line: child.start_position().row + 1,
+                });
+            }
+        }
+        if child.kind() == "object_creation_expression" {
+            // new Foo(...) — treat as call to constructor
+            if let Some(type_node) = child.child_by_field_name("type") {
+                let name = node_text(type_node, src).to_string();
+                result.calls.push(Call {
+                    caller_index,
+                    callee_name: name,
+                    line: child.start_position().row + 1,
+                });
+            }
+        }
+        extract_java_calls(&child, src, result, caller_index);
+    }
+}
+
+/// Extract the method name from a method_invocation node.
+/// Java method_invocation has children like: [object, ".", name, argument_list]
+/// or just [name, argument_list] for simple calls.
+fn extract_java_invocation_name(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    if let Some(name_node) = node.child_by_field_name("name") {
+        return Some(node_text(name_node, src).to_string());
+    }
+    // Fallback: find last identifier before argument_list
+    let mut cursor = node.walk();
+    let mut last_ident = None;
+    for child in node.children(&mut cursor) {
+        if child.kind() == "identifier" {
+            last_ident = Some(node_text(child, src).to_string());
+        }
+        if child.kind() == "argument_list" {
+            break;
+        }
+    }
+    last_ident
+}
+
+fn build_java_method_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let ret_type = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, src))
+        .unwrap_or("void");
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, src))
+        .unwrap_or("?");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, src))
+        .unwrap_or("()");
+    format!("{ret_type} {name}{params}")
+}
+
+fn build_java_constructor_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, src))
+        .unwrap_or("?");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, src))
+        .unwrap_or("()");
+    format!("{name}{params}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1438,6 +1650,190 @@ func (b Box[T]) String() string {
         assert!(result.symbols.is_empty());
         assert!(result.calls.is_empty());
         assert!(result.imports.is_empty());
+        Ok(())
+    }
+
+    // -- Java tests --
+
+    #[test]
+    fn test_parse_java_class_and_methods() -> anyhow::Result<()> {
+        let src = r#"
+public class AuthService {
+    public User authenticate(String username, String password) {
+        return null;
+    }
+
+    public void logout() {
+    }
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        let class = result.symbols.iter().find(|s| s.name == "AuthService");
+        assert!(class.is_some(), "should find AuthService class");
+        assert_eq!(class.unwrap().kind, "class");
+
+        let methods: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 2);
+        assert!(methods.iter().any(|m| m.name == "authenticate"));
+        assert!(methods.iter().any(|m| m.name == "logout"));
+
+        // Methods should be children of the class
+        let class_idx = result
+            .symbols
+            .iter()
+            .position(|s| s.name == "AuthService")
+            .unwrap();
+        for m in &methods {
+            assert_eq!(m.parent_index, Some(class_idx));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_interface() -> anyhow::Result<()> {
+        let src = r#"
+interface Authenticator {
+    User authenticate(String username, String password);
+    boolean isValid(String token);
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        let iface = result.symbols.iter().find(|s| s.name == "Authenticator");
+        assert!(iface.is_some(), "should find Authenticator interface");
+        assert_eq!(iface.unwrap().kind, "interface");
+
+        let methods: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_enum() -> anyhow::Result<()> {
+        let src = r#"
+enum Role {
+    ADMIN,
+    USER,
+    GUEST
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        let enm = result.symbols.iter().find(|s| s.name == "Role");
+        assert!(enm.is_some(), "should find Role enum");
+        assert_eq!(enm.unwrap().kind, "enum");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_imports() -> anyhow::Result<()> {
+        let src = r#"
+import java.util.List;
+import com.example.models.User;
+"#;
+        let result = parse_source(src, Language::Java)?;
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.imports.iter().any(|i| i.module == "java.util.List"));
+        assert!(result
+            .imports
+            .iter()
+            .any(|i| i.module == "com.example.models.User"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_method_calls() -> anyhow::Result<()> {
+        let src = r#"
+class Foo {
+    public void bar() {
+        baz();
+        obj.method();
+    }
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "baz"),
+            "should find plain call: {:?}",
+            result.calls
+        );
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "method"),
+            "should find qualified call: {:?}",
+            result.calls
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_constructor() -> anyhow::Result<()> {
+        let src = r#"
+public class AuthService {
+    private final UserRepository userRepo;
+
+    public AuthService(UserRepository userRepo) {
+        this.userRepo = userRepo;
+    }
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        let ctor = result
+            .symbols
+            .iter()
+            .find(|s| s.kind == "constructor");
+        assert!(ctor.is_some(), "should find constructor");
+        assert_eq!(ctor.unwrap().name, "AuthService");
+        assert!(ctor
+            .unwrap()
+            .signature
+            .as_ref()
+            .unwrap()
+            .contains("UserRepository"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_method_signature() -> anyhow::Result<()> {
+        let src = r#"
+class Foo {
+    public List<User> listUsers(String filter) {
+        return null;
+    }
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        let method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "listUsers")
+            .unwrap();
+        let sig = method.signature.as_ref().unwrap();
+        assert!(sig.contains("List<User>"), "sig should have return type: {sig}");
+        assert!(sig.contains("String filter"), "sig should have params: {sig}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_java_new_expression() -> anyhow::Result<()> {
+        let src = r#"
+class Foo {
+    public void bar() {
+        User u = new User();
+    }
+}
+"#;
+        let result = parse_source(src, Language::Java)?;
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "User"),
+            "should find constructor call via new: {:?}",
+            result.calls
+        );
         Ok(())
     }
 }

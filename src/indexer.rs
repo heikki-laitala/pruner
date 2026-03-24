@@ -334,13 +334,15 @@ fn build_test_edges(_repo_path: &Path, db: &IndexDb) -> Result<()> {
         let test_path = Path::new(&tf.path);
         let test_name = test_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
-        // test_foo.py -> foo.py
+        // test_foo.py -> foo.py, FooTest.java -> Foo.java
         let base_name = test_name
             .strip_prefix("test_")
             .or_else(|| test_name.strip_suffix("_test"))
             .or_else(|| test_name.strip_suffix(".test"))
             .or_else(|| test_name.strip_suffix("_spec"))
             .or_else(|| test_name.strip_suffix(".spec"))
+            .or_else(|| test_name.strip_suffix("Test"))
+            .or_else(|| test_name.strip_suffix("Tests"))
             .unwrap_or(test_name);
 
         for sf in &source_files {
@@ -536,10 +538,10 @@ mod tests {
         let dir = TempDir::new()?;
         let db = IndexDb::open_memory()?;
 
-        // .java is unsupported — file gets indexed but no symbols parsed
+        // .c is unsupported — file gets indexed but no symbols parsed
         fs::write(
-            dir.path().join("Main.java"),
-            "public class Main { public static void main(String[] args) {} }\n",
+            dir.path().join("main.c"),
+            "int main() { return 0; }\n",
         )?;
 
         let stats = index_repo(dir.path(), &db, false)?;
