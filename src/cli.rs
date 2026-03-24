@@ -13,6 +13,58 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Replace or append a `## Pruner` section in an instructions file.
+/// If the file already has a `## Pruner` section, replace it (up to the next `## ` or EOF).
+/// Otherwise, append the template.
+fn upsert_pruner_section(path: &Path, template: &str) -> Result<()> {
+    use std::io::Write;
+
+    let current = if path.exists() {
+        fs::read_to_string(path)?
+    } else {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        String::new()
+    };
+
+    const MARKER: &str = "## Pruner";
+
+    let new_content = if let Some(start) = current.find(MARKER) {
+        // Find end of the pruner section: next ## heading or EOF
+        let after_marker = start + MARKER.len();
+        let end = current[after_marker..]
+            .find("\n## ")
+            .map(|i| after_marker + i + 1) // +1 to keep the newline before next heading
+            .unwrap_or(current.len());
+        let mut result = current[..start].to_string();
+        result.push_str(template);
+        if end < current.len() {
+            let remainder = &current[end..];
+            if !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(remainder);
+        }
+        result
+    } else {
+        // Append
+        let mut result = current;
+        if !result.is_empty() && !result.ends_with('\n') {
+            result.push('\n');
+        }
+        if !result.is_empty() {
+            result.push('\n');
+        }
+        result.push_str(template);
+        result
+    };
+
+    let mut f = fs::File::create(path)?;
+    f.write_all(new_content.as_bytes())?;
+    Ok(())
+}
 use std::process::Command;
 use std::time::SystemTime;
 
@@ -107,7 +159,7 @@ enum Commands {
         #[arg(long)]
         json_output: bool,
     },
-    /// Set up pruner in a project (skill, hook, CLAUDE.md)
+    /// Set up pruner in a project (Claude/Copilot skills, hook, instructions)
     Init {
         /// Path to the project
         #[arg(default_value = ".")]
@@ -115,9 +167,18 @@ enum Commands {
         /// Install prompt-submit hook (Claude Code only, better performance)
         #[arg(long)]
         hook: bool,
-        /// Install globally (~/.claude/) instead of project-local
+        /// Install Claude skill globally (~/.claude/) instead of project-local
         #[arg(long)]
         global: bool,
+        /// Install Copilot CLI skill and instructions
+        #[arg(long)]
+        copilot_skill: bool,
+        /// Install Copilot CLI userPromptSubmitted hook (repo-local, writes .pruner/copilot-context.md)
+        #[arg(long)]
+        copilot_hook: bool,
+        /// Install Copilot CLI skill globally (~/.copilot/)
+        #[arg(long)]
+        copilot_global: bool,
     },
     /// Estimate realistic Claude Code token usage with and without pruner
     Estimate {
@@ -141,7 +202,21 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { repo, hook, global } => cmd_init(&repo, hook, global),
+        Commands::Init {
+            repo,
+            hook,
+            global,
+            copilot_skill,
+            copilot_hook,
+            copilot_global,
+        } => cmd_init(
+            &repo,
+            hook,
+            global,
+            copilot_skill,
+            copilot_hook,
+            copilot_global,
+        ),
         Commands::Index { repo, verbose } => cmd_index(&repo, verbose),
         Commands::Query {
             repo,
@@ -331,58 +406,81 @@ const SKILL_SKILL_MD: &str = include_str!("../.claude/skills/pruner/SKILL.skill.
 const SKILL_HOOK_MD: &str = include_str!("../.claude/skills/pruner/SKILL.hook.md");
 const HOOK_SCRIPT: &str = include_str!("../.claude/hooks/pruner-context.sh");
 const CLAUDE_TEMPLATE: &str = include_str!("../CLAUDE.template.md");
+const COPILOT_SKILL_MD: &str = include_str!("../.copilot/skills/pruner/SKILL.md");
+const COPILOT_TEMPLATE_SKILL: &str = include_str!("../COPILOT.template.skill.md");
+const COPILOT_TEMPLATE_HOOK: &str = include_str!("../COPILOT.template.hook.md");
+const COPILOT_HOOK_JSON: &str = include_str!("../.copilot/hooks/pruner-context.json");
+const COPILOT_HOOK_BASH: &str = include_str!("../.copilot/hooks/pruner-context.sh");
+const COPILOT_HOOK_PS1: &str = include_str!("../.copilot/hooks/pruner-context.ps1");
 
-fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
-    let base = if global {
-        dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-            .join(".claude")
-    } else {
-        repo.join(".claude")
-    };
+fn cmd_init(
+    repo: &Path,
+    hook: bool,
+    global: bool,
+    copilot_skill: bool,
+    copilot_hook: bool,
+    copilot_global: bool,
+) -> Result<()> {
+    if copilot_hook && copilot_global {
+        anyhow::bail!(
+            "--copilot-hook is repository-local; do not combine it with --copilot-global"
+        );
+    }
 
-    // Install skill
-    let skill_dir = base.join("skills").join("pruner");
-    fs::create_dir_all(&skill_dir)?;
-    let skill_content = if hook { SKILL_HOOK_MD } else { SKILL_SKILL_MD };
-    fs::write(skill_dir.join("SKILL.md"), skill_content)?;
-    println!(
-        "Installed skill -> {}",
-        skill_dir.join("SKILL.md").display()
-    );
+    let install_claude = (!copilot_skill && !copilot_global && !copilot_hook) || hook || global;
 
-    // Install hook if requested
-    if hook {
-        let hook_dir = base.join("hooks");
-        fs::create_dir_all(&hook_dir)?;
-        let hook_path = hook_dir.join("pruner-context.sh");
-        fs::write(&hook_path, HOOK_SCRIPT)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
-        }
-        println!("Installed hook  -> {}", hook_path.display());
-
-        // Write hook settings
-        let settings_path = base.join("settings.json");
-        let mut settings: serde_json::Value = if settings_path.exists() {
-            serde_json::from_str(&fs::read_to_string(&settings_path)?)?
+    if install_claude {
+        let claude_base = if global {
+            dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+                .join(".claude")
         } else {
-            serde_json::json!({})
+            repo.join(".claude")
         };
-        settings["hooks"] = serde_json::json!({
-            "UserPromptSubmit": [{
-                "matcher": "",
-                "hooks": [{
-                    "type": "command",
-                    "command": hook_path.to_str().unwrap(),
-                    "timeout": 60
+
+        // Install skill
+        let skill_dir = claude_base.join("skills").join("pruner");
+        fs::create_dir_all(&skill_dir)?;
+        let skill_content = if hook { SKILL_HOOK_MD } else { SKILL_SKILL_MD };
+        fs::write(skill_dir.join("SKILL.md"), skill_content)?;
+        println!(
+            "Installed Claude skill -> {}",
+            skill_dir.join("SKILL.md").display()
+        );
+
+        // Install hook if requested
+        if hook {
+            let hook_dir = claude_base.join("hooks");
+            fs::create_dir_all(&hook_dir)?;
+            let hook_path = hook_dir.join("pruner-context.sh");
+            fs::write(&hook_path, HOOK_SCRIPT)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
+            }
+            println!("Installed hook  -> {}", hook_path.display());
+
+            // Write hook settings
+            let settings_path = claude_base.join("settings.json");
+            let mut settings: serde_json::Value = if settings_path.exists() {
+                serde_json::from_str(&fs::read_to_string(&settings_path)?)?
+            } else {
+                serde_json::json!({})
+            };
+            settings["hooks"] = serde_json::json!({
+                "UserPromptSubmit": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": hook_path.to_str().unwrap(),
+                        "timeout": 60
+                    }]
                 }]
-            }]
-        });
-        fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
-        println!("Updated settings -> {}", settings_path.display());
+            });
+            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            println!("Updated settings -> {}", settings_path.display());
+        }
     }
 
     if !global {
@@ -409,27 +507,78 @@ fn cmd_init(repo: &Path, hook: bool, global: bool) -> Result<()> {
             println!("Updated .gitignore -> added .pruner/");
         }
 
-        // Append CLAUDE.md instructions
-        let claude_md = repo.join("CLAUDE.md");
-        let current = if claude_md.exists() {
-            fs::read_to_string(&claude_md)?
-        } else {
-            String::new()
-        };
-        if !current.contains("pruner context") {
-            let mut f = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&claude_md)?;
-            use std::io::Write;
-            write!(f, "\n{CLAUDE_TEMPLATE}")?;
+        if install_claude {
+            let claude_md = repo.join("CLAUDE.md");
+            upsert_pruner_section(&claude_md, CLAUDE_TEMPLATE)?;
             println!("Updated CLAUDE.md -> {}", claude_md.display());
-        } else {
-            println!("CLAUDE.md already has pruner instructions");
         }
     }
 
-    if !global {
+    if copilot_skill || copilot_global || copilot_hook {
+        let copilot_base = if copilot_global {
+            dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+                .join(".copilot")
+        } else {
+            repo.join(".copilot")
+        };
+
+        if copilot_skill || copilot_global {
+            let copilot_skill_dir = copilot_base.join("skills").join("pruner");
+            fs::create_dir_all(&copilot_skill_dir)?;
+            fs::write(copilot_skill_dir.join("SKILL.md"), COPILOT_SKILL_MD)?;
+            println!(
+                "Installed Copilot skill -> {}",
+                copilot_skill_dir.join("SKILL.md").display()
+            );
+        }
+
+        let copilot_instructions = if copilot_global {
+            copilot_base.join("copilot-instructions.md")
+        } else {
+            repo.join(".github").join("copilot-instructions.md")
+        };
+        let template = if copilot_hook {
+            COPILOT_TEMPLATE_HOOK
+        } else {
+            COPILOT_TEMPLATE_SKILL
+        };
+        upsert_pruner_section(&copilot_instructions, template)?;
+        println!(
+            "Updated Copilot instructions -> {}",
+            copilot_instructions.display()
+        );
+
+        if copilot_hook {
+            let hook_dir = repo.join(".github").join("hooks");
+            fs::create_dir_all(&hook_dir)?;
+
+            let hook_json_path = hook_dir.join("pruner-context.json");
+            fs::write(&hook_json_path, COPILOT_HOOK_JSON)?;
+            println!(
+                "Installed Copilot hook config -> {}",
+                hook_json_path.display()
+            );
+
+            let hook_bash_path = hook_dir.join("pruner-context.sh");
+            fs::write(&hook_bash_path, COPILOT_HOOK_BASH)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&hook_bash_path, fs::Permissions::from_mode(0o755))?;
+            }
+            println!(
+                "Installed Copilot hook bash -> {}",
+                hook_bash_path.display()
+            );
+
+            let hook_ps_path = hook_dir.join("pruner-context.ps1");
+            fs::write(&hook_ps_path, COPILOT_HOOK_PS1)?;
+            println!("Installed Copilot hook pwsh -> {}", hook_ps_path.display());
+        }
+    }
+
+    if (!global && install_claude) || ((copilot_skill || copilot_hook) && !copilot_global) {
         println!("\nNext: pruner index {}", repo.display());
     }
 

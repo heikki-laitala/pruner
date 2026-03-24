@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "./pruner-context.sh",
+        "powershell": "./pruner-context.ps1",
+        "cwd": ".github/hooks",
+        "timeoutSec": 60
+      }
+    ]
+  }
+}

@@ -5,10 +5,16 @@
 #
 # Or with options:
 #   $env:PRUNER_VERSION = "v0.2.0"; irm ... | iex
+#   irm ... | iex -CopilotSkill
+#   irm ... | iex -CopilotHook
+#   irm ... | iex -CopilotGlobal
 
 param(
     [string]$Version = $env:PRUNER_VERSION,
-    [string]$InstallDir = "$env:USERPROFILE\.local\bin"
+    [string]$InstallDir = "$env:USERPROFILE\.local\bin",
+    [switch]$CopilotSkill,
+    [switch]$CopilotHook,
+    [switch]$CopilotGlobal
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,6 +83,23 @@ Write-Host ""
 Write-Host "To set up pruner in a project:"
 Write-Host ""
 Write-Host "  pruner init C:\path\to\project"
+Write-Host "  pruner init C:\path\to\project --copilot-skill"
+Write-Host "  pruner init C:\path\to\project --copilot-hook"
 Write-Host "  pruner index C:\path\to\project"
 Write-Host ""
+
+if ($CopilotGlobal) {
+    Write-Host "Setting up global Copilot integration..."
+    & $ExePath init --copilot-skill --copilot-global
+    Write-Host ""
+} elseif ($CopilotSkill) {
+    Write-Host "To install Copilot skill in a project, run:"
+    Write-Host "  pruner init C:\path\to\project --copilot-skill"
+    Write-Host ""
+} elseif ($CopilotHook) {
+    Write-Host "To install Copilot hook in a project, run:"
+    Write-Host "  pruner init C:\path\to\project --copilot-hook"
+    Write-Host ""
+}
+
 Write-Host "Done."
