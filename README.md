@@ -27,6 +27,12 @@ curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.s
 
 This downloads the latest release binary for your platform (macOS/Linux, x86_64/arm64) and installs it to `~/.local/bin/`.
 
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.ps1 | iex
+```
+
 Options:
 
 ```bash

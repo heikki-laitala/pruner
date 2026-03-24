@@ -29,6 +29,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             binary: pruner-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: pruner-windows-x86_64
 
     steps:
       - uses: actions/checkout@v4
@@ -50,18 +53,27 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
           cp pruner ../../../${{ matrix.binary }}
           cd ../../..
           tar -czf ${{ matrix.binary }}.tar.gz ${{ matrix.binary }}
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cp target/${{ matrix.target }}/release/pruner.exe ${{ matrix.binary }}.exe
+          7z a ${{ matrix.binary }}.zip ${{ matrix.binary }}.exe
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary }}
-          path: ${{ matrix.binary }}.tar.gz
+          path: |
+            ${{ matrix.binary }}.tar.gz
+            ${{ matrix.binary }}.zip
 
   release:
     name: Create Release
@@ -79,4 +91,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: artifacts/**/*.tar.gz
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
