@@ -867,7 +867,10 @@ fn extract_java_node(
 fn extract_java_import(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if matches!(child.kind(), "scoped_identifier" | "scoped_absolute_identifier") {
+        if matches!(
+            child.kind(),
+            "scoped_identifier" | "scoped_absolute_identifier"
+        ) {
             result.imports.push(Import {
                 module: node_text(child, src).to_string(),
                 names: None,
