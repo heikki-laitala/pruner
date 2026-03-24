@@ -652,7 +652,9 @@ fn extract_go_imports(node: &tree_sitter::Node, src: &[u8], result: &mut ParseRe
         match child.kind() {
             "import_spec" => {
                 if let Some(path_node) = child.child_by_field_name("path") {
-                    let module = node_text(path_node, src).trim_matches('"').to_string();
+                    let module = node_text(path_node, src)
+                        .trim_matches(&['"', '`'] as &[char])
+                        .to_string();
                     result.imports.push(Import {
                         module,
                         names: None,
@@ -661,7 +663,9 @@ fn extract_go_imports(node: &tree_sitter::Node, src: &[u8], result: &mut ParseRe
             }
             "interpreted_string_literal" => {
                 // Single import: import "fmt"
-                let module = node_text(child, src).trim_matches('"').to_string();
+                let module = node_text(child, src)
+                    .trim_matches(&['"', '`'] as &[char])
+                    .to_string();
                 result.imports.push(Import {
                     module,
                     names: None,
@@ -707,6 +711,25 @@ fn extract_go_calls(
     }
 }
 
+/// Extract the base type name from a Go type node, handling pointers and generics.
+/// e.g. `Server` -> "Server", `*Server` -> "Server", `Box[T]` -> "Box", `*Box[T]` -> "Box"
+fn extract_go_base_type<'a>(type_node: tree_sitter::Node<'a>, src: &'a [u8]) -> Option<&'a str> {
+    match type_node.kind() {
+        "type_identifier" => Some(node_text(type_node, src)),
+        "pointer_type" | "generic_type" => {
+            // Recurse into child to find the type_identifier
+            let mut cursor = type_node.walk();
+            for child in type_node.children(&mut cursor) {
+                if let Some(name) = extract_go_base_type(child, src) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn find_go_receiver_parent(
     method: &tree_sitter::Node,
     src: &[u8],
@@ -719,18 +742,7 @@ fn find_go_receiver_parent(
         if child.kind() == "parameter_declaration"
             && let Some(type_node) = child.child_by_field_name("type")
         {
-            let type_name = match type_node.kind() {
-                "pointer_type" => {
-                    // *Server -> get the inner type
-                    let mut c2 = type_node.walk();
-                    type_node
-                        .children(&mut c2)
-                        .find(|n| n.kind() == "type_identifier")
-                        .map(|n| node_text(n, src))
-                }
-                "type_identifier" => Some(node_text(type_node, src)),
-                _ => None,
-            };
+            let type_name = extract_go_base_type(type_node, src);
             if let Some(name) = type_name {
                 return result
                     .symbols
@@ -1368,6 +1380,54 @@ func NewServer(port int) *Server {
         assert!(
             sig.contains("*Server"),
             "signature should contain return type: {sig}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_generic_receiver() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+type Box[T any] struct {
+    value T
+}
+
+func (b *Box[T]) Get() T {
+    return b.value
+}
+
+func (b Box[T]) String() string {
+    return "box"
+}
+"#;
+        let result = parse_source(src, Language::Go)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Box" && s.kind == "struct")
+        );
+        let get = result.symbols.iter().find(|s| s.name == "Get").unwrap();
+        assert_eq!(get.kind, "method");
+        assert_eq!(get.parent_index, Some(0), "Get should link to Box struct");
+        let string_method = result.symbols.iter().find(|s| s.name == "String").unwrap();
+        assert_eq!(
+            string_method.parent_index,
+            Some(0),
+            "String should link to Box struct"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_raw_string_import() -> anyhow::Result<()> {
+        let src = "package main\n\nimport `net/http`\n";
+        let result = parse_source(src, Language::Go)?;
+        assert!(
+            result.imports.iter().any(|i| i.module == "net/http"),
+            "raw string import should be stripped of backticks: {:?}",
+            result.imports
         );
         Ok(())
     }
