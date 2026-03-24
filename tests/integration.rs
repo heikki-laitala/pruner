@@ -93,6 +93,10 @@ mod init {
             !dir.path().join(".claude/skills/pruner/SKILL.md").exists(),
             "Copilot-only init should not create Claude skill file"
         );
+        assert!(
+            dir.path().join(".pruner/index.db").exists(),
+            "init should auto-run indexing"
+        );
     }
 
     #[test]
@@ -119,6 +123,10 @@ mod init {
         assert!(
             dir.path().join(".github/hooks/pruner-context.ps1").exists(),
             "should create Copilot hook powershell script"
+        );
+        assert!(
+            dir.path().join(".pruner/index.db").exists(),
+            "init should auto-run indexing"
         );
     }
 }
