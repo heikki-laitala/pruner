@@ -54,7 +54,12 @@ pub fn is_test_file(path: &Path) -> bool {
         }
     }
 
-    path_str.contains("/tests/") || path_str.contains("/test/") || path_str.contains("/__tests__/")
+    // The component check above handles both Unix and Windows separators.
+    // This fallback catches edge cases with normalized (forward-slash) path strings.
+    let normalized = path_str.replace('\\', "/");
+    normalized.contains("/tests/")
+        || normalized.contains("/test/")
+        || normalized.contains("/__tests__/")
 }
 
 /// Check if a directory should be skipped during indexing.

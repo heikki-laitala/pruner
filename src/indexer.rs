@@ -11,6 +11,11 @@ use std::path::Path;
 use std::time::SystemTime;
 use walkdir::WalkDir;
 
+/// Normalize a path string to use forward slashes (for cross-platform DB consistency).
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 /// Stats returned after indexing.
 #[derive(Debug, Default)]
 pub struct IndexStats {
@@ -62,11 +67,12 @@ pub fn index_repo_incremental(
         if languages::is_ignored_file(path) {
             continue;
         }
-        let rel_path = path
-            .strip_prefix(repo_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
+        let rel_path = normalize_path(
+            &path
+                .strip_prefix(repo_path)
+                .unwrap_or(path)
+                .to_string_lossy(),
+        );
 
         seen_paths.insert(rel_path.clone());
         let current_mtime = file_mtime(path);
@@ -150,11 +156,12 @@ fn index_files(
             continue;
         }
 
-        let rel_path = path
-            .strip_prefix(repo_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
+        let rel_path = normalize_path(
+            &path
+                .strip_prefix(repo_path)
+                .unwrap_or(path)
+                .to_string_lossy(),
+        );
 
         // In incremental mode, skip files that don't need re-indexing
         // but still collect their symbols for edge resolution
