@@ -370,6 +370,13 @@ def reset_clone(clone_path, reinstall_pruner=False, mode="hook"):
         if mode == "hook":
             init_args.append("--hook")
         subprocess.run(init_args, check=True, capture_output=True, text=True)
+        # Re-index: git clean removes .pruner/ (including the index DB).
+        # Without an index, the hook's pruner context call auto-indexes the
+        # entire repo, exceeding the 60s hook timeout on large repos.
+        subprocess.run(
+            [str(PRUNER_BIN), "index", str(clone_path)],
+            check=True, capture_output=True, text=True,
+        )
 
 
 def run_task(category, prompt, mode="hook", only=None, save_raw=False):
