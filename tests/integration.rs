@@ -854,9 +854,12 @@ mod java_project {
         let tests = json["relevant_tests"].as_array().unwrap();
 
         assert!(
-            tests
-                .iter()
-                .any(|t| { t["path"].as_str().unwrap_or("").contains("AuthHandlerTest.java") }),
+            tests.iter().any(|t| {
+                t["path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("AuthHandlerTest.java")
+            }),
             "should detect Java test file"
         );
     }

@@ -1740,10 +1740,12 @@ import com.example.models.User;
         let result = parse_source(src, Language::Java)?;
         assert_eq!(result.imports.len(), 2);
         assert!(result.imports.iter().any(|i| i.module == "java.util.List"));
-        assert!(result
-            .imports
-            .iter()
-            .any(|i| i.module == "com.example.models.User"));
+        assert!(
+            result
+                .imports
+                .iter()
+                .any(|i| i.module == "com.example.models.User")
+        );
         Ok(())
     }
 
@@ -1783,18 +1785,16 @@ public class AuthService {
 }
 "#;
         let result = parse_source(src, Language::Java)?;
-        let ctor = result
-            .symbols
-            .iter()
-            .find(|s| s.kind == "constructor");
+        let ctor = result.symbols.iter().find(|s| s.kind == "constructor");
         assert!(ctor.is_some(), "should find constructor");
         assert_eq!(ctor.unwrap().name, "AuthService");
-        assert!(ctor
-            .unwrap()
-            .signature
-            .as_ref()
-            .unwrap()
-            .contains("UserRepository"));
+        assert!(
+            ctor.unwrap()
+                .signature
+                .as_ref()
+                .unwrap()
+                .contains("UserRepository")
+        );
         Ok(())
     }
 
@@ -1814,8 +1814,14 @@ class Foo {
             .find(|s| s.name == "listUsers")
             .unwrap();
         let sig = method.signature.as_ref().unwrap();
-        assert!(sig.contains("List<User>"), "sig should have return type: {sig}");
-        assert!(sig.contains("String filter"), "sig should have params: {sig}");
+        assert!(
+            sig.contains("List<User>"),
+            "sig should have return type: {sig}"
+        );
+        assert!(
+            sig.contains("String filter"),
+            "sig should have params: {sig}"
+        );
         Ok(())
     }
 
