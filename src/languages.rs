@@ -14,6 +14,7 @@ pub enum Language {
     Tsx,
     Rust,
     Go,
+    Java,
 }
 
 /// Detect language from file extension. Returns None for unsupported extensions.
@@ -26,6 +27,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "tsx" | "jsx" => Some(Language::Tsx),
         "rs" => Some(Language::Rust),
         "go" => Some(Language::Go),
+        "java" => Some(Language::Java),
         _ => None,
     }
 }
@@ -156,9 +158,17 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_java() {
+        assert_eq!(
+            detect_language(Path::new("Main.java")),
+            Some(Language::Java)
+        );
+    }
+
+    #[test]
     fn test_detect_language_unsupported() {
-        assert_eq!(detect_language(Path::new("file.java")), None);
         assert_eq!(detect_language(Path::new("file.rb")), None);
+        assert_eq!(detect_language(Path::new("file.c")), None);
     }
 
     #[test]

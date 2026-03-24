@@ -268,6 +268,7 @@ Full tree-sitter parsing (symbols, imports, calls):
 - JavaScript / TypeScript / TSX / JSX
 - Rust
 - Go
+- Java
 
 Basic indexing (files, metadata):
 

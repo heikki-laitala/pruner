@@ -135,6 +135,17 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let keywords = extract_keywords(ask);
 
     let (mut matching_files, matching_symbols) = gather_candidates(&keywords, db)?;
+
+    // Add symbol host files so test-edge lookup covers them
+    let mut seen_file_ids: HashSet<i64> = matching_files.iter().map(|f| f.id).collect();
+    for sym in &matching_symbols {
+        if seen_file_ids.insert(sym.file_id)
+            && let Some(file) = db.get_file_by_path_id(sym.file_id)?
+        {
+            matching_files.push(file);
+        }
+    }
+
     let related_tests = find_related_tests(&matching_files, db)?;
     let file_scores = build_file_scores(&matching_files, &matching_symbols, &keywords, db)?;
 
