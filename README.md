@@ -39,6 +39,12 @@ Options:
 # Install with Claude Code hook (best performance)
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --hook --global
 
+# Install with Copilot CLI skill files
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-skill
+
+# Install with Copilot CLI hook files
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-hook
+
 # Install to a custom directory
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --dir /usr/local/bin
 
@@ -78,6 +84,9 @@ After installing the binary, set up pruner in your project:
 pruner init /path/to/project          # skill mode (works with any AI agent)
 pruner init /path/to/project --hook   # hook mode (Claude Code only, best performance)
 pruner init --global                  # install globally to ~/.claude/
+pruner init /path/to/project --copilot-skill  # install Copilot CLI skill + instructions
+pruner init --copilot-skill --copilot-global  # install Copilot skill globally to ~/.copilot/
+pruner init /path/to/project --copilot-hook   # install Copilot userPromptSubmitted hook
 ```
 
 Indexing happens automatically on first use — no manual step needed. To pre-index for faster first query:
@@ -150,7 +159,7 @@ pruner stats .
 
 ## A/B test results (Claude Code)
 
-All results below are from real **Claude Code** sessions using the **opus** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla Claude Code. Sessions run in parallel on separate clones. It takes around 1 minute to index openclaw codebase. Results for other agents (Codex, Copilot) have not been measured yet — pruner works with them via skill mode but performance numbers may differ.
+All results below are from real **Claude Code** sessions using the **opus** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla Claude Code. Sessions run sequentially on separate clones. It takes around 1 minute to index openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
 
 ### Results (prompt-submit hook — recommended)
 
@@ -199,6 +208,33 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 - **Understanding / data flow**: 32% cheaper, 56-58% faster.
 - **Narrow tasks**: Breakeven — vanilla Claude is already efficient on focused queries.
 
+## A/B test results (Copilot CLI)
+
+### Results (skill mode — Copilot runs pruner as a tool)
+
+Tested with **Copilot CLI** using the **gpt-5.3-codex** model on the same openclaw repo (9,794 files). The "with" side prompt instructs Copilot to run `pruner context` and use the output before exploring. Each task run once per side, sequentially. Repo pinned to a fixed commit for reproducibility. N=1 — results have variance.
+
+| Task | Without | With (skill) | Δ tools | Δ time | Premium requests |
+|------|--------:|-------------:|--------:|-------:|----------------:|
+| Understanding | 72 tools / 242s | 45 tools / 203s | **-38%** | **-16%** | 1 → 1 |
+| Cross-package | 102 tools / 391s | 71 tools / 296s | **-30%** | **-24%** | 1 → 1 |
+| Data flow | 90 tools / 338s | 57 tools / 271s | **-37%** | **-20%** | 1 → 1 |
+| Narrow fix | 48 tools / 252s | 103 tools / 402s | +115% | +59% | 1 → 1 |
+
+Broad tasks (understanding, cross-package, data flow) see the biggest improvement. Narrow tasks can regress — the extra context overhead outweighs the benefit when Copilot is already efficient on focused queries. Premium requests are 1 per session regardless of tool count.
+
+### Results (hook mode — background hook writes context file)
+
+Same setup, but pruner runs as a `userPromptSubmitted` hook that writes `.pruner/copilot-context.md`. The model reads the file and uses it as starting context.
+
+| Task | Without | With (hook) | Δ tools | Δ time | Premium requests |
+|------|--------:|------------:|--------:|-------:|----------------:|
+| Understanding | 94 tools / 293s | 45 tools / 201s | **-52%** | **-31%** | 1 → 1 |
+
+Hook and skill mode produce similar "with pruner" numbers (45 tools in both). The larger delta in hook mode reflects natural variance in the "without" baseline across runs.
+
+**Context trust is model-dependent.** Whether hook or skill mode works better depends on how much the model trusts externally provided context. In skill mode, the model calls `pruner context` itself — it requested the data, so it's more likely to use it directly. In hook mode, the context appears as a pre-generated file the model didn't ask for, and more capable models (like gpt-5.3-codex) tend to second-guess it, reading the file but then re-exploring with 50-70 tool calls anyway. Simpler models are often more instruction-following and accept the provided context at face value, making hook mode more effective for them. The instructions must explain what pruner is (tree-sitter indexer, call graph, full codebase index) so the model understands the context is authoritative, not cached notes — without this explanation, even compliant models may distrust the file. Note: Copilot's `glob` tool skips dotfiles, so instructions must tell the model to use `cat` (not glob) to read `.pruner/copilot-context.md`.
+
 ### Reproduce
 
 ```bash
@@ -211,6 +247,11 @@ python3 tests/ab_test.py --task cross_package               # single task
 python3 tests/ab_test.py --task implement --mode skill      # skill mode
 python3 tests/ab_test.py --task narrow_fix --save-raw       # save raw output
 python3 tests/ab_test.py /path/to/repo                      # any repo
+
+# Copilot CLI A/B test (without vs with pruner in skill/hook mode)
+python3 tests/ab_test_copilot.py /tmp/pruner-bench/openclaw
+python3 tests/ab_test_copilot.py --mode skill --task cross_package --runs 3 /tmp/pruner-bench/openclaw
+python3 tests/ab_test_copilot.py --mode hook --task implement --runs 3 --save-raw /tmp/pruner-bench/openclaw
 
 # Pruner performance benchmark (no claude CLI needed, ~2 min, clones openclaw)
 make bench
@@ -337,6 +378,48 @@ pruner init /path/to/project
 pruner index /path/to/project
 ```
 
+This creates:
+- `.claude/skills/pruner/SKILL.md`
+- `CLAUDE.md` guidance (if missing)
+
+### Copilot CLI skill mode
+
+Use skill mode when you want explicit, manual invocation:
+
+```bash
+pruner init /path/to/project --copilot-skill
+pruner index /path/to/project
+```
+
+This creates:
+- `.copilot/skills/pruner/SKILL.md`
+- `.github/copilot-instructions.md` guidance (if missing)
+
+Then in Copilot CLI:
+
+```text
+/skills add pruner
+/skills run pruner "fix login token refresh bug"
+```
+
+### Copilot CLI hook mode (experimental)
+
+Copilot CLI supports hooks via `.github/hooks/*.json` (requires `--experimental` flag in CLI 1.0.x). Pruner can install a hook that writes prompt-specific context to `.pruner/copilot-context.md` on every submitted prompt:
+
+```bash
+pruner init /path/to/project --copilot-hook
+pruner index /path/to/project
+```
+
+This creates:
+- `.github/hooks/pruner-context.json`
+- `.github/hooks/pruner-context.sh`
+- `.github/hooks/pruner-context.ps1`
+
+In Copilot CLI sessions started in that repo, the hook runs on `userPromptSubmitted` and writes `.pruner/copilot-context.md`. The `copilot-instructions.md` tells Copilot to read this file first.
+
+**Note:** Copilot's `userPromptSubmitted` hook is observational — the model doesn't wait for it to complete before starting. On large repos where pruner takes a few seconds, the model may start exploring before the context file is written. For reliable results, use **skill mode** instead, which gives the model explicit control over when to call pruner.
+
 ### Global install
 
 Install once for all projects:
@@ -344,6 +427,7 @@ Install once for all projects:
 ```bash
 pruner init --global          # skill mode
 pruner init --global --hook   # hook mode
+pruner init --copilot-skill --copilot-global  # Copilot skill mode
 ```
 
 ### What happens automatically
