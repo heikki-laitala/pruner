@@ -55,10 +55,10 @@ pub fn is_test_file(path: &Path) -> bool {
             }
         }
         // Java convention: FooTest.java, FooTests.java
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if stem.ends_with("Test") || stem.ends_with("Tests") {
-                return true;
-            }
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            && (stem.ends_with("Test") || stem.ends_with("Tests"))
+        {
+            return true;
         }
     }
 
