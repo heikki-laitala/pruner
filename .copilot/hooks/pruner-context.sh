@@ -38,9 +38,27 @@ fi
 
 PRUNER=$(command -v pruner 2>/dev/null || true)
 if [ -z "$PRUNER" ]; then
-  PRUNER="${ROOT}/target/release/pruner"
+  for candidate in \
+    "$HOME/.local/bin/pruner" \
+    "$HOME/.local/bin/pruner.exe" \
+    "$HOME/.cargo/bin/pruner" \
+    "${ROOT}/target/release/pruner" \
+    "${ROOT}/target/release/pruner.exe"; do
+    if [ -f "$candidate" ]; then
+      PRUNER="$candidate"
+      break
+    fi
+  done
+  # Unix-only install location
+  if [ -z "$PRUNER" ] && [ -f "/usr/local/bin/pruner" ]; then
+    PRUNER="/usr/local/bin/pruner"
+  fi
+  # Windows: check default install dir
+  if [ -z "$PRUNER" ] && [ -n "$USERPROFILE" ] && [ -f "$USERPROFILE/.local/bin/pruner.exe" ]; then
+    PRUNER="$USERPROFILE/.local/bin/pruner.exe"
+  fi
 fi
-if [ ! -x "$PRUNER" ]; then
+if [ -z "$PRUNER" ] || [ ! -f "$PRUNER" ]; then
   exit 0
 fi
 
