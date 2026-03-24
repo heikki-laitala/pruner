@@ -159,7 +159,11 @@ mod hooks {
 
     /// Run a bash hook script with given JSON on stdin, pruner on PATH.
     /// Returns (exit_code, stdout, stderr).
-    fn run_hook(script: &Path, stdin_json: &str, env_vars: &[(&str, &str)]) -> (i32, String, String) {
+    fn run_hook(
+        script: &Path,
+        stdin_json: &str,
+        env_vars: &[(&str, &str)],
+    ) -> (i32, String, String) {
         let bin = pruner_bin();
         let bin_dir = bin.parent().unwrap();
         let path_env = format!(
@@ -237,7 +241,10 @@ mod hooks {
         let (code, stdout, _stderr) = run_hook(&script, json, &[]);
 
         assert_eq!(code, 0);
-        assert!(stdout.is_empty(), "should produce no output for empty prompt");
+        assert!(
+            stdout.is_empty(),
+            "should produce no output for empty prompt"
+        );
     }
 
     #[test]
@@ -248,7 +255,10 @@ mod hooks {
         let (code, stdout, _stderr) = run_hook(&script, json, &[]);
 
         assert_eq!(code, 0);
-        assert!(stdout.is_empty(), "should produce no output for missing prompt");
+        assert!(
+            stdout.is_empty(),
+            "should produce no output for missing prompt"
+        );
     }
 
     #[test]
@@ -261,11 +271,17 @@ mod hooks {
             &script,
             json,
             "/usr/bin:/bin",
-            &[("HOME", "/nonexistent"), ("CLAUDE_PROJECT_DIR", "/nonexistent")],
+            &[
+                ("HOME", "/nonexistent"),
+                ("CLAUDE_PROJECT_DIR", "/nonexistent"),
+            ],
         );
 
         assert_eq!(code, 0);
-        assert!(stdout.is_empty(), "should produce no output when pruner not found");
+        assert!(
+            stdout.is_empty(),
+            "should produce no output when pruner not found"
+        );
     }
 
     // -- Copilot hook tests --
@@ -302,10 +318,7 @@ mod hooks {
     fn copilot_hook_empty_prompt_exits_silently() {
         let dir = TempDir::new().unwrap();
         let script = hook_script(".copilot/hooks/pruner-context.sh");
-        let json = format!(
-            r#"{{"prompt": "", "cwd": "{}"}}"#,
-            dir.path().display()
-        );
+        let json = format!(r#"{{"prompt": "", "cwd": "{}"}}"#, dir.path().display());
 
         let (code, stdout, _stderr) = run_hook(&script, &json, &[]);
 
