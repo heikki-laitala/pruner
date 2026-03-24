@@ -67,6 +67,62 @@ fn context_json_full(path: &str, query: &str) -> serde_json::Value {
     serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"))
 }
 
+mod init {
+    use super::*;
+
+    #[test]
+    fn init_copilot_skill_creates_skill_and_instructions_only() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        pruner()
+            .args(["init", path, "--copilot-skill"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Installed Copilot skill"));
+
+        assert!(
+            dir.path().join(".copilot/skills/pruner/SKILL.md").exists(),
+            "should create Copilot skill file"
+        );
+        assert!(
+            dir.path().join(".github/copilot-instructions.md").exists(),
+            "should create repo Copilot instructions"
+        );
+        assert!(
+            !dir.path().join(".claude/skills/pruner/SKILL.md").exists(),
+            "Copilot-only init should not create Claude skill file"
+        );
+    }
+
+    #[test]
+    fn init_copilot_hook_creates_hook_files() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        pruner()
+            .args(["init", path, "--copilot-hook"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Installed Copilot hook config"));
+
+        assert!(
+            dir.path()
+                .join(".github/hooks/pruner-context.json")
+                .exists(),
+            "should create Copilot hook config"
+        );
+        assert!(
+            dir.path().join(".github/hooks/pruner-context.sh").exists(),
+            "should create Copilot hook bash script"
+        );
+        assert!(
+            dir.path().join(".github/hooks/pruner-context.ps1").exists(),
+            "should create Copilot hook powershell script"
+        );
+    }
+}
+
 // ============================================================================
 // Python webapp fixture
 // ============================================================================

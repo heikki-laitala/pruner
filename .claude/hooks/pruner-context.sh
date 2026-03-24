@@ -3,7 +3,13 @@
 # Stdin: JSON with .prompt field. Stdout: injected as additional context.
 
 INPUT=$(cat)
-PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
+
+# Extract .prompt from JSON — try jq first, fall back to sed
+if command -v jq >/dev/null 2>&1; then
+  PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
+else
+  PROMPT=$(echo "$INPUT" | sed -n 's/.*"prompt" *: *"\(.*\)"/\1/p' | sed 's/",".*//; s/",.*//')
+fi
 
 if [ -z "$PROMPT" ]; then
   exit 0
