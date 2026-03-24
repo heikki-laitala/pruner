@@ -483,7 +483,7 @@ fn cmd_init(
         }
     }
 
-    if !global {
+    if !global && !copilot_global {
         // Add .pruner/ to .gitignore
         let gitignore = repo.join(".gitignore");
         let gitignore_content = if gitignore.exists() {
