@@ -94,3 +94,117 @@ jobs:
           files: |
             artifacts/**/*.tar.gz
             artifacts/**/*.zip
+
+  smoke-test:
+    name: Smoke test (${{ matrix.os }})
+    needs: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Install via install script ---
+      - name: Install pruner (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          bash install.sh --version "${{ github.ref_name }}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install pruner (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\install.ps1 -Version "${{ github.ref_name }}"
+          echo "$env:USERPROFILE\.local\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
+
+      - name: Verify pruner is installed
+        run: pruner --version
+
+      # --- Clone test repo ---
+      - name: Clone test repo
+        run: git clone https://github.com/heikki-laitala/protonmail-cli.git ${{ runner.temp }}/test-repo
+
+      # --- Init with --hook ---
+      - name: Run pruner init --hook
+        run: pruner init ${{ runner.temp }}/test-repo --hook
+
+      # --- Verify init artifacts ---
+      - name: Verify .pruner/index.db exists
+        run: test -f ${{ runner.temp }}/test-repo/.pruner/index.db
+        if: runner.os != 'Windows'
+      - name: Verify .pruner/index.db exists (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ${{ runner.temp }}/test-repo/.pruner/index.db)) { throw "index.db not found" }
+
+      - name: Verify CLAUDE.md contains pruner section
+        if: runner.os != 'Windows'
+        run: grep -q "pruner context" ${{ runner.temp }}/test-repo/CLAUDE.md
+
+      - name: Verify CLAUDE.md contains pruner section (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Select-String -Path ${{ runner.temp }}/test-repo/CLAUDE.md -Pattern "pruner context" -Quiet)) {
+            throw "CLAUDE.md missing pruner section"
+          }
+
+      - name: Verify .claude/skills/pruner/SKILL.md exists
+        run: test -f ${{ runner.temp }}/test-repo/.claude/skills/pruner/SKILL.md
+        if: runner.os != 'Windows'
+      - name: Verify .claude/skills/pruner/SKILL.md exists (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ${{ runner.temp }}/test-repo/.claude/skills/pruner/SKILL.md)) { throw "SKILL.md not found" }
+
+      - name: Verify hook script exists
+        if: runner.os != 'Windows'
+        run: test -f ${{ runner.temp }}/test-repo/.claude/hooks/pruner-context.sh
+
+      - name: Verify hook settings.json exists
+        if: runner.os != 'Windows'
+        run: grep -q "UserPromptSubmit" ${{ runner.temp }}/test-repo/.claude/settings.json
+
+      - name: Verify hook settings.json exists (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Select-String -Path ${{ runner.temp }}/test-repo/.claude/settings.json -Pattern "UserPromptSubmit" -Quiet)) {
+            throw "settings.json missing hook config"
+          }
+
+      - name: Verify .gitignore contains .pruner/
+        if: runner.os != 'Windows'
+        run: grep -q "\.pruner/" ${{ runner.temp }}/test-repo/.gitignore
+
+      # --- Run pruner context ---
+      - name: Run pruner context (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          pruner context "${{ runner.temp }}/test-repo" "How does authentication work?" > "${{ runner.temp }}/context-output.md"
+          test -s "${{ runner.temp }}/context-output.md"
+          echo "--- Context output ---"
+          cat "${{ runner.temp }}/context-output.md"
+
+      - name: Run pruner context (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pruner context "${{ runner.temp }}\test-repo" "How does authentication work?" > "${{ runner.temp }}\context-output.md"
+          if ((Get-Item "${{ runner.temp }}\context-output.md").Length -eq 0) { throw "context output is empty" }
+          Write-Host "--- Context output ---"
+          Get-Content "${{ runner.temp }}\context-output.md"
+
+      # --- Run hook script directly (Unix only) ---
+      - name: Test hook script produces output
+        if: runner.os != 'Windows'
+        run: |
+          echo '{"prompt": "How does authentication work?"}' | \
+            CLAUDE_PROJECT_DIR="${{ runner.temp }}/test-repo" \
+            bash "${{ runner.temp }}/test-repo/.claude/hooks/pruner-context.sh" | \
+            grep -q "Pruner context"
