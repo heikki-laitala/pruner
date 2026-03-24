@@ -518,8 +518,11 @@ mod tests {
         let dir = TempDir::new()?;
         let db = IndexDb::open_memory()?;
 
-        // .go is unsupported — file gets indexed but no symbols parsed
-        fs::write(dir.path().join("main.go"), "package main\nfunc main() {}\n")?;
+        // .java is unsupported — file gets indexed but no symbols parsed
+        fs::write(
+            dir.path().join("Main.java"),
+            "public class Main { public static void main(String[] args) {} }\n",
+        )?;
 
         let stats = index_repo(dir.path(), &db, false)?;
         assert_eq!(stats.files, 1);

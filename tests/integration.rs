@@ -689,3 +689,96 @@ fn real_repo_baseline() {
         "query should produce results on real repo"
     );
 }
+
+// ============================================================================
+// Go service fixture
+// ============================================================================
+
+mod go_service {
+    use super::*;
+
+    #[test]
+    fn index_succeeds() {
+        let dir = setup_fixture("go_service");
+        let path = dir.path().to_str().unwrap().to_string();
+        pruner().args(["index", &path]).assert().success();
+    }
+
+    #[test]
+    fn finds_go_symbols() {
+        let dir = setup_fixture("go_service");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "HandleLogin"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("method"))
+            .stdout(predicate::str::contains("auth.go"));
+    }
+
+    #[test]
+    fn finds_go_structs() {
+        let dir = setup_fixture("go_service");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "AuthHandler"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("struct"));
+    }
+
+    #[test]
+    fn query_finds_auth_symbols() {
+        let dir = setup_fixture("go_service");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["query", &path, "HandleLogin authentication"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Matching symbols: 3"));
+    }
+
+    #[test]
+    fn context_includes_snippets() {
+        let dir = setup_fixture("go_service");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "HandleLogin");
+        let snippets = json["snippets"].as_array().unwrap();
+
+        assert!(!snippets.is_empty(), "should include Go code snippets");
+    }
+
+    #[test]
+    fn detects_go_test_files() {
+        let dir = setup_fixture("go_service");
+        let path = index_fixture(&dir);
+
+        let json = context_json(&path, "HandleLogin");
+        let tests = json["relevant_tests"].as_array().unwrap();
+
+        assert!(
+            tests
+                .iter()
+                .any(|t| { t["path"].as_str().unwrap_or("").contains("auth_test.go") }),
+            "should detect Go test file"
+        );
+    }
+
+    #[test]
+    fn context_has_execution_paths() {
+        let dir = setup_fixture("go_service");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "HandleLogin");
+        let paths = json["execution_paths"].as_array().unwrap();
+
+        assert!(
+            !paths.is_empty(),
+            "should have execution paths from HandleLogin"
+        );
+    }
+}

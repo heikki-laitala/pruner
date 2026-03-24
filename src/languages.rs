@@ -13,6 +13,7 @@ pub enum Language {
     TypeScript,
     Tsx,
     Rust,
+    Go,
 }
 
 /// Detect language from file extension. Returns None for unsupported extensions.
@@ -24,6 +25,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "ts" => Some(Language::TypeScript),
         "tsx" | "jsx" => Some(Language::Tsx),
         "rs" => Some(Language::Rust),
+        "go" => Some(Language::Go),
         _ => None,
     }
 }
@@ -140,9 +142,14 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_go() {
+        assert_eq!(detect_language(Path::new("main.go")), Some(Language::Go));
+    }
+
+    #[test]
     fn test_detect_language_unsupported() {
-        assert_eq!(detect_language(Path::new("file.go")), None);
         assert_eq!(detect_language(Path::new("file.java")), None);
+        assert_eq!(detect_language(Path::new("file.rb")), None);
     }
 
     #[test]
