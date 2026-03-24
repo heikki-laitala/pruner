@@ -79,6 +79,11 @@ impl IndexDb {
                 target_name      TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
             CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
             CREATE INDEX IF NOT EXISTS idx_imports_file ON imports(file_id);
@@ -99,6 +104,25 @@ impl IndexDb {
         self.conn.execute_batch(
             "DELETE FROM edges; DELETE FROM calls; DELETE FROM imports;
              DELETE FROM symbols; DELETE FROM files;",
+        )?;
+        Ok(())
+    }
+
+    // -- Metadata --
+
+    pub fn get_metadata(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM metadata WHERE key = ?1")?;
+        let mut rows = stmt.query(params![key])?;
+        Ok(rows.next()?.map(|r| r.get(0).unwrap()))
+    }
+
+    pub fn set_metadata(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
         )?;
         Ok(())
     }
