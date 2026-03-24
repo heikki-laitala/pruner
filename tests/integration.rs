@@ -132,6 +132,193 @@ mod init {
 }
 
 // ============================================================================
+// Hook scripts
+// ============================================================================
+
+#[cfg(not(target_os = "windows"))]
+mod hooks {
+    use super::*;
+    use std::process::Command;
+
+    /// Path to the pruner binary built by cargo
+    fn pruner_bin() -> std::path::PathBuf {
+        assert_cmd::cargo::cargo_bin("pruner")
+    }
+
+    /// Source path for a hook script
+    fn hook_script(rel_path: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(rel_path)
+    }
+
+    /// Set up an indexed fixture and return the temp dir
+    fn indexed_fixture() -> TempDir {
+        let dir = setup_fixture("python_webapp");
+        index_fixture(&dir);
+        dir
+    }
+
+    /// Run a bash hook script with given JSON on stdin, pruner on PATH.
+    /// Returns (exit_code, stdout, stderr).
+    fn run_hook(script: &Path, stdin_json: &str, env_vars: &[(&str, &str)]) -> (i32, String, String) {
+        let bin = pruner_bin();
+        let bin_dir = bin.parent().unwrap();
+        let path_env = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        run_hook_with_path(script, stdin_json, &path_env, env_vars)
+    }
+
+    /// Run a bash hook with a custom PATH (for testing missing binary).
+    fn run_hook_with_path(
+        script: &Path,
+        stdin_json: &str,
+        path: &str,
+        env_vars: &[(&str, &str)],
+    ) -> (i32, String, String) {
+        let mut cmd = Command::new("bash");
+        cmd.arg(script)
+            .env("PATH", path)
+            .env("PRUNER_RECHECK_SECS", "0")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        cmd.env_remove("USERPROFILE");
+
+        for (key, val) in env_vars {
+            cmd.env(key, val);
+        }
+
+        let mut child = cmd.spawn().expect("failed to spawn bash");
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin_json.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).to_string(),
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        )
+    }
+
+    // -- Claude Code hook tests --
+
+    #[test]
+    fn claude_hook_produces_context_output() {
+        let dir = indexed_fixture();
+        let script = hook_script(".claude/hooks/pruner-context.sh");
+        let json = r#"{"prompt": "login authentication"}"#;
+        let env = [("CLAUDE_PROJECT_DIR", dir.path().to_str().unwrap())];
+
+        let (code, stdout, _stderr) = run_hook(&script, json, &env);
+
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("Pruner context"),
+            "should contain context header, got: {stdout}"
+        );
+        assert!(
+            stdout.contains("Do not re-explore"),
+            "should contain usage instruction"
+        );
+    }
+
+    #[test]
+    fn claude_hook_empty_prompt_exits_silently() {
+        let script = hook_script(".claude/hooks/pruner-context.sh");
+        let json = r#"{"prompt": ""}"#;
+
+        let (code, stdout, _stderr) = run_hook(&script, json, &[]);
+
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty(), "should produce no output for empty prompt");
+    }
+
+    #[test]
+    fn claude_hook_missing_prompt_exits_silently() {
+        let script = hook_script(".claude/hooks/pruner-context.sh");
+        let json = r#"{"other": "field"}"#;
+
+        let (code, stdout, _stderr) = run_hook(&script, json, &[]);
+
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty(), "should produce no output for missing prompt");
+    }
+
+    #[test]
+    fn claude_hook_no_binary_exits_silently() {
+        let script = hook_script(".claude/hooks/pruner-context.sh");
+        let json = r#"{"prompt": "test query"}"#;
+
+        // Minimal PATH with only system dirs — no pruner binary
+        let (code, stdout, _stderr) = run_hook_with_path(
+            &script,
+            json,
+            "/usr/bin:/bin",
+            &[("HOME", "/nonexistent"), ("CLAUDE_PROJECT_DIR", "/nonexistent")],
+        );
+
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty(), "should produce no output when pruner not found");
+    }
+
+    // -- Copilot hook tests --
+
+    #[test]
+    fn copilot_hook_writes_context_file() {
+        let dir = indexed_fixture();
+        let script = hook_script(".copilot/hooks/pruner-context.sh");
+        let json = format!(
+            r#"{{"prompt": "login authentication", "cwd": "{}"}}"#,
+            dir.path().display()
+        );
+
+        let (code, stdout, _stderr) = run_hook(&script, &json, &[]);
+
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty(), "copilot hook writes to file, not stdout");
+
+        let context_file = dir.path().join(".pruner/copilot-context.md");
+        assert!(context_file.exists(), "should create copilot-context.md");
+
+        let content = std::fs::read_to_string(&context_file).unwrap();
+        assert!(
+            content.contains("Pruner context"),
+            "context file should contain header, got: {content}"
+        );
+        assert!(
+            content.contains("Do not re-explore"),
+            "context file should contain usage instruction"
+        );
+    }
+
+    #[test]
+    fn copilot_hook_empty_prompt_exits_silently() {
+        let dir = TempDir::new().unwrap();
+        let script = hook_script(".copilot/hooks/pruner-context.sh");
+        let json = format!(
+            r#"{{"prompt": "", "cwd": "{}"}}"#,
+            dir.path().display()
+        );
+
+        let (code, stdout, _stderr) = run_hook(&script, &json, &[]);
+
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty());
+        assert!(
+            !dir.path().join(".pruner/copilot-context.md").exists(),
+            "should not create context file for empty prompt"
+        );
+    }
+}
+
+// ============================================================================
 // Python webapp fixture
 // ============================================================================
 
