@@ -16,5 +16,8 @@ Thumbs.db
 # Pruner index (generated per-repo)
 .pruner/
 
+# Python
+__pycache__/
+
 # Benchmark results (regenerated each run, baseline is tracked)
 tests/bench_results.json
