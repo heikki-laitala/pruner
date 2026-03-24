@@ -54,6 +54,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult> {
         Language::JavaScript => extract_js_ts(root, src),
         Language::TypeScript | Language::Tsx => extract_js_ts(root, src),
         Language::Rust => extract_rust(root, src),
+        Language::Go => extract_go(root, src),
     }
 }
 
@@ -64,6 +65,7 @@ fn ts_language_for(language: Language) -> tree_sitter::Language {
         Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
         Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+        Language::Go => tree_sitter_go::LANGUAGE.into(),
     }
 }
 
@@ -559,6 +561,223 @@ fn build_rust_fn_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
     format!("fn {name}{params}{ret}")
 }
 
+// -- Go extraction --
+
+fn extract_go(root: tree_sitter::Node, src: &[u8]) -> Result<ParseResult> {
+    let mut result = ParseResult::default();
+    extract_go_node(root, src, &mut result, None);
+    Ok(result)
+}
+
+fn extract_go_node(
+    node: tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    parent_index: Option<usize>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sig = build_go_fn_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "function".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: Some(sig),
+                    });
+                    extract_go_calls(&child, src, result, idx);
+                }
+            }
+            "method_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sig = build_go_method_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "method".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: find_go_receiver_parent(&child, src, result),
+                        signature: Some(sig),
+                    });
+                    extract_go_calls(&child, src, result, idx);
+                }
+            }
+            "type_declaration" => {
+                extract_go_type_decl(&child, src, result);
+            }
+            "import_declaration" => {
+                extract_go_imports(&child, src, result);
+            }
+            _ => {
+                extract_go_node(child, src, result, parent_index);
+            }
+        }
+    }
+}
+
+fn extract_go_type_decl(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "type_spec"
+            && let Some(name_node) = child.child_by_field_name("name")
+        {
+            let type_node = child.child_by_field_name("type");
+            let kind = match type_node.map(|t| t.kind()) {
+                Some("struct_type") => "struct",
+                Some("interface_type") => "interface",
+                _ => "type",
+            };
+            result.symbols.push(Symbol {
+                name: node_text(name_node, src).to_string(),
+                kind: kind.to_string(),
+                line_start: child.start_position().row + 1,
+                line_end: child.end_position().row + 1,
+                parent_index: None,
+                signature: None,
+            });
+        }
+    }
+}
+
+fn extract_go_imports(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    // Recursively find all import_spec or interpreted_string_literal nodes
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_spec" => {
+                if let Some(path_node) = child.child_by_field_name("path") {
+                    let module = node_text(path_node, src).trim_matches('"').to_string();
+                    result.imports.push(Import {
+                        module,
+                        names: None,
+                    });
+                }
+            }
+            "interpreted_string_literal" => {
+                // Single import: import "fmt"
+                let module = node_text(child, src).trim_matches('"').to_string();
+                result.imports.push(Import {
+                    module,
+                    names: None,
+                });
+            }
+            _ => {
+                // Recurse into import_spec_list etc.
+                extract_go_imports(&child, src, result);
+            }
+        }
+    }
+}
+
+fn extract_go_calls(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    caller_index: usize,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression"
+            && let Some(func) = child.child_by_field_name("function")
+        {
+            let name = match func.kind() {
+                "identifier" => node_text(func, src).to_string(),
+                "selector_expression" => {
+                    if let Some(field) = func.child_by_field_name("field") {
+                        node_text(field, src).to_string()
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            };
+            result.calls.push(Call {
+                caller_index,
+                callee_name: name,
+                line: child.start_position().row + 1,
+            });
+        }
+        extract_go_calls(&child, src, result, caller_index);
+    }
+}
+
+fn find_go_receiver_parent(
+    method: &tree_sitter::Node,
+    src: &[u8],
+    result: &ParseResult,
+) -> Option<usize> {
+    let receiver = method.child_by_field_name("receiver")?;
+    // Receiver is a parameter_list like (s *Server) or (s Server)
+    let mut cursor = receiver.walk();
+    for child in receiver.children(&mut cursor) {
+        if child.kind() == "parameter_declaration"
+            && let Some(type_node) = child.child_by_field_name("type")
+        {
+            let type_name = match type_node.kind() {
+                "pointer_type" => {
+                    // *Server -> get the inner type
+                    let mut c2 = type_node.walk();
+                    type_node
+                        .children(&mut c2)
+                        .find(|n| n.kind() == "type_identifier")
+                        .map(|n| node_text(n, src))
+                }
+                "type_identifier" => Some(node_text(type_node, src)),
+                _ => None,
+            };
+            if let Some(name) = type_name {
+                return result
+                    .symbols
+                    .iter()
+                    .position(|s| s.name == name && (s.kind == "struct" || s.kind == "interface"));
+            }
+        }
+    }
+    None
+}
+
+fn build_go_fn_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, src))
+        .unwrap_or("?");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, src))
+        .unwrap_or("()");
+    let ret = node
+        .child_by_field_name("result")
+        .map(|n| format!(" {}", node_text(n, src)))
+        .unwrap_or_default();
+    format!("func {name}{params}{ret}")
+}
+
+fn build_go_method_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let receiver = node
+        .child_by_field_name("receiver")
+        .map(|n| format!("{} ", node_text(n, src)))
+        .unwrap_or_default();
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, src))
+        .unwrap_or("?");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, src))
+        .unwrap_or("()");
+    let ret = node
+        .child_by_field_name("result")
+        .map(|n| format!(" {}", node_text(n, src)))
+        .unwrap_or_default();
+    format!("func {receiver}{name}{params}{ret}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,6 +1245,130 @@ def process():
         assert!(result.calls.iter().any(|c| c.callee_name == "transform"));
         assert!(result.calls.iter().any(|c| c.callee_name == "parse"));
         assert!(result.calls.iter().any(|c| c.callee_name == "read_file"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_function() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+func processData(input string) error {
+    result := parse(input)
+    return validate(result)
+}
+"#;
+        let result = parse_source(src, Language::Go)?;
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "processData");
+        assert_eq!(result.symbols[0].kind, "function");
+        assert!(
+            result.symbols[0]
+                .signature
+                .as_ref()
+                .unwrap()
+                .contains("func processData")
+        );
+
+        assert!(result.calls.iter().any(|c| c.callee_name == "parse"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "validate"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_struct_and_method() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+type Server struct {
+    port int
+}
+
+func (s *Server) Start() error {
+    return listen(s.port)
+}
+"#;
+        let result = parse_source(src, Language::Go)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Server" && s.kind == "struct")
+        );
+        let method = result.symbols.iter().find(|s| s.name == "Start").unwrap();
+        assert_eq!(method.kind, "method");
+        assert_eq!(method.parent_index, Some(0));
+        assert!(result.calls.iter().any(|c| c.callee_name == "listen"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_interface() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+type Handler interface {
+    ServeHTTP(w ResponseWriter, r *Request)
+}
+"#;
+        let result = parse_source(src, Language::Go)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Handler" && s.kind == "interface")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_imports() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+import (
+    "fmt"
+    "net/http"
+)
+"#;
+        let result = parse_source(src, Language::Go)?;
+        assert_eq!(result.imports.len(), 2);
+        assert!(result.imports.iter().any(|i| i.module == "fmt"));
+        assert!(result.imports.iter().any(|i| i.module == "net/http"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_selector_call() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("hello")
+}
+"#;
+        let result = parse_source(src, Language::Go)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "Println"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_go_return_type() -> anyhow::Result<()> {
+        let src = r#"
+package main
+
+func NewServer(port int) *Server {
+    return &Server{port: port}
+}
+"#;
+        let result = parse_source(src, Language::Go)?;
+        let sig = result.symbols[0].signature.as_ref().unwrap();
+        assert!(
+            sig.contains("*Server"),
+            "signature should contain return type: {sig}"
+        );
         Ok(())
     }
 
