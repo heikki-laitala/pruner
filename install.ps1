@@ -83,9 +83,9 @@ Write-Host ""
 Write-Host "To set up pruner in a project:"
 Write-Host ""
 Write-Host "  pruner init C:\path\to\project"
+Write-Host "  pruner init C:\path\to\project --hook"
 Write-Host "  pruner init C:\path\to\project --copilot-skill"
 Write-Host "  pruner init C:\path\to\project --copilot-hook"
-Write-Host "  pruner index C:\path\to\project"
 Write-Host ""
 
 if ($CopilotGlobal) {

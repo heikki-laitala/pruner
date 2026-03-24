@@ -579,7 +579,8 @@ fn cmd_init(
     }
 
     if (!global && install_claude) || ((copilot_skill || copilot_hook) && !copilot_global) {
-        println!("\nNext: pruner index {}", repo.display());
+        println!("\nIndexing {}...", repo.display());
+        cmd_index(repo, false)?;
     }
 
     Ok(())

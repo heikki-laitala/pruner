@@ -165,7 +165,6 @@ else
     else
         echo "  pruner init /path/to/project --copilot-hook    # Copilot prompt hook integration"
     fi
-    echo "  pruner index /path/to/project          # index the codebase"
 fi
 
 echo ""
