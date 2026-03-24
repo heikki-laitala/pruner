@@ -12,8 +12,14 @@ use std::time::SystemTime;
 use walkdir::WalkDir;
 
 /// Normalize a path string to use forward slashes (for cross-platform DB consistency).
+/// Only replaces backslashes on Windows where they are path separators.
+/// On Unix, backslash is a valid filename character and must be preserved.
 fn normalize_path(path: &str) -> String {
-    path.replace('\\', "/")
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.to_string()
+    }
 }
 
 /// Stats returned after indexing.
