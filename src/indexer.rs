@@ -7,6 +7,7 @@ use crate::parser;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -218,6 +219,9 @@ fn index_files(
 
         if verbose {
             eprintln!("  {rel_path} ({} lines)", line_count);
+        } else if stats.files % 50 == 0 && std::io::stderr().is_terminal() {
+            eprint!("\r  {} files indexed...", stats.files);
+            let _ = std::io::stderr().flush();
         }
 
         // Parse if language is supported
@@ -280,6 +284,12 @@ fn index_files(
         }
     }
 
+    // Clear progress line
+    if !verbose && stats.files > 0 && std::io::stderr().is_terminal() {
+        eprint!("\r  {} files indexed, resolving edges...", stats.files);
+        let _ = std::io::stderr().flush();
+    }
+
     // Clear old edges and rebuild
     db.clear_edges()?;
 
@@ -320,6 +330,12 @@ fn index_files(
 
     // Build test edges
     build_test_edges(repo_path, db)?;
+
+    // Clear progress line
+    if !verbose && stats.files > 0 && std::io::stderr().is_terminal() {
+        eprint!("\r{}\r", " ".repeat(60));
+        let _ = std::io::stderr().flush();
+    }
 
     Ok(stats)
 }

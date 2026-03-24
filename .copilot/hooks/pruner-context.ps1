@@ -15,9 +15,16 @@ if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) {
 
 $pruner = (Get-Command pruner -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrWhiteSpace($pruner)) {
-    $candidate = Join-Path $root "target\release\pruner.exe"
-    if (Test-Path $candidate) {
-        $pruner = $candidate
+    $candidates = @(
+        (Join-Path $env:USERPROFILE ".local\bin\pruner.exe"),
+        (Join-Path $env:USERPROFILE ".cargo\bin\pruner.exe"),
+        (Join-Path $root "target\release\pruner.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            $pruner = $candidate
+            break
+        }
     }
 }
 if ([string]::IsNullOrWhiteSpace($pruner) -or -not (Test-Path $pruner)) {
