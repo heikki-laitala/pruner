@@ -52,7 +52,7 @@ REPO="${CLAUDE_PROJECT_DIR:-.}"
 
 # Only run if this looks like a code repo (has .git or .pruner already).
 # Avoids creating .pruner/ in random directories like ~ or ~/Downloads.
-if [ ! -d "$REPO/.git" ] && [ ! -d "$REPO/.pruner" ]; then
+if [ ! -e "$REPO/.git" ] && [ ! -d "$REPO/.pruner" ]; then
   exit 0
 fi
 
