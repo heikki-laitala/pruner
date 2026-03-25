@@ -284,6 +284,26 @@ mod hooks {
         );
     }
 
+    #[test]
+    fn claude_hook_skips_non_repo_directory() {
+        let dir = TempDir::new().unwrap(); // empty dir, no .git or .pruner
+        let script = hook_script(".claude/hooks/pruner-context.sh");
+        let json = r#"{"prompt": "test query"}"#;
+        let env = [("CLAUDE_PROJECT_DIR", dir.path().to_str().unwrap())];
+
+        let (code, stdout, _stderr) = run_hook(&script, json, &env);
+
+        assert_eq!(code, 0);
+        assert!(
+            stdout.is_empty(),
+            "should produce no output for non-repo directory"
+        );
+        assert!(
+            !dir.path().join(".pruner").exists(),
+            "should not create .pruner/ in non-repo directory"
+        );
+    }
+
     // -- Copilot hook tests --
 
     #[test]
