@@ -336,34 +336,36 @@ def ensure_pruner_on_path():
     return bin_dir
 
 
-def interleaved_schedule(tasks, only=None):
+def interleaved_schedule(tasks, only=None, runs=1):
     """Build a randomized run schedule where same-scenario runs are never adjacent.
 
-    Each task produces two runs (with/without). The schedule interleaves them
-    so that any model-side caching expires between same-scenario runs.
+    Each task produces two runs (with/without) per run_idx. The schedule
+    interleaves them so that any model-side caching expires between
+    same-scenario runs.  Returns list of (category, prompt, side, run_idx).
     """
-    runs = []
+    items = []
     for category, prompt in tasks:
-        if only != "with":
-            runs.append((category, prompt, "without"))
-        if only != "without":
-            runs.append((category, prompt, "with"))
+        for run_idx in range(1, runs + 1):
+            if only != "with":
+                items.append((category, prompt, "without", run_idx))
+            if only != "without":
+                items.append((category, prompt, "with", run_idx))
 
     # Shuffle with constraint: same category cannot be adjacent
     for _ in range(200):
-        random.shuffle(runs)
+        random.shuffle(items)
         valid = True
-        for i in range(1, len(runs)):
-            if runs[i][0] == runs[i - 1][0]:
+        for i in range(1, len(items)):
+            if items[i][0] == items[i - 1][0]:
                 valid = False
                 break
         if valid:
             break
     else:
         # Fallback: deterministic interleave (with/without alternating)
-        runs.sort(key=lambda r: (r[2], r[0]))
+        items.sort(key=lambda r: (r[2], r[0], r[3]))
 
-    return runs
+    return items
 
 
 def run_single(task_name: str, prompt: str, side: str, mode: str, model: str, save_raw: bool, run_idx: int = 1):
@@ -420,17 +422,17 @@ def main():
     tasks = [(args.task, TASKS[args.task])] if args.task else list(TASKS.items())
 
     # Build interleaved schedule: randomized order, same scenario never adjacent
-    schedule = interleaved_schedule(tasks, only=args.only)
+    # run_idx is expanded into the schedule so repeated runs are also interleaved
+    schedule = interleaved_schedule(tasks, only=args.only, runs=args.runs)
     print(f"\nRun schedule ({len(schedule)} runs):", file=sys.stderr)
-    for i, (cat, _, side) in enumerate(schedule):
-        print(f"  {i+1}. {cat} [{side}]", file=sys.stderr)
+    for i, (cat, _, side, ridx) in enumerate(schedule):
+        print(f"  {i+1}. {cat} [{side}] r{ridx}", file=sys.stderr)
 
     # Run all experiments
     run_results = {}  # category -> {"without": ..., "with": ...}
-    for category, prompt, side in schedule:
-        for run_idx in range(1, args.runs + 1):
-            result = run_single(category, prompt, side, args.mode, args.model, args.save_raw, run_idx)
-            run_results.setdefault(category, {}).setdefault(side, []).append((run_idx, result))
+    for category, prompt, side, run_idx in schedule:
+        result = run_single(category, prompt, side, args.mode, args.model, args.save_raw, run_idx)
+        run_results.setdefault(category, {}).setdefault(side, []).append((run_idx, result))
 
     # Assemble entries for summary
     entries = []
