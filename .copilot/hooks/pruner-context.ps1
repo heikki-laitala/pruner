@@ -13,6 +13,12 @@ if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) {
     $root = "."
 }
 
+# Only run if this looks like a code repo (has .git or .pruner already).
+# Avoids creating .pruner/ in random directories like ~ or ~/Downloads.
+if (-not (Test-Path (Join-Path $root ".git")) -and -not (Test-Path (Join-Path $root ".pruner"))) {
+    exit 0
+}
+
 $pruner = (Get-Command pruner -ErrorAction SilentlyContinue).Source
 if ([string]::IsNullOrWhiteSpace($pruner)) {
     $candidates = @(

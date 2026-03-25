@@ -1,8 +1,8 @@
 # Pruner
 
-**Cut your AI coding costs by 24-41% and speed up tasks by 46-62%.**
+**Cut AI coding costs by 24-41% with Claude Code. Speed up any agent by 46-62%.**
 
-AI coding agents (Claude Code, Codex, Copilot) spend most of their time and tokens exploring your codebase — grepping, globbing, reading files, figuring out what's relevant. On a 10K-file repo, a single task can burn 50-80 tool calls just on navigation.
+AI coding agents (Claude Code, Codex, Copilot) spend most of their time exploring your codebase — grepping, globbing, reading files, figuring out what's relevant. On a 10K-file repo, a single task can burn 50-80 tool calls just on navigation.
 
 Pruner eliminates this. It pre-indexes your entire repository using plain structural code analysis — call graphs, symbols, imports, execution paths — and gives the agent exactly the context it needs in one shot. **No LLM, no embeddings, no API keys, no network calls.** Just fast, deterministic tree-sitter parsing that runs locally in seconds. The agent skips exploration and goes straight to work.
 
@@ -15,7 +15,7 @@ Pruner eliminates this. It pre-indexes your entire repository using plain struct
 | Small implementation | **30%** | **53%** | **59%** |
 | Cross-package tracing | **24%** | **46%** | **66%** |
 
-Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command.
+Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command. Claude Code users save on both cost and time. Copilot users save time — Copilot pricing is per premium request regardless of tool calls, so pruner speeds up tasks without affecting cost.
 
 ## Install
 
@@ -25,7 +25,7 @@ Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **C
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash
 ```
 
-This downloads the latest release binary for your platform (macOS/Linux, x86_64/arm64) and installs it to `~/.local/bin/`.
+The installer downloads the binary and walks you through setup — which agent (Claude Code, Copilot, or both) and install mode (global or per-project).
 
 **Windows (PowerShell):**
 
@@ -33,17 +33,17 @@ This downloads the latest release binary for your platform (macOS/Linux, x86_64/
 irm https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.ps1 | iex
 ```
 
-Options:
+For CI or non-interactive use, pass flags to skip the prompts:
 
 ```bash
-# Install with Claude Code hook (best performance)
+# Claude Code hook mode, global (recommended)
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --hook --global
 
-# Install with Copilot CLI skill files
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-skill
+# Copilot CLI skill, global
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-skill --copilot-global
 
-# Install with Copilot CLI hook files
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-hook
+# Just install the binary, no setup
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --no-interactive
 
 # Install to a custom directory
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --dir /usr/local/bin
@@ -76,24 +76,44 @@ make install
 
 This builds a release binary and installs it to `~/.cargo/bin/pruner`.
 
-### Set up a project
+### Set up
 
-After installing the binary, set up pruner in your project:
+Two approaches: **global** (install once, works in every repo) or **per-project** (adds config files to the repo).
+
+#### Global install (recommended)
+
+Install once — pruner works automatically in every git repository:
 
 ```bash
-pruner init /path/to/project          # skill mode (works with any AI agent)
-pruner init /path/to/project --hook   # hook mode (Claude Code only, best performance)
-pruner init --global                  # install globally to ~/.claude/
-pruner init /path/to/project --copilot-skill  # install Copilot CLI skill + instructions
-pruner init --copilot-skill --copilot-global  # install Copilot skill globally to ~/.copilot/
-pruner init /path/to/project --copilot-hook   # install Copilot userPromptSubmitted hook
+pruner init --global --hook   # Claude Code hook mode (best performance)
+pruner init --global          # Claude Code skill mode
+pruner init --copilot-skill --copilot-global  # Copilot CLI skill mode
 ```
 
-Indexing happens automatically on first use — no manual step needed. To pre-index for faster first query:
+This writes config files to `~/.claude/` or `~/.copilot/` — nothing is added to your repositories. The repository is **not indexed at install time**. On your first prompt in a repo, pruner auto-indexes it, creating a `.pruner/` directory. For large repositories (10K+ files), this first-run indexing can take 30-60 seconds. To avoid waiting, pre-index repos you use often:
 
 ```bash
 pruner index /path/to/project
 ```
+
+Add `.pruner/` to your `.gitignore` (global install does not modify it automatically):
+
+```bash
+echo '.pruner/' >> .gitignore
+```
+
+#### Per-project install
+
+Adds pruner config files directly to the repository (useful for teams):
+
+```bash
+pruner init /path/to/project --hook          # Claude Code hook mode
+pruner init /path/to/project                 # Claude Code skill mode
+pruner init /path/to/project --copilot-skill # Copilot CLI skill mode
+pruner init /path/to/project --copilot-hook  # Copilot CLI hook mode
+```
+
+This creates config files inside the repo (`.claude/` or `.copilot/`), updates `.gitignore` to exclude `.pruner/`, and auto-indexes the project.
 
 ## Usage
 
@@ -201,12 +221,14 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 ### When to use pruner
 
-- **Large implementation tasks**: 41% cheaper, 62% faster — biggest win. More exploration saved = more value.
-- **Any broad task on a large codebase**: 24-32% cheaper, 46-58% faster.
-- **Small implementation tasks**: 30% cheaper, 53% faster.
-- **Cross-package tracing**: 24% cheaper, 46% faster.
-- **Understanding / data flow**: 32% cheaper, 56-58% faster.
-- **Narrow tasks**: Breakeven — vanilla Claude is already efficient on focused queries.
+- **Large implementation tasks**: 62% faster, 41% cheaper (Claude Code) — biggest win. More exploration saved = more value.
+- **Any broad task on a large codebase**: 46-58% faster, 24-32% cheaper (Claude Code).
+- **Small implementation tasks**: 53% faster, 30% cheaper (Claude Code).
+- **Cross-package tracing**: 46% faster, 24% cheaper (Claude Code).
+- **Understanding / data flow**: 56-58% faster, 32% cheaper (Claude Code).
+- **Narrow tasks**: Breakeven — the agent is already efficient on focused queries.
+
+Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
 ## A/B test results (Copilot CLI)
 
@@ -221,7 +243,7 @@ Tested with **Copilot CLI** using the **gpt-5.3-codex** model on the same opencl
 | Data flow | 90 tools / 338s | 57 tools / 271s | **-37%** | **-20%** | 1 → 1 |
 | Narrow fix | 48 tools / 252s | 103 tools / 402s | +115% | +59% | 1 → 1 |
 
-Broad tasks (understanding, cross-package, data flow) see the biggest improvement. Narrow tasks can regress — the extra context overhead outweighs the benefit when Copilot is already efficient on focused queries. Premium requests are 1 per session regardless of tool count.
+Broad tasks (understanding, cross-package, data flow) see 16-24% faster completion and 30-38% fewer tool calls. Narrow tasks can regress — the extra context overhead outweighs the benefit when Copilot is already efficient on focused queries. Premium requests are 1 per session regardless of tool count, so pruner provides **speed improvements** but not cost savings for Copilot.
 
 ### Results (hook mode — background hook writes context file)
 
@@ -356,44 +378,49 @@ cargo fmt                            # format
 - Relevance scoring can miss results when keywords don't appear in file paths or symbol names (e.g., a function that handles authentication but is named `validateRequest`)
 - On very large repos (10K+ files), full mode produces ~55-70K tokens — the default auto mode caps output at ~10-15K tokens
 
-## Claude Code integration
+## Integration details
+
+### Claude Code
 
 Two modes available:
 
-### Hook mode (recommended for Claude Code)
+| Mode | How it works | Setup |
+|------|-------------|-------|
+| **Hook** (recommended) | Context injected automatically via `UserPromptSubmit` hook — zero tool calls | `pruner init --global --hook` |
+| **Skill** | Claude calls `pruner context` as a tool when it needs context | `pruner init --global` |
 
-Context is injected automatically before Claude starts thinking — zero tool calls.
+**What gets installed (global):**
 
-```bash
-pruner init /path/to/project --hook
-pruner index /path/to/project
-```
+| File | Purpose |
+|------|---------|
+| `~/.claude/skills/pruner/SKILL.md` | Skill definition — tells Claude how to use pruner |
+| `~/.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
+| `~/.claude/settings.json` | Hook configuration (hook mode only) |
 
-### Skill mode (works with any AI agent)
+**What gets installed (per-project):**
 
-Claude calls `pruner context` as a tool. Works with Claude Code, Codex, Copilot, etc.
+| File | Purpose |
+|------|---------|
+| `.claude/skills/pruner/SKILL.md` | Skill definition |
+| `.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
+| `.claude/settings.json` | Hook configuration (hook mode only) |
+| `CLAUDE.md` | Pruner usage guidance (created if missing) |
+| `.gitignore` | `.pruner/` entry added |
 
-```bash
-pruner init /path/to/project
-pruner index /path/to/project
-```
+**What happens at runtime:** When you start Claude Code in a git repository and ask a question, pruner auto-indexes the repo (creating `.pruner/` with a SQLite database), then returns relevant context. On subsequent prompts, incremental indexing updates only changed files. The `.pruner/` directory is only created inside git repositories — pruner skips non-repo directories.
 
-This creates:
-- `.claude/skills/pruner/SKILL.md`
-- `CLAUDE.md` guidance (if missing)
+**Note for global install:** `.gitignore` is not modified automatically. Add `.pruner/` to each repo's `.gitignore` (or your global gitignore) to avoid committing the index.
 
-### Copilot CLI skill mode
+### Copilot CLI
 
-Use skill mode when you want explicit, manual invocation:
+| Mode | How it works | Setup |
+|------|-------------|-------|
+| **Skill** | Copilot calls `pruner context` as a tool | `pruner init --copilot-skill --copilot-global` |
+| **Hook** (experimental) | Background hook writes `.pruner/copilot-context.md` | `pruner init /path/to/project --copilot-hook` |
 
-```bash
-pruner init /path/to/project --copilot-skill
-pruner index /path/to/project
-```
-
-This creates:
-- `.copilot/skills/pruner/SKILL.md`
-- `.github/copilot-instructions.md` guidance (if missing)
+**Skill mode** creates:
+- `.copilot/skills/pruner/SKILL.md` (global: `~/.copilot/`)
+- `.github/copilot-instructions.md` guidance (or `~/.copilot/copilot-instructions.md` for global)
 
 Then in Copilot CLI:
 
@@ -402,42 +429,21 @@ Then in Copilot CLI:
 /skills run pruner "fix login token refresh bug"
 ```
 
-### Copilot CLI hook mode (experimental)
+**Hook mode** (per-project only) creates:
+- `.github/hooks/pruner-context.json` + `.sh` + `.ps1`
 
-Copilot CLI supports hooks via `.github/hooks/*.json` (requires `--experimental` flag in CLI 1.0.x). Pruner can install a hook that writes prompt-specific context to `.pruner/copilot-context.md` on every submitted prompt:
+Requires `--experimental` flag in Copilot CLI 1.0.x. The hook runs on `userPromptSubmitted` and writes `.pruner/copilot-context.md`.
 
-```bash
-pruner init /path/to/project --copilot-hook
-pruner index /path/to/project
-```
-
-This creates:
-- `.github/hooks/pruner-context.json`
-- `.github/hooks/pruner-context.sh`
-- `.github/hooks/pruner-context.ps1`
-
-In Copilot CLI sessions started in that repo, the hook runs on `userPromptSubmitted` and writes `.pruner/copilot-context.md`. The `copilot-instructions.md` tells Copilot to read this file first.
-
-**Note:** Copilot's `userPromptSubmitted` hook is observational — the model doesn't wait for it to complete before starting. On large repos where pruner takes a few seconds, the model may start exploring before the context file is written. For reliable results, use **skill mode** instead, which gives the model explicit control over when to call pruner.
-
-### Global install
-
-Install once for all projects:
-
-```bash
-pruner init --global          # skill mode
-pruner init --global --hook   # hook mode
-pruner init --copilot-skill --copilot-global  # Copilot skill mode
-```
+**Note:** Copilot's `userPromptSubmitted` hook is observational — the model doesn't wait for it to complete before starting. On large repos, the model may start exploring before the context file is written. For reliable results, use **skill mode**.
 
 ### What happens automatically
 
-Once set up, when you ask Claude Code to do something like "fix the login flow":
+Once set up, when you ask the agent to do something like "fix the login flow":
 
-1. Pruner provides context (injected via hook, or Claude runs `pruner context`)
+1. Pruner provides context (injected via hook, or the agent runs `pruner context`)
 2. Auto-detects task scope: focused context with code snippets (~10-15K tokens) or brief pointers (~3K tokens)
-3. Claude works directly from the output — no grep/glob exploration needed
-4. If a snippet is truncated, Claude reads the specific file using the file:line pointers
+3. The agent works directly from the output — no grep/glob exploration needed
+4. If a snippet is truncated, the agent reads the specific file using the file:line pointers
 
 ## Similar projects
 
