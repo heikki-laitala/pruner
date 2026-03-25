@@ -437,9 +437,22 @@ fn cmd_init(
         );
     }
 
+    // Detect existing global install — skip project-level files if global is already set up
+    let existing = crate::upgrade::detect_installed_integrations();
+    let has_global_claude = existing.global;
+
     let install_claude = (!copilot_skill && !copilot_global && !copilot_hook) || hook || global;
 
-    if install_claude {
+    // If running bare `pruner init` (no flags) and global is already installed,
+    // skip project-level skill/CLAUDE.md — just do .gitignore + index.
+    let bare_init = !hook && !global && !copilot_skill && !copilot_global && !copilot_hook;
+    let skip_claude_project = bare_init && has_global_claude;
+
+    if skip_claude_project {
+        eprintln!("Global Claude integration detected — skipping project-level skill/CLAUDE.md");
+    }
+
+    if install_claude && !skip_claude_project {
         let claude_base = if global {
             dirs::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
@@ -517,7 +530,7 @@ fn cmd_init(
             println!("Updated .gitignore -> added .pruner/");
         }
 
-        if install_claude {
+        if install_claude && !skip_claude_project {
             let claude_md = repo.join("CLAUDE.md");
             upsert_pruner_section(&claude_md, CLAUDE_TEMPLATE)?;
             println!("Updated CLAUDE.md -> {}", claude_md.display());
