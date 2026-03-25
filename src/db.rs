@@ -111,6 +111,12 @@ impl IndexDb {
         Ok(())
     }
 
+    /// Roll back the current transaction.
+    pub fn rollback_transaction(&self) -> Result<()> {
+        self.conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
     /// Set synchronous mode for performance tuning during bulk writes.
     pub fn set_synchronous_normal(&self) -> Result<()> {
         self.conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
