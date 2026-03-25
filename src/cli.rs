@@ -838,7 +838,6 @@ fn discover_subrepos(parent: &Path) -> Vec<PathBuf> {
     repos
 }
 
-
 fn cmd_context(
     repo: &Path,
     ask: &str,
@@ -926,10 +925,7 @@ fn cmd_context_multi(
     max_snippet_lines: usize,
     mode: ContextMode,
 ) -> Result<()> {
-    eprintln!(
-        "Multi-repo mode: {} sub-repos found",
-        subrepos.len()
-    );
+    eprintln!("Multi-repo mode: {} sub-repos found", subrepos.len());
 
     let mut combined_text = String::new();
     let mut combined_json: Vec<serde_json::Value> = Vec::new();
