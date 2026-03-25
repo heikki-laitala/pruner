@@ -85,7 +85,7 @@ pruner init --global          # Claude Code skill mode
 pruner init --copilot-skill --copilot-global  # Copilot CLI skill mode
 ```
 
-This writes config files to `~/.claude/` or `~/.copilot/`. The repository is **not indexed at install time**. On your first prompt in a repo, pruner auto-indexes it, creating a `.pruner/` directory inside the repo (add it to `.gitignore`). For large repositories (10K+ files), this first-run indexing can take 30-60 seconds. To avoid waiting, pre-index repos you use often:
+This writes config files to `~/.claude/` or `~/.copilot/`. The repository is **not indexed at install time**. On your first prompt in a repo, pruner auto-indexes it, creating a `.pruner/` directory inside the repo (add it to `.gitignore`). For large repositories (10K+ files), this first-run indexing takes ~10 seconds. To avoid waiting, pre-index repos you use often:
 
 ```bash
 pruner index /path/to/project
