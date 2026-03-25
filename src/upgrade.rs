@@ -63,11 +63,7 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
     let lat = version_bare(latest);
     // Simple lexicographic comparison works for semver with same segment count
     // But let's do proper numeric comparison
-    let parse = |v: &str| -> Vec<u64> {
-        v.split('.')
-            .filter_map(|s| s.parse().ok())
-            .collect()
-    };
+    let parse = |v: &str| -> Vec<u64> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
     let c = parse(cur);
     let l = parse(lat);
     l > c
@@ -201,7 +197,10 @@ fn reinit_integrations(integrations: &DetectedIntegrations) -> Result<()> {
         args.push("--copilot-skill".to_string());
     }
 
-    eprintln!("Updating integrations (pruner init {})...", args[1..].join(" "));
+    eprintln!(
+        "Updating integrations (pruner init {})...",
+        args[1..].join(" ")
+    );
     let status = std::process::Command::new(&exe)
         .args(&args)
         .status()
