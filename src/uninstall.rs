@@ -269,6 +269,19 @@ impl FoundTrace {
     }
 }
 
+/// Infer the project root from a trace path by stripping known integration subdirs.
+/// e.g. `/home/user/myproject/.claude/skills/pruner` -> `/home/user/myproject`
+fn infer_project(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    for marker in ["/.claude/", "/.copilot/", "/.github/", "/.pruner"] {
+        if let Some(idx) = s.find(marker) {
+            return PathBuf::from(&s[..idx]);
+        }
+    }
+    // Fallback: parent directory
+    path.parent().unwrap_or(path).to_path_buf()
+}
+
 /// Directories to skip during scan (never contain pruner traces, often large).
 const SCAN_SKIP_DIRS: &[&str] = &[
     ".git",
@@ -282,6 +295,56 @@ const SCAN_SKIP_DIRS: &[&str] = &[
     ".Trash",
     "Library",
 ];
+
+/// Check if a directory entry is a pruner trace.
+fn match_dir_trace(path: &Path, name: &str) -> Option<TraceKind> {
+    match name {
+        ".pruner" => Some(TraceKind::PrunerDir),
+        "pruner" => {
+            // Match .claude/skills/pruner or .copilot/skills/pruner
+            let parent = path.parent()?;
+            if parent.file_name()?.to_str()? != "skills" {
+                return None;
+            }
+            match parent.parent()?.file_name()?.to_str()? {
+                ".claude" => Some(TraceKind::ClaudeSkillDir),
+                ".copilot" => Some(TraceKind::CopilotSkillDir),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Check if a file entry is a pruner trace.
+fn match_file_trace(path: &Path, name: &str) -> Option<TraceKind> {
+    match name {
+        "pruner-context.sh" | "pruner-context.json" | "pruner-context.ps1" => {
+            Some(TraceKind::HookFile)
+        }
+        "CLAUDE.md" | "copilot-instructions.md" => {
+            crate::cli::has_pruner_section(path).then_some(TraceKind::PrunerSection)
+        }
+        "settings.json" => {
+            let in_claude = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == ".claude");
+            (in_claude && crate::cli::has_pruner_hook(path)).then_some(TraceKind::SettingsHook)
+        }
+        ".gitignore" => {
+            let content = fs::read_to_string(path).ok()?;
+            content
+                .lines()
+                .any(|l| {
+                    let t = l.trim();
+                    t == ".pruner/" || t == ".pruner"
+                })
+                .then_some(TraceKind::GitignoreEntry)
+        }
+        _ => None,
+    }
+}
 
 /// Scan a directory tree for leftover pruner traces.
 pub(crate) fn scan_for_traces(root: &Path) -> Vec<FoundTrace> {
@@ -309,127 +372,24 @@ pub(crate) fn scan_for_traces(root: &Path) -> Vec<FoundTrace> {
         let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
 
         if is_dir {
-            match name.as_ref() {
-                ".pruner" => {
-                    // .pruner/ directory -> project is parent
-                    if let Some(project) = path.parent() {
-                        traces.push(FoundTrace {
-                            kind: TraceKind::PrunerDir,
-                            path: path.to_path_buf(),
-                            project: project.to_path_buf(),
-                        });
-                    }
-                }
-                "pruner" => {
-                    // Could be .claude/skills/pruner or .copilot/skills/pruner
-                    if let Some(parent) = path.parent() {
-                        let parent_name = parent.file_name().map(|n| n.to_string_lossy());
-                        if parent_name.as_deref() == Some("skills")
-                            && let Some(grandparent) = parent.parent()
-                        {
-                            let gp_name = grandparent.file_name().map(|n| n.to_string_lossy());
-                            if let Some(project) = grandparent.parent() {
-                                match gp_name.as_deref() {
-                                    Some(".claude") => {
-                                        traces.push(FoundTrace {
-                                            kind: TraceKind::ClaudeSkillDir,
-                                            path: path.to_path_buf(),
-                                            project: project.to_path_buf(),
-                                        });
-                                    }
-                                    Some(".copilot") => {
-                                        traces.push(FoundTrace {
-                                            kind: TraceKind::CopilotSkillDir,
-                                            path: path.to_path_buf(),
-                                            project: project.to_path_buf(),
-                                        });
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
+            if let Some(kind) = match_dir_trace(path, &name) {
+                traces.push(FoundTrace {
+                    kind,
+                    project: infer_project(path),
+                    path: path.to_path_buf(),
+                });
             }
         } else {
-            // File checks — skip large files
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            if size > 1_000_000 {
+            // Skip large files
+            if entry.metadata().map(|m| m.len()).unwrap_or(0) > 1_000_000 {
                 continue;
             }
-
-            match name.as_ref() {
-                "pruner-context.sh" | "pruner-context.json" | "pruner-context.ps1" => {
-                    // Hook file — project is 2-3 levels up (.claude/hooks/ or .github/hooks/)
-                    let project = path
-                        .ancestors()
-                        .nth(3)
-                        .unwrap_or(path.parent().unwrap_or(path));
-                    traces.push(FoundTrace {
-                        kind: TraceKind::HookFile,
-                        path: path.to_path_buf(),
-                        project: project.to_path_buf(),
-                    });
-                }
-                "CLAUDE.md" => {
-                    if crate::cli::has_pruner_section(path) {
-                        let project = path.parent().unwrap_or(path);
-                        traces.push(FoundTrace {
-                            kind: TraceKind::PrunerSection,
-                            path: path.to_path_buf(),
-                            project: project.to_path_buf(),
-                        });
-                    }
-                }
-                "copilot-instructions.md" => {
-                    if crate::cli::has_pruner_section(path) {
-                        // project is grandparent (.github/ or .copilot/)
-                        let project = path
-                            .ancestors()
-                            .nth(2)
-                            .unwrap_or(path.parent().unwrap_or(path));
-                        traces.push(FoundTrace {
-                            kind: TraceKind::PrunerSection,
-                            path: path.to_path_buf(),
-                            project: project.to_path_buf(),
-                        });
-                    }
-                }
-                "settings.json" => {
-                    // Only check settings.json under .claude/ directories
-                    let in_claude = path
-                        .parent()
-                        .and_then(|p| p.file_name())
-                        .is_some_and(|n| n == ".claude");
-                    if in_claude && crate::cli::has_pruner_hook(path) {
-                        let project = path
-                            .ancestors()
-                            .nth(2)
-                            .unwrap_or(path.parent().unwrap_or(path));
-                        traces.push(FoundTrace {
-                            kind: TraceKind::SettingsHook,
-                            path: path.to_path_buf(),
-                            project: project.to_path_buf(),
-                        });
-                    }
-                }
-                ".gitignore" => {
-                    if let Ok(content) = fs::read_to_string(path)
-                        && content.lines().any(|l| {
-                            let t = l.trim();
-                            t == ".pruner/" || t == ".pruner"
-                        })
-                    {
-                        let project = path.parent().unwrap_or(path);
-                        traces.push(FoundTrace {
-                            kind: TraceKind::GitignoreEntry,
-                            path: path.to_path_buf(),
-                            project: project.to_path_buf(),
-                        });
-                    }
-                }
-                _ => {}
+            if let Some(kind) = match_file_trace(path, &name) {
+                traces.push(FoundTrace {
+                    kind,
+                    project: infer_project(path),
+                    path: path.to_path_buf(),
+                });
             }
         }
     }
