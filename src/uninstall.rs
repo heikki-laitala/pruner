@@ -1,8 +1,10 @@
 //! Uninstall: remove pruner integrations (hooks, skills, config sections) and optionally the binary.
 
 use anyhow::{Context, Result};
+use std::fmt;
 use std::fs;
-use std::path::Path;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 /// Remove a file if it exists, printing what was removed.
 fn remove_file(path: &Path) {
@@ -200,6 +202,301 @@ fn uninstall_copilot_project(repo: &Path) {
     remove_file(&repo.join(".github/hooks/pruner-context.ps1"));
 }
 
+// ---------------------------------------------------------------------------
+// Scan: find leftover pruner traces across the filesystem
+// ---------------------------------------------------------------------------
+
+/// What kind of pruner trace was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TraceKind {
+    PrunerDir,
+    ClaudeSkillDir,
+    CopilotSkillDir,
+    PrunerSection,
+    SettingsHook,
+    HookFile,
+    GitignoreEntry,
+}
+
+impl fmt::Display for TraceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TraceKind::PrunerDir => write!(f, ".pruner/ index"),
+            TraceKind::ClaudeSkillDir => write!(f, "Claude skill"),
+            TraceKind::CopilotSkillDir => write!(f, "Copilot skill"),
+            TraceKind::PrunerSection => write!(f, "pruner section"),
+            TraceKind::SettingsHook => write!(f, "settings hook"),
+            TraceKind::HookFile => write!(f, "hook file"),
+            TraceKind::GitignoreEntry => write!(f, ".gitignore entry"),
+        }
+    }
+}
+
+/// A single pruner trace found on disk.
+#[derive(Debug, Clone)]
+pub(crate) struct FoundTrace {
+    pub(crate) kind: TraceKind,
+    pub(crate) path: PathBuf,
+    pub(crate) project: PathBuf,
+}
+
+impl fmt::Display for FoundTrace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.path.display(), self.kind)
+    }
+}
+
+impl FoundTrace {
+    /// Remove this trace using the appropriate cleanup method.
+    fn remove(&self) {
+        match self.kind {
+            TraceKind::PrunerDir | TraceKind::ClaudeSkillDir | TraceKind::CopilotSkillDir => {
+                remove_dir(&self.path);
+            }
+            TraceKind::HookFile => {
+                remove_file(&self.path);
+            }
+            TraceKind::PrunerSection => {
+                remove_pruner_section(&self.path);
+            }
+            TraceKind::SettingsHook => {
+                clean_settings_json(&self.path);
+            }
+            TraceKind::GitignoreEntry => {
+                clean_gitignore(&self.path);
+            }
+        }
+    }
+}
+
+/// Directories to skip during scan (never contain pruner traces, often large).
+const SCAN_SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "build",
+    "dist",
+    ".Trash",
+    "Library",
+];
+
+/// Scan a directory tree for leftover pruner traces.
+pub(crate) fn scan_for_traces(root: &Path) -> Vec<FoundTrace> {
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(false)
+        .git_global(false)
+        .git_exclude(false)
+        .max_depth(Some(6))
+        .follow_links(false)
+        .filter_entry(|e| {
+            if e.file_type().is_some_and(|ft| ft.is_dir()) {
+                let name = e.file_name().to_string_lossy();
+                return !SCAN_SKIP_DIRS.contains(&name.as_ref());
+            }
+            true
+        })
+        .build();
+
+    let mut traces = Vec::new();
+
+    for entry in walker.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy();
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+
+        if is_dir {
+            match name.as_ref() {
+                ".pruner" => {
+                    // .pruner/ directory -> project is parent
+                    if let Some(project) = path.parent() {
+                        traces.push(FoundTrace {
+                            kind: TraceKind::PrunerDir,
+                            path: path.to_path_buf(),
+                            project: project.to_path_buf(),
+                        });
+                    }
+                }
+                "pruner" => {
+                    // Could be .claude/skills/pruner or .copilot/skills/pruner
+                    if let Some(parent) = path.parent() {
+                        let parent_name = parent.file_name().map(|n| n.to_string_lossy());
+                        if parent_name.as_deref() == Some("skills")
+                            && let Some(grandparent) = parent.parent()
+                        {
+                            let gp_name = grandparent.file_name().map(|n| n.to_string_lossy());
+                            if let Some(project) = grandparent.parent() {
+                                match gp_name.as_deref() {
+                                    Some(".claude") => {
+                                        traces.push(FoundTrace {
+                                            kind: TraceKind::ClaudeSkillDir,
+                                            path: path.to_path_buf(),
+                                            project: project.to_path_buf(),
+                                        });
+                                    }
+                                    Some(".copilot") => {
+                                        traces.push(FoundTrace {
+                                            kind: TraceKind::CopilotSkillDir,
+                                            path: path.to_path_buf(),
+                                            project: project.to_path_buf(),
+                                        });
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            // File checks — skip large files
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            if size > 1_000_000 {
+                continue;
+            }
+
+            match name.as_ref() {
+                "pruner-context.sh" | "pruner-context.json" | "pruner-context.ps1" => {
+                    // Hook file — project is 2-3 levels up (.claude/hooks/ or .github/hooks/)
+                    let project = path
+                        .ancestors()
+                        .nth(3)
+                        .unwrap_or(path.parent().unwrap_or(path));
+                    traces.push(FoundTrace {
+                        kind: TraceKind::HookFile,
+                        path: path.to_path_buf(),
+                        project: project.to_path_buf(),
+                    });
+                }
+                "CLAUDE.md" => {
+                    if crate::cli::has_pruner_section(path) {
+                        let project = path.parent().unwrap_or(path);
+                        traces.push(FoundTrace {
+                            kind: TraceKind::PrunerSection,
+                            path: path.to_path_buf(),
+                            project: project.to_path_buf(),
+                        });
+                    }
+                }
+                "copilot-instructions.md" => {
+                    if crate::cli::has_pruner_section(path) {
+                        // project is grandparent (.github/ or .copilot/)
+                        let project = path
+                            .ancestors()
+                            .nth(2)
+                            .unwrap_or(path.parent().unwrap_or(path));
+                        traces.push(FoundTrace {
+                            kind: TraceKind::PrunerSection,
+                            path: path.to_path_buf(),
+                            project: project.to_path_buf(),
+                        });
+                    }
+                }
+                "settings.json" => {
+                    // Only check settings.json under .claude/ directories
+                    let in_claude = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .is_some_and(|n| n == ".claude");
+                    if in_claude && crate::cli::has_pruner_hook(path) {
+                        let project = path
+                            .ancestors()
+                            .nth(2)
+                            .unwrap_or(path.parent().unwrap_or(path));
+                        traces.push(FoundTrace {
+                            kind: TraceKind::SettingsHook,
+                            path: path.to_path_buf(),
+                            project: project.to_path_buf(),
+                        });
+                    }
+                }
+                ".gitignore" => {
+                    if let Ok(content) = fs::read_to_string(path)
+                        && content.lines().any(|l| {
+                            let t = l.trim();
+                            t == ".pruner/" || t == ".pruner"
+                        })
+                    {
+                        let project = path.parent().unwrap_or(path);
+                        traces.push(FoundTrace {
+                            kind: TraceKind::GitignoreEntry,
+                            path: path.to_path_buf(),
+                            project: project.to_path_buf(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Sort by project then path for grouped display
+    traces.sort_by(|a, b| (&a.project, &a.path).cmp(&(&b.project, &b.path)));
+    traces
+}
+
+/// Print scan results grouped by project.
+fn print_trace_summary(traces: &[FoundTrace]) {
+    // Group by project
+    let mut current_project: Option<&Path> = None;
+    let mut project_count = 0;
+    for trace in traces {
+        if current_project != Some(&trace.project) {
+            project_count += 1;
+        }
+        current_project = Some(&trace.project);
+    }
+
+    println!("Found pruner traces in {project_count} project(s):\n");
+
+    current_project = None;
+    for trace in traces {
+        if current_project != Some(&trace.project) {
+            println!("  {}/", trace.project.display());
+            current_project = Some(&trace.project);
+        }
+        println!("    {} ({})", trace.path.display(), trace.kind);
+    }
+}
+
+/// Read a single line from stdin.
+fn read_line() -> String {
+    let mut buf = String::new();
+    let _ = std::io::stdin().read_line(&mut buf);
+    buf.trim().to_lowercase()
+}
+
+/// Prompt user for scan action: all, one-by-one, or skip.
+fn prompt_scan_action() -> ScanAction {
+    if !std::io::stdin().is_terminal() {
+        return ScanAction::Skip;
+    }
+    print!("\nRemove? [a]ll / [o]ne-by-one / [s]kip (default: skip): ");
+    let _ = std::io::stdout().flush();
+    match read_line().chars().next() {
+        Some('a') => ScanAction::All,
+        Some('o') => ScanAction::OneByOne,
+        _ => ScanAction::Skip,
+    }
+}
+
+/// Prompt for a single yes/no decision.
+fn prompt_yes_no(description: &str) -> bool {
+    print!("  Remove {description}? [y/n]: ");
+    let _ = std::io::stdout().flush();
+    read_line().starts_with('y')
+}
+
+enum ScanAction {
+    All,
+    OneByOne,
+    Skip,
+}
+
 /// Main uninstall entrypoint.
 pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
     let home =
@@ -230,12 +527,43 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
         uninstall_claude_global(&home);
         uninstall_copilot_global(&home);
 
+        // Scan for project-level traces
+        println!("\nScanning for project-level pruner traces...");
+        let traces = scan_for_traces(&home);
+
+        if traces.is_empty() {
+            println!("  No leftover traces found.");
+        } else if purge {
+            print_trace_summary(&traces);
+            println!("\nRemoving all (--purge)...");
+            for trace in &traces {
+                trace.remove();
+            }
+        } else {
+            print_trace_summary(&traces);
+            match prompt_scan_action() {
+                ScanAction::All => {
+                    for trace in &traces {
+                        trace.remove();
+                    }
+                }
+                ScanAction::OneByOne => {
+                    for trace in &traces {
+                        if prompt_yes_no(&trace.to_string()) {
+                            trace.remove();
+                        }
+                    }
+                }
+                ScanAction::Skip => {
+                    println!("  Skipped. Run `pruner uninstall --purge` to remove all.");
+                }
+            }
+        }
+
         // Remove the binary
         let exe = std::env::current_exe().context("Cannot determine binary path")?;
         println!("\nBinary: {}", exe.display());
 
-        // On Windows, self-delete isn't straightforward. Use self_replace to swap
-        // with an empty file, then schedule cleanup. On Unix, just remove.
         #[cfg(unix)]
         {
             if let Err(e) = fs::remove_file(&exe) {
@@ -248,14 +576,8 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
 
         #[cfg(windows)]
         {
-            // On Windows we can't delete a running exe. Print instructions.
             println!("  Cannot delete a running executable on Windows.");
             println!("  Remove it manually: del \"{}\"", exe.display());
-        }
-
-        if purge {
-            println!("\nNote: --purge only removes .pruner/ in per-project mode.");
-            println!("To remove index data from repos, run: pruner uninstall <repo> --purge");
         }
 
         println!("\nDone. Global pruner integrations removed.");
@@ -268,6 +590,210 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
 mod tests {
     use super::*;
     use std::fs;
+
+    /// Helper: create directories and an empty file.
+    fn create_file(base: &Path, rel: &str) {
+        let path = base.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+    }
+
+    #[test]
+    fn test_scan_finds_pruner_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        fs::create_dir_all(project.join(".pruner")).unwrap();
+        fs::write(project.join(".pruner/index.db"), "fake").unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::PrunerDir);
+        assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_finds_claude_skill_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        create_file(&project, ".claude/skills/pruner/SKILL.md");
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::ClaudeSkillDir);
+        assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_finds_copilot_skill_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        create_file(&project, ".copilot/skills/pruner/SKILL.md");
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::CopilotSkillDir);
+        assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_finds_hook_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        create_file(&project, ".claude/hooks/pruner-context.sh");
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::HookFile);
+    }
+
+    #[test]
+    fn test_scan_finds_pruner_section_in_claude_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("CLAUDE.md"),
+            "# Project\n\n## Pruner\n\nAuto-generated.\n",
+        )
+        .unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::PrunerSection);
+        assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_finds_settings_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        fs::create_dir_all(project.join(".claude")).unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "command": "pruner-context.sh"
+                    }]
+                }]
+            }
+        });
+        fs::write(
+            project.join(".claude/settings.json"),
+            serde_json::to_string(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::SettingsHook);
+        assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_finds_gitignore_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join(".gitignore"), "node_modules/\n.pruner/\n").unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::GitignoreEntry);
+        assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_skips_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let hidden = dir.path().join("node_modules/somepackage");
+        fs::create_dir_all(hidden.join(".pruner")).unwrap();
+        fs::write(hidden.join(".pruner/index.db"), "fake").unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert!(traces.is_empty(), "should skip node_modules");
+    }
+
+    #[test]
+    fn test_scan_multiple_projects() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let p1 = dir.path().join("project1");
+        fs::create_dir_all(p1.join(".pruner")).unwrap();
+        fs::write(p1.join(".pruner/index.db"), "fake").unwrap();
+
+        let p2 = dir.path().join("project2");
+        create_file(&p2, ".claude/skills/pruner/SKILL.md");
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 2);
+
+        let projects: Vec<_> = traces.iter().map(|t| &t.project).collect();
+        assert!(projects.contains(&&p1));
+        assert!(projects.contains(&&p2));
+    }
+
+    #[test]
+    fn test_scan_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let traces = scan_for_traces(dir.path());
+        assert!(traces.is_empty());
+    }
+
+    #[test]
+    fn test_found_trace_remove_deletes_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let pruner_dir = dir.path().join("project/.pruner");
+        fs::create_dir_all(&pruner_dir).unwrap();
+        fs::write(pruner_dir.join("index.db"), "fake").unwrap();
+
+        let trace = FoundTrace {
+            kind: TraceKind::PrunerDir,
+            path: pruner_dir.clone(),
+            project: dir.path().join("project"),
+        };
+        trace.remove();
+
+        assert!(!pruner_dir.exists(), ".pruner/ should be removed");
+    }
+
+    #[test]
+    fn test_found_trace_remove_cleans_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude_md = dir.path().join("CLAUDE.md");
+        fs::write(
+            &claude_md,
+            "# Project\n\n## Pruner\n\nStuff.\n\n## Other\n\nKeep.\n",
+        )
+        .unwrap();
+
+        let trace = FoundTrace {
+            kind: TraceKind::PrunerSection,
+            path: claude_md.clone(),
+            project: dir.path().to_path_buf(),
+        };
+        trace.remove();
+
+        let content = fs::read_to_string(&claude_md).unwrap();
+        assert!(!content.contains("Pruner"));
+        assert!(content.contains("## Other"));
+    }
+
+    #[test]
+    fn test_scan_finds_copilot_instructions_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        fs::create_dir_all(project.join(".github")).unwrap();
+        fs::write(
+            project.join(".github/copilot-instructions.md"),
+            "# Instructions\n\n## Pruner\n\nAuto.\n",
+        )
+        .unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].kind, TraceKind::PrunerSection);
+        assert_eq!(traces[0].project, project);
+    }
 
     #[test]
     fn test_remove_pruner_section_from_markdown() {
