@@ -960,6 +960,26 @@ fn cmd_stats(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+fn format_tokens(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn format_tokens_signed(n: i64) -> String {
+    let abs = n.unsigned_abs() as usize;
+    let formatted = format_tokens(abs);
+    if n >= 0 {
+        format!("+{formatted}")
+    } else {
+        format!("-{formatted}")
+    }
+}
+
 fn cmd_estimate(
     repo: &Path,
     ask: &str,
@@ -976,89 +996,146 @@ fn cmd_estimate(
         let output = serde_json::json!({
             "ask": est.ask,
             "without_pruner": {
-                "exploration_tokens": est.without_exploration_tokens,
-                "relevant_read_tokens": est.without_relevant_tokens,
+                "turns": est.without_turns.len(),
+                "tool_calls": est.without_tool_calls,
+                "input_tokens": est.without_input_tokens,
+                "output_tokens": est.without_output_tokens,
                 "total_tokens": est.without_total_tokens,
                 "files_read": est.without_files_read,
                 "irrelevant_reads": est.without_irrelevant_reads,
+                "wall_secs": est.without_wall_secs,
+                "cost_usd": (est.without_cost() * 10000.0).round() / 10000.0,
             },
             "with_pruner": {
-                "pruner_context_tokens": est.with_pruner_context_tokens,
-                "targeted_read_tokens": est.with_targeted_read_tokens,
+                "turns": est.with_turns.len(),
+                "tool_calls": est.with_tool_calls,
+                "input_tokens": est.with_input_tokens,
+                "output_tokens": est.with_output_tokens,
                 "total_tokens": est.with_total_tokens,
                 "files_read": est.with_files_read,
+                "wall_secs": est.with_wall_secs,
+                "cost_usd": (est.with_cost() * 10000.0).round() / 10000.0,
             },
             "saving_tokens": est.token_saving(),
             "saving_pct": (est.saving_pct() * 10.0).round() / 10.0,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Claude Code session estimate for: {}", est.ask);
+        println!("Claude Code session estimate for: \"{}\"", est.ask);
         println!();
 
-        println!("WITHOUT pruner (explore -> read):");
+        // Table header
         println!(
-            "  Exploration (glob/grep):   ~{} tokens",
-            est.without_exploration_tokens
+            "  {:<24} {:>12} {:>12} {:>10}",
+            "", "Without", "With pruner", "Delta"
         );
-        let irrelevant_detail = if est.without_irrelevant_reads > 0 {
-            format!(" ({} irrelevant)", est.without_irrelevant_reads)
+        println!("  {}", "-".repeat(60));
+
+        // Turns
+        let turn_delta = est.with_turns.len() as i64 - est.without_turns.len() as i64;
+        println!(
+            "  {:<24} {:>12} {:>12} {:>+10}",
+            "Turns",
+            est.without_turns.len(),
+            est.with_turns.len(),
+            turn_delta
+        );
+
+        // Tool calls
+        let tool_delta = est.with_tool_calls as i64 - est.without_tool_calls as i64;
+        println!(
+            "  {:<24} {:>12} {:>12} {:>+10}",
+            "Tool calls", est.without_tool_calls, est.with_tool_calls, tool_delta
+        );
+
+        // Files read
+        let file_delta = est.with_files_read as i64 - est.without_files_read as i64;
+        let without_files_detail = if est.without_irrelevant_reads > 0 {
+            format!(
+                "{} ({} waste)",
+                est.without_files_read, est.without_irrelevant_reads
+            )
         } else {
-            String::new()
+            est.without_files_read.to_string()
         };
         println!(
-            "  Reading files:             ~{} tokens ({} files)",
-            est.without_relevant_tokens,
-            est.relevant_files.len()
+            "  {:<24} {:>12} {:>12} {:>+10}",
+            "Files read", without_files_detail, est.with_files_read, file_delta
         );
-        let wasted: usize = est
-            .without_steps
-            .iter()
-            .filter(|s| !s.useful)
-            .map(|s| s.tokens)
-            .sum();
+
+        // Input tokens
+        let input_delta = est.with_input_tokens as i64 - est.without_input_tokens as i64;
         println!(
-            "  Wasted on wrong files:     ~{} tokens{}",
-            wasted, irrelevant_detail
+            "  {:<24} {:>12} {:>12} {:>+10}",
+            "Input tokens",
+            format_tokens(est.without_input_tokens),
+            format_tokens(est.with_input_tokens),
+            format_tokens_signed(input_delta)
         );
+
+        // Output tokens
+        let output_delta = est.with_output_tokens as i64 - est.without_output_tokens as i64;
         println!(
-            "  Total:                     ~{} tokens ({} files read)",
-            est.without_total_tokens, est.without_files_read
+            "  {:<24} {:>12} {:>12} {:>+10}",
+            "Output tokens",
+            format_tokens(est.without_output_tokens),
+            format_tokens(est.with_output_tokens),
+            format_tokens_signed(output_delta)
+        );
+
+        // Total tokens
+        println!(
+            "  {:<24} {:>12} {:>12} {:>+10}",
+            "Total tokens",
+            format_tokens(est.without_total_tokens),
+            format_tokens(est.with_total_tokens),
+            format_tokens_signed(-est.token_saving())
+        );
+
+        // Cost
+        let cost_delta = est.with_cost() - est.without_cost();
+        println!(
+            "  {:<24} {:>11} {:>11} {:>+10}",
+            "Est. cost",
+            format!("${:.4}", est.without_cost()),
+            format!("${:.4}", est.with_cost()),
+            format!("${:.4}", cost_delta)
+        );
+
+        // Wall time
+        let time_delta = est.with_wall_secs - est.without_wall_secs;
+        println!(
+            "  {:<24} {:>11}s {:>11}s {:>+9}s",
+            "Est. wall time",
+            format!("{:.0}", est.without_wall_secs),
+            format!("{:.0}", est.with_wall_secs),
+            format!("{:.0}", time_delta)
         );
 
         println!();
-        println!("WITH pruner (context -> targeted read):");
         println!(
-            "  Pruner context output:     ~{} tokens",
-            est.with_pruner_context_tokens
-        );
-        println!(
-            "  Targeted file reads:       ~{} tokens ({} files)",
-            est.with_targeted_read_tokens, est.with_files_read
-        );
-        println!(
-            "  Total:                     ~{} tokens",
-            est.with_total_tokens
-        );
-
-        println!();
-        let saving_sign = if est.saving_pct() >= 0.0 { "+" } else { "" };
-        println!(
-            "Estimated saving: {}{:.1}% ({:+} tokens)",
-            saving_sign,
+            "Estimated saving: {:.1}% tokens, {:.1}% cost",
             est.saving_pct(),
-            est.token_saving()
+            if est.without_cost() > 0.0 {
+                (1.0 - est.with_cost() / est.without_cost()) * 100.0
+            } else {
+                0.0
+            }
         );
+        println!("Note: models multi-turn context accumulation (each turn re-sends full history)");
 
         if show_steps {
             println!();
-            println!("Exploration steps (without pruner):");
-            for step in &est.without_steps {
-                let marker = if step.useful { "  " } else { "* " };
-                println!(
-                    "  {}{:18} {:50} ~{} tokens",
-                    marker, step.action, step.target, step.tokens
-                );
+            println!("Without pruner — turn-by-turn breakdown:");
+            for (i, turn) in est.without_turns.iter().enumerate() {
+                println!("  Turn {} (+{} new tokens):", i + 1, turn.new_tokens);
+                for step in &turn.steps {
+                    let marker = if step.useful { " " } else { "*" };
+                    println!(
+                        "    {} {:10} {:40} ~{} tok",
+                        marker, step.action, step.target, step.tokens
+                    );
+                }
             }
             println!("  (* = wasted on irrelevant content)");
         }
