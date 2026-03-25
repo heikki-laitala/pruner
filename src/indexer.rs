@@ -68,6 +68,12 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
 
 /// Incremental index: only re-parses new/modified files, removes deleted ones.
 /// Returns None if nothing changed, Some(stats) if re-indexing happened.
+///
+/// Unlike full indexing, this avoids rebuilding all edges. It:
+/// 1. Detects changed/new/deleted files via mtime comparison
+/// 2. Parses only changed files (parallel with rayon)
+/// 3. Deletes edges/calls involving changed files only
+/// 4. Rebuilds edges for changed files using the full symbol map
 pub fn index_repo_incremental(
     repo_path: &Path,
     db: &IndexDb,
@@ -76,6 +82,8 @@ pub fn index_repo_incremental(
     let existing = db.all_file_mtimes()?;
     let mut seen_paths = HashSet::new();
     let mut changed_paths = HashSet::new();
+    let mut deleted_file_ids: Vec<i64> = Vec::new();
+    let mut modified_file_ids: Vec<i64> = Vec::new();
     let mut has_changes = false;
 
     // Walk repo to find new/modified/deleted files
@@ -103,8 +111,8 @@ pub fn index_repo_incremental(
                 // Unchanged — skip
             }
             Some((id, _)) => {
-                // Modified — delete old data, will re-index
-                db.delete_file(*id)?;
+                // Modified — will delete and re-index
+                modified_file_ids.push(*id);
                 changed_paths.insert(rel_path);
                 has_changes = true;
             }
@@ -116,10 +124,10 @@ pub fn index_repo_incremental(
         }
     }
 
-    // Delete removed files
+    // Collect deleted files
     for (path, (id, _)) in &existing {
         if !seen_paths.contains(path) {
-            db.delete_file(*id)?;
+            deleted_file_ids.push(*id);
             has_changes = true;
         }
     }
@@ -131,13 +139,18 @@ pub fn index_repo_incremental(
     db.set_synchronous_normal()?;
     db.begin_transaction()?;
 
-    let deleted_count = existing.keys().filter(|p| !seen_paths.contains(*p)).count();
+    let total_seen = seen_paths.len();
 
-    // Re-index only changed files, then rebuild all edges
-    match index_files(repo_path, db, verbose, Some(&changed_paths)) {
+    match index_incremental_inner(
+        repo_path,
+        db,
+        verbose,
+        &changed_paths,
+        &modified_file_ids,
+        &deleted_file_ids,
+    ) {
         Ok(mut stats) => {
-            stats.unchanged = seen_paths.len() - stats.files;
-            stats.deleted = deleted_count;
+            stats.unchanged = total_seen - stats.files;
             db.commit_transaction()?;
             Ok(Some(stats))
         }
@@ -146,6 +159,234 @@ pub fn index_repo_incremental(
             Err(e)
         }
     }
+}
+
+/// Inner incremental indexing logic (runs inside a transaction).
+fn index_incremental_inner(
+    repo_path: &Path,
+    db: &IndexDb,
+    verbose: bool,
+    changed_paths: &HashSet<String>,
+    modified_file_ids: &[i64],
+    deleted_file_ids: &[i64],
+) -> Result<IndexStats> {
+    let mut stats = IndexStats::default();
+
+    // Step 1: Clear edges for files that are being modified or deleted
+    let mut affected_ids: Vec<i64> = Vec::new();
+    affected_ids.extend_from_slice(modified_file_ids);
+    affected_ids.extend_from_slice(deleted_file_ids);
+    db.clear_edges_for_files(&affected_ids)?;
+
+    // Step 2: Collect symbol names from affected files (before deletion)
+    // so we can find cross-file edges that need rebuilding
+    let mut affected_symbol_names: HashSet<String> = HashSet::new();
+    for file_id in &affected_ids {
+        for sym in db.symbols_for_file(*file_id)? {
+            affected_symbol_names.insert(sym.name.clone());
+        }
+    }
+
+    // Step 3: Delete modified/removed files from DB (CASCADE clears symbols, imports, calls)
+    for file_id in modified_file_ids {
+        db.delete_file(*file_id)?;
+    }
+    for file_id in deleted_file_ids {
+        db.delete_file(*file_id)?;
+    }
+    stats.deleted = deleted_file_ids.len();
+
+    // Step 4: Parse changed files in parallel
+    let to_parse: Vec<PathBuf> = walk_repo(repo_path)
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
+        .filter(|e| !languages::is_ignored_file(e.path()))
+        .filter(|e| {
+            let rel = normalize_path(
+                &e.path()
+                    .strip_prefix(repo_path)
+                    .unwrap_or(e.path())
+                    .to_string_lossy(),
+            );
+            changed_paths.contains(&rel)
+        })
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    let skipped_count = AtomicUsize::new(0);
+    let parsed_files: Vec<ParsedFile> = to_parse
+        .par_iter()
+        .filter_map(|path| {
+            let rel_path = normalize_path(
+                &path
+                    .strip_prefix(repo_path)
+                    .unwrap_or(path)
+                    .to_string_lossy(),
+            );
+            let language = languages::detect_language(path);
+            let is_test = languages::is_test_file(path);
+            let mtime = file_mtime(path);
+
+            let content = match fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => {
+                    skipped_count.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            };
+
+            let line_count = content.lines().count() as i64;
+            let size = content.len() as i64;
+            let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
+            let parse_result = language.and_then(|lang| parser::parse_source(&content, lang).ok());
+
+            Some(ParsedFile {
+                rel_path,
+                lang_str,
+                size,
+                line_count,
+                is_test,
+                mtime,
+                language,
+                parse_result,
+            })
+        })
+        .collect();
+
+    stats.skipped = skipped_count.load(Ordering::Relaxed);
+
+    // Step 5: Insert new/modified files into DB
+    let mut new_file_ids: Vec<i64> = Vec::new();
+    let mut new_calls: Vec<(i64, String, usize)> = Vec::new();
+
+    for pf in &parsed_files {
+        let file_id = db.insert_file(
+            &pf.rel_path,
+            pf.lang_str.as_deref(),
+            pf.size,
+            pf.line_count,
+            pf.is_test,
+            pf.mtime,
+        )?;
+        new_file_ids.push(file_id);
+        stats.files += 1;
+
+        // Add contains edge
+        db.insert_edge("contains", None, None, Some(file_id), None, None)?;
+        stats.edges += 1;
+
+        if verbose {
+            eprintln!("  {} ({} lines)", pf.rel_path, pf.line_count);
+        }
+
+        if pf.language.is_some() {
+            stats.parsed += 1;
+        }
+
+        if let Some(ref parse_result) = pf.parse_result {
+            let mut symbol_id_map: Vec<i64> = Vec::new();
+
+            for sym in &parse_result.symbols {
+                let parent_db_id = sym.parent_index.map(|pi| symbol_id_map[pi]);
+                let sym_id = db.insert_symbol(
+                    file_id,
+                    &sym.name,
+                    &sym.kind,
+                    sym.line_start as i64,
+                    sym.line_end as i64,
+                    parent_db_id,
+                    sym.signature.as_deref(),
+                )?;
+                symbol_id_map.push(sym_id);
+                // Track new symbol names for cross-file edge resolution
+                affected_symbol_names.insert(sym.name.clone());
+                stats.symbols += 1;
+            }
+
+            for imp in &parse_result.imports {
+                db.insert_import(file_id, &imp.module, imp.names.as_deref())?;
+                stats.imports += 1;
+            }
+
+            for call in &parse_result.calls {
+                let caller_db_id = symbol_id_map[call.caller_index];
+                new_calls.push((caller_db_id, call.callee_name.clone(), call.line));
+                stats.calls += 1;
+            }
+        }
+    }
+
+    // Step 6: Load full symbol map for edge resolution (one bulk query)
+    let symbol_map = db.all_symbol_map()?;
+
+    // Step 7: Insert calls and resolve edges for new/modified files
+    for (caller_id, callee_name, line) in &new_calls {
+        db.insert_call(*caller_id, callee_name, *line as i64)?;
+
+        if let Some(targets) = symbol_map.get(callee_name.as_str()) {
+            for (target_sym_id, target_file_id) in targets {
+                db.insert_edge(
+                    "calls",
+                    None,
+                    Some(*caller_id),
+                    Some(*target_file_id),
+                    Some(*target_sym_id),
+                    None,
+                )?;
+                stats.edges += 1;
+            }
+        } else {
+            db.insert_edge(
+                "calls",
+                None,
+                Some(*caller_id),
+                None,
+                None,
+                Some(callee_name),
+            )?;
+            stats.edges += 1;
+        }
+    }
+
+    // Step 8: Rebuild cross-file edges — unchanged files calling symbols
+    // whose definitions were in changed files (and vice versa).
+    // Load all existing calls and find those referencing affected symbol names.
+    let all_calls = db.all_calls()?;
+    let new_caller_ids: HashSet<i64> = new_calls.iter().map(|(id, _, _)| *id).collect();
+
+    for (caller_id, callee_name, _line) in &all_calls {
+        // Skip calls we just inserted above
+        if new_caller_ids.contains(caller_id) {
+            continue;
+        }
+        // Only rebuild edges for symbols that were in affected files
+        if !affected_symbol_names.contains(callee_name.as_str()) {
+            continue;
+        }
+        if let Some(targets) = symbol_map.get(callee_name.as_str()) {
+            for (target_sym_id, target_file_id) in targets {
+                // Only add edges pointing to new files (old edges still exist)
+                if new_file_ids.contains(target_file_id) {
+                    db.insert_edge(
+                        "calls",
+                        None,
+                        Some(*caller_id),
+                        Some(*target_file_id),
+                        Some(*target_sym_id),
+                        None,
+                    )?;
+                    stats.edges += 1;
+                }
+            }
+        }
+    }
+
+    // Step 9: Rebuild test edges for changed files only
+    build_test_edges_for_files(repo_path, db, &new_file_ids)?;
+
+    stats.unchanged = 0; // Caller sets this
+
+    Ok(stats)
 }
 
 /// Walk the repo, respecting .gitignore and filtering pruner's own ignored directories.
@@ -453,6 +694,62 @@ fn build_test_edges(_repo_path: &Path, db: &IndexDb) -> Result<()> {
             for sf in &source_files {
                 if sf.path.contains(&imp.module.replace('.', "/")) {
                     db.insert_edge("tests", Some(tf.id), None, Some(sf.id), None, None)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Build test edges only for specific file IDs (incremental mode).
+fn build_test_edges_for_files(_repo_path: &Path, db: &IndexDb, file_ids: &[i64]) -> Result<()> {
+    if file_ids.is_empty() {
+        return Ok(());
+    }
+    let file_id_set: HashSet<i64> = file_ids.iter().copied().collect();
+    let all_files = db.all_files()?;
+    let test_files: Vec<_> = all_files.iter().filter(|f| f.is_test).collect();
+    let source_files: Vec<_> = all_files.iter().filter(|f| !f.is_test).collect();
+
+    for tf in &test_files {
+        // Only process if this test file or a potential source target is new
+        let test_is_new = file_id_set.contains(&tf.id);
+
+        let test_path = Path::new(&tf.path);
+        let test_name = test_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+        let base_name = test_name
+            .strip_prefix("test_")
+            .or_else(|| test_name.strip_suffix("_test"))
+            .or_else(|| test_name.strip_suffix(".test"))
+            .or_else(|| test_name.strip_suffix("_spec"))
+            .or_else(|| test_name.strip_suffix(".spec"))
+            .or_else(|| test_name.strip_suffix("Test"))
+            .or_else(|| test_name.strip_suffix("Tests"))
+            .unwrap_or(test_name);
+
+        for sf in &source_files {
+            // Only add edge if at least one side is new/changed
+            if !test_is_new && !file_id_set.contains(&sf.id) {
+                continue;
+            }
+            let src_name = Path::new(&sf.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if src_name == base_name {
+                db.insert_edge("tests", Some(tf.id), None, Some(sf.id), None, None)?;
+            }
+        }
+
+        if test_is_new {
+            let imports = db.imports_for_file(tf.id)?;
+            for imp in &imports {
+                for sf in &source_files {
+                    if sf.path.contains(&imp.module.replace('.', "/")) {
+                        db.insert_edge("tests", Some(tf.id), None, Some(sf.id), None, None)?;
+                    }
                 }
             }
         }
