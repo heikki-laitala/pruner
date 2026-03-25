@@ -146,19 +146,6 @@ enum Commands {
         #[arg(default_value = ".")]
         repo: PathBuf,
     },
-    /// Measure token usage: pruner context vs naive full-file inclusion
-    Measure {
-        /// Path to the repository
-        repo: PathBuf,
-        /// Natural language query
-        ask: String,
-        /// Max lines per snippet
-        #[arg(long, default_value = "50")]
-        max_snippet_lines: usize,
-        /// Output as JSON
-        #[arg(long)]
-        json_output: bool,
-    },
     /// Set up pruner in a project (Claude/Copilot skills, hook, instructions)
     Init {
         /// Path to the project
@@ -268,12 +255,6 @@ pub fn run() -> Result<()> {
         Commands::ShowFile { repo, path } => cmd_show_file(&repo, &path),
         Commands::ShowSymbol { repo, name } => cmd_show_symbol(&repo, &name),
         Commands::Stats { repo } => cmd_stats(&repo),
-        Commands::Measure {
-            repo,
-            ask,
-            max_snippet_lines,
-            json_output,
-        } => cmd_measure(&repo, &ask, max_snippet_lines, json_output),
         Commands::Uninstall { repo, purge } => {
             crate::uninstall::cmd_uninstall(repo.as_deref(), purge)
         }
@@ -808,77 +789,6 @@ fn cmd_stats(repo: &Path) -> Result<()> {
     println!("Imports: {}", db.import_count()?);
     println!("Calls:   {}", db.call_count()?);
     println!("Edges:   {}", db.edge_count()?);
-    Ok(())
-}
-
-fn cmd_measure(repo: &Path, ask: &str, max_snippet_lines: usize, json_output: bool) -> Result<()> {
-    let db = open_db(repo)?;
-    let repo_path = repo.canonicalize()?;
-    let result = query::analyze_query(ask, &db)?;
-    let m = tokens::measure(&result, &db, &repo_path, max_snippet_lines)?;
-
-    if json_output {
-        let output = serde_json::json!({
-            "ask": m.ask,
-            "repo_total": {"files": m.repo_total_files, "tokens": m.repo_total_tokens},
-            "naive": {
-                "files": m.naive_files.len(),
-                "lines": m.naive_lines,
-                "tokens": m.naive_tokens,
-            },
-            "pruner": {
-                "files": m.pruner_files,
-                "symbols": m.pruner_symbols,
-                "snippets": m.pruner_snippets,
-                "tokens_text": m.pruner_tokens_text,
-                "tokens_json": m.pruner_tokens_json,
-            },
-            "reduction_vs_naive_pct": (m.reduction_vs_naive() * 10.0).round() / 10.0,
-            "reduction_vs_repo_pct": (m.reduction_vs_repo() * 10.0).round() / 10.0,
-        });
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        println!("Token usage measurement for: {}", m.ask);
-        println!();
-        println!("Whole repo (baseline):");
-        println!(
-            "  {} files, ~{} tokens",
-            m.repo_total_files, m.repo_total_tokens
-        );
-        println!();
-        println!("Naive (full content of matching files):");
-        println!(
-            "  {} files, {} lines, ~{} tokens",
-            m.naive_files.len(),
-            m.naive_lines,
-            m.naive_tokens
-        );
-        for f in &m.naive_files {
-            println!("    {f}");
-        }
-        println!();
-        println!("Pruner (structured context):");
-        println!(
-            "  {} files, {} symbols, {} snippets",
-            m.pruner_files, m.pruner_symbols, m.pruner_snippets
-        );
-        println!(
-            "  ~{} tokens (text) / ~{} tokens (json)",
-            m.pruner_tokens_text, m.pruner_tokens_json
-        );
-        println!();
-        println!("Savings:");
-        println!(
-            "  vs naive:      {:+.1}% tokens ({:+})",
-            m.reduction_vs_naive(),
-            m.naive_tokens as i64 - m.pruner_tokens_text as i64
-        );
-        println!(
-            "  vs whole repo: {:+.1}% tokens ({:+})",
-            m.reduction_vs_repo(),
-            m.repo_total_tokens as i64 - m.pruner_tokens_text as i64
-        );
-    }
     Ok(())
 }
 
