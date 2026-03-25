@@ -218,14 +218,25 @@ Pruner auto-detects task scope from query results and adjusts output:
 
 The default (auto) mode is designed for agent use: one call returns everything the LLM needs without follow-up exploration.
 
-### Measure token savings
+### Estimate token savings
 
 ```bash
-pruner measure . "how does the parser extract symbols?"
 pruner estimate . "fix login flow" --show-steps
 ```
 
-Compares token usage strategies and estimates Claude Code session savings.
+Simulates a Claude Code session with and without pruner to estimate token savings.
+
+### Upgrade and uninstall
+
+```bash
+pruner upgrade              # upgrade to latest release
+pruner upgrade --check      # check if update available (no changes)
+pruner upgrade --version v0.1.5  # install specific version
+
+pruner uninstall            # remove global integrations + binary
+pruner uninstall /path/to/repo   # remove per-project integration
+pruner uninstall /path/to/repo --purge  # also remove .pruner/ index
+```
 
 ### Inspect the index
 
