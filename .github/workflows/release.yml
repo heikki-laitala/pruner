@@ -110,14 +110,17 @@ jobs:
       - name: Install pruner (Unix)
         if: runner.os != 'Windows'
         run: |
-          bash install.sh --version "${{ github.ref_name }}"
+          bash install.sh --version "${{ github.ref_name }}" --no-interactive
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install pruner (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          PRUNER_VERSION: ${{ github.ref_name }}
+          PRUNER_NO_INTERACTIVE: "1"
         run: |
-          .\install.ps1 -Version "${{ github.ref_name }}"
+          .\install.ps1
           echo "$env:USERPROFILE\.local\bin" | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
       - name: Verify pruner is installed
