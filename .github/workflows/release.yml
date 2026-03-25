@@ -211,3 +211,61 @@ jobs:
             CLAUDE_PROJECT_DIR="${{ runner.temp }}/test-repo" \
             bash "${{ runner.temp }}/test-repo/.claude/hooks/pruner-context.sh" | \
             grep -q "Pruner context"
+
+      # --- Test upgrade --check ---
+      - name: Test upgrade --check
+        run: pruner upgrade --check
+
+      # --- Test uninstall (per-project) ---
+      - name: Uninstall from test repo
+        run: pruner uninstall ${{ runner.temp }}/test-repo --purge
+
+      - name: Verify uninstall removed SKILL.md
+        if: runner.os != 'Windows'
+        run: test ! -f ${{ runner.temp }}/test-repo/.claude/skills/pruner/SKILL.md
+
+      - name: Verify uninstall removed SKILL.md (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path ${{ runner.temp }}/test-repo/.claude/skills/pruner/SKILL.md) { throw "SKILL.md should be removed" }
+
+      - name: Verify uninstall removed hook script
+        if: runner.os != 'Windows'
+        run: test ! -f ${{ runner.temp }}/test-repo/.claude/hooks/pruner-context.sh
+
+      - name: Verify uninstall cleaned CLAUDE.md
+        if: runner.os != 'Windows'
+        run: |
+          if grep -q "## Pruner" ${{ runner.temp }}/test-repo/CLAUDE.md 2>/dev/null; then
+            echo "CLAUDE.md still has Pruner section"
+            exit 1
+          fi
+
+      - name: Verify uninstall cleaned CLAUDE.md (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path ${{ runner.temp }}/test-repo/CLAUDE.md) {
+            if (Select-String -Path ${{ runner.temp }}/test-repo/CLAUDE.md -Pattern "## Pruner" -Quiet) {
+              throw "CLAUDE.md still has Pruner section"
+            }
+          }
+
+      - name: Verify uninstall purged .pruner/ index
+        if: runner.os != 'Windows'
+        run: test ! -d ${{ runner.temp }}/test-repo/.pruner
+
+      - name: Verify uninstall purged .pruner/ index (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path ${{ runner.temp }}/test-repo/.pruner) { throw ".pruner/ should be purged" }
+
+      - name: Verify uninstall cleaned settings.json hook entry
+        if: runner.os != 'Windows'
+        run: |
+          if grep -q "pruner-context" ${{ runner.temp }}/test-repo/.claude/settings.json 2>/dev/null; then
+            echo "settings.json still has pruner hook"
+            exit 1
+          fi
