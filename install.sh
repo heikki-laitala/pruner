@@ -1,20 +1,22 @@
 #!/bin/bash
 # Pruner installer — downloads pre-built binary and sets up project integration.
 #
-# Usage:
+# Interactive:
 #   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash
-#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --hook
-#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-skill
-#   curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-hook
+#
+# Non-interactive (flags skip the prompts):
+#   curl -sSf ... | bash -s -- --hook --global
+#   curl -sSf ... | bash -s -- --copilot-skill --copilot-global
 #
 # Options (pass after --):
-#   --hook      Install Claude Code prompt-submit hook (better performance)
-#   --global    Install skill/hook globally (~/.claude/) instead of project-local
+#   --hook           Install Claude Code prompt-submit hook (better performance)
+#   --global         Install skill/hook globally (~/.claude/) instead of project-local
 #   --copilot-skill  Install Copilot CLI skill and instructions
 #   --copilot-hook   Install Copilot userPromptSubmitted hook files
 #   --copilot-global Install Copilot CLI skill globally (~/.copilot/)
-#   --dir DIR   Install binary to DIR instead of ~/.local/bin
-#   --version V Install specific version (default: latest)
+#   --dir DIR        Install binary to DIR instead of ~/.local/bin
+#   --version V      Install specific version (default: latest)
+#   --no-interactive Skip interactive prompts (just install binary)
 
 set -euo pipefail
 
@@ -26,33 +28,51 @@ GLOBAL=false
 COPILOT_SKILL=false
 COPILOT_HOOK=false
 COPILOT_GLOBAL=false
+NO_INTERACTIVE=false
+HAS_SETUP_FLAGS=false
 
 # Parse arguments
 while [ $# -gt 0 ]; do
     case "$1" in
-        --hook) HOOK=true ;;
-        --global) GLOBAL=true ;;
-        --copilot-skill) COPILOT_SKILL=true ;;
-        --copilot-hook) COPILOT_HOOK=true ;;
-        --copilot-global) COPILOT_GLOBAL=true ;;
+        --hook) HOOK=true; HAS_SETUP_FLAGS=true ;;
+        --global) GLOBAL=true; HAS_SETUP_FLAGS=true ;;
+        --copilot-skill) COPILOT_SKILL=true; HAS_SETUP_FLAGS=true ;;
+        --copilot-hook) COPILOT_HOOK=true; HAS_SETUP_FLAGS=true ;;
+        --copilot-global) COPILOT_GLOBAL=true; HAS_SETUP_FLAGS=true ;;
+        --no-interactive) NO_INTERACTIVE=true ;;
         --dir) INSTALL_DIR="$2"; shift ;;
         --version) VERSION="$2"; shift ;;
         --help|-h)
-            echo "Usage: install.sh [--hook] [--global] [--copilot-skill] [--copilot-hook] [--copilot-global] [--dir DIR] [--version VERSION]"
+            echo "Usage: install.sh [--hook] [--global] [--copilot-skill] [--copilot-hook] [--copilot-global] [--dir DIR] [--version VERSION] [--no-interactive]"
             echo ""
-            echo "  --hook      Install Claude Code prompt-submit hook (better performance)"
-            echo "  --global    Install skill/hook globally (~/.claude/)"
+            echo "  --hook           Install Claude Code prompt-submit hook (better performance)"
+            echo "  --global         Install skill/hook globally (~/.claude/)"
             echo "  --copilot-skill  Install Copilot CLI skill and instructions"
             echo "  --copilot-hook   Install Copilot userPromptSubmitted hook files"
             echo "  --copilot-global Install Copilot CLI skill globally (~/.copilot/)"
-            echo "  --dir DIR   Install binary to DIR (default: ~/.local/bin)"
-            echo "  --version V Install specific version (default: latest)"
+            echo "  --dir DIR        Install binary to DIR (default: ~/.local/bin)"
+            echo "  --version V      Install specific version (default: latest)"
+            echo "  --no-interactive Skip interactive prompts (just install binary)"
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
     shift
 done
+
+# Helper: read user input from /dev/tty (works even when stdin is piped from curl)
+ask() {
+    local prompt="$1"
+    local default="$2"
+    local reply
+    if [ -r /dev/tty ]; then
+        printf "%s " "$prompt" > /dev/tty
+        read -r reply < /dev/tty
+    else
+        reply=""
+    fi
+    echo "${reply:-$default}"
+}
 
 # Detect OS and architecture
 OS="$(uname -s)"
@@ -124,7 +144,71 @@ if command -v pruner >/dev/null 2>&1; then
     pruner --version
 fi
 
-# Set up project integration
+# ── Interactive setup (when no flags provided) ──────────────────────────
+
+if [ "$HAS_SETUP_FLAGS" = false ] && [ "$NO_INTERACTIVE" = false ] && [ -r /dev/tty ]; then
+    echo ""
+    echo "How do you want to set up pruner?"
+    echo ""
+    echo "  1) Claude Code  (global — works in every repo)"
+    echo "  2) Copilot CLI  (global — works in every repo)"
+    echo "  3) Both Claude Code + Copilot CLI (global)"
+    echo "  4) Skip — I'll set up later with 'pruner init'"
+    echo ""
+    CHOICE=$(ask "Choice [1]:" "1")
+
+    case "$CHOICE" in
+        1)
+            GLOBAL=true
+            echo ""
+            echo "Claude Code mode:"
+            echo "  1) Hook — context injected automatically (best performance)"
+            echo "  2) Skill — Claude calls pruner as a tool"
+            echo ""
+            MODE=$(ask "Choice [1]:" "1")
+            if [ "$MODE" = "1" ]; then
+                HOOK=true
+            fi
+            ;;
+        2)
+            COPILOT_GLOBAL=true
+            COPILOT_SKILL=true
+            ;;
+        3)
+            GLOBAL=true
+            COPILOT_GLOBAL=true
+            COPILOT_SKILL=true
+            echo ""
+            echo "Claude Code mode:"
+            echo "  1) Hook — context injected automatically (best performance)"
+            echo "  2) Skill — Claude calls pruner as a tool"
+            echo ""
+            MODE=$(ask "Choice [1]:" "1")
+            if [ "$MODE" = "1" ]; then
+                HOOK=true
+            fi
+            ;;
+        4)
+            echo ""
+            echo "To set up later:"
+            echo "  pruner init --global --hook          # Claude Code (recommended)"
+            echo "  pruner init --copilot-skill --copilot-global  # Copilot CLI"
+            echo "  pruner init /path/to/project --hook  # per-project"
+            echo ""
+            echo "Done."
+            exit 0
+            ;;
+        *)
+            echo "Invalid choice. Skipping setup."
+            echo ""
+            echo "Done."
+            exit 0
+            ;;
+    esac
+fi
+
+# ── Run pruner init ─────────────────────────────────────────────────────
+
 echo ""
 INIT_ARGS=""
 if [ "$HOOK" = true ]; then
@@ -146,7 +230,12 @@ fi
 if [ "$GLOBAL" = true ] || [ "$COPILOT_GLOBAL" = true ]; then
     echo "Setting up global integration..."
     "${INSTALL_DIR}/pruner" init ${INIT_ARGS}
-else
+    echo ""
+    echo "Pruner is ready. It will auto-index each repo on first use."
+    echo "Add .pruner/ to your .gitignore (global install doesn't modify it):"
+    echo ""
+    echo "  echo '.pruner/' >> .gitignore"
+elif [ "$HAS_SETUP_FLAGS" = true ]; then
     echo "To set up pruner in a project:"
     echo ""
     if [ "$HOOK" = true ]; then
@@ -157,13 +246,9 @@ else
     fi
     if [ "$COPILOT_SKILL" = true ]; then
         echo "  pruner init /path/to/project --copilot-skill   # Copilot CLI skill files"
-    else
-        echo "  pruner init /path/to/project --copilot-skill   # Copilot CLI integration"
     fi
     if [ "$COPILOT_HOOK" = true ]; then
         echo "  pruner init /path/to/project --copilot-hook    # Copilot prompt hook files"
-    else
-        echo "  pruner init /path/to/project --copilot-hook    # Copilot prompt hook integration"
     fi
 fi
 
