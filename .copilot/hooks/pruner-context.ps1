@@ -19,7 +19,8 @@ $hasIndex = (Test-Path (Join-Path $root ".git")) -or (Test-Path (Join-Path $root
 if (-not $hasIndex) {
     # Check for indexed sub-repos (meta-repo pattern)
     $subIndexes = Get-ChildItem -Path $root -Directory | Where-Object {
-        Test-Path (Join-Path $_.FullName ".pruner\index.db")
+        (Test-Path (Join-Path $_.FullName ".git")) -or
+        (Test-Path (Join-Path $_.FullName ".pruner\index.db"))
     }
     if ($subIndexes.Count -gt 0) { $hasIndex = $true }
 }

@@ -280,32 +280,74 @@ mod status {
 mod multi_repo {
     use super::*;
 
+    /// Create a fake .git dir so pruner detects this as a git sub-repo.
+    fn make_git_dir(path: &Path) {
+        std::fs::create_dir_all(path.join(".git")).unwrap();
+    }
+
     #[test]
-    fn context_discovers_indexed_subrepos() {
-        // Create a meta-repo with two indexed sub-repos
+    fn index_discovers_subrepos() {
+        // Meta-repo with two git sub-repos, neither indexed yet
         let meta = TempDir::new().unwrap();
 
-        // Sub-repo 1: python webapp
         let sub1 = meta.path().join("webapp");
         let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
         std::fs::create_dir_all(&sub1).unwrap();
         copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
+
+        let sub2 = meta.path().join("backend");
+        let fixture2 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust_crate");
+        std::fs::create_dir_all(&sub2).unwrap();
+        copy_dir_all(&fixture2, &sub2).unwrap();
+        make_git_dir(&sub2);
+
+        // Index from meta-repo level — should index each sub-repo separately
+        let output = pruner()
+            .args(["index", meta.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "index should succeed: {stderr}");
+        assert!(
+            stderr.contains("Meta-repo detected"),
+            "should detect meta-repo, got: {stderr}"
+        );
+
+        // Each sub-repo should have its own index
+        assert!(sub1.join(".pruner/index.db").exists(), "webapp should be indexed");
+        assert!(sub2.join(".pruner/index.db").exists(), "backend should be indexed");
+        // Parent should NOT have an index
+        assert!(!meta.path().join(".pruner/index.db").exists(), "meta-repo should not have flat index");
+    }
+
+    #[test]
+    fn context_discovers_subrepos() {
+        // Meta-repo with two git sub-repos, pre-indexed
+        let meta = TempDir::new().unwrap();
+
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
         pruner()
             .args(["index", sub1.to_str().unwrap()])
             .assert()
             .success();
 
-        // Sub-repo 2: rust crate
         let sub2 = meta.path().join("backend");
         let fixture2 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust_crate");
         std::fs::create_dir_all(&sub2).unwrap();
         copy_dir_all(&fixture2, &sub2).unwrap();
+        make_git_dir(&sub2);
         pruner()
             .args(["index", sub2.to_str().unwrap()])
             .assert()
             .success();
 
-        // Run context from meta-repo level — should discover sub-repos
+        // Run context from meta-repo level
         let output = pruner()
             .args([
                 "context",
@@ -323,7 +365,6 @@ mod multi_repo {
             stderr.contains("Multi-repo mode"),
             "should report multi-repo mode, got stderr: {stderr}"
         );
-        // Should include output from at least one sub-repo with repo header
         assert!(
             stdout.contains("# Repo:"),
             "should have repo header in output, got: {stdout}"
@@ -331,20 +372,50 @@ mod multi_repo {
     }
 
     #[test]
-    fn context_skips_irrelevant_subrepos() {
+    fn context_auto_indexes_unindexed_subrepos() {
         let meta = TempDir::new().unwrap();
 
-        // Only index one sub-repo
+        // Sub-repo with .git but NOT pre-indexed
         let sub1 = meta.path().join("webapp");
         let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
         std::fs::create_dir_all(&sub1).unwrap();
         copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
+
+        assert!(!sub1.join(".pruner/index.db").exists(), "should not be indexed yet");
+
+        // Context should auto-index the sub-repo and return results
+        let output = pruner()
+            .args(["context", meta.path().to_str().unwrap(), "login"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success(), "context should succeed");
+        assert!(sub1.join(".pruner/index.db").exists(), "sub-repo should be auto-indexed");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("# Repo:"),
+            "should have repo header, got: {stdout}"
+        );
+    }
+
+    #[test]
+    fn context_skips_non_git_dirs() {
+        let meta = TempDir::new().unwrap();
+
+        // One real sub-repo with .git
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
         pruner()
             .args(["index", sub1.to_str().unwrap()])
             .assert()
             .success();
 
-        // Create an empty dir (no index)
+        // Empty dir without .git — should be ignored
         std::fs::create_dir_all(meta.path().join("docs")).unwrap();
 
         let output = pruner()
@@ -355,8 +426,8 @@ mod multi_repo {
         assert!(output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("1 indexed sub-repos"),
-            "should find only 1 indexed sub-repo, got: {stderr}"
+            stderr.contains("1 sub-repos"),
+            "should find only 1 sub-repo, got: {stderr}"
         );
     }
 }

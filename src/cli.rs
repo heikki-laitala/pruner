@@ -759,6 +759,23 @@ fn has_pruner_section(path: &Path) -> bool {
 }
 
 fn cmd_index(repo: &Path, verbose: bool) -> Result<()> {
+    // Detect meta-repo: child directories with their own .git
+    let subrepos = discover_subrepos(repo);
+    if !subrepos.is_empty() {
+        eprintln!(
+            "Meta-repo detected: {} sub-repos found, indexing each separately",
+            subrepos.len()
+        );
+        for subrepo in &subrepos {
+            cmd_index_single(subrepo, verbose)?;
+        }
+        return Ok(());
+    }
+
+    cmd_index_single(repo, verbose)
+}
+
+fn cmd_index_single(repo: &Path, verbose: bool) -> Result<()> {
     ensure_index_dir(repo)?;
     let path = db_path(repo);
     let db = IndexDb::open(&path)?;
@@ -805,20 +822,22 @@ fn cmd_query(repo: &Path, ask: &str, json_output: bool) -> Result<()> {
 }
 
 /// Discover sub-directories that have a pruner index.
-fn discover_indexed_subrepos(parent: &Path) -> Vec<PathBuf> {
+/// Discover child directories that are git repos (have `.git`).
+fn discover_subrepos(parent: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(parent) else {
         return Vec::new();
     };
     let mut repos = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() && path.join(INDEX_DIR).join(DB_NAME).exists() {
+        if path.is_dir() && path.join(".git").exists() {
             repos.push(path);
         }
     }
     repos.sort();
     repos
 }
+
 
 fn cmd_context(
     repo: &Path,
@@ -828,13 +847,16 @@ fn cmd_context(
     mode: ContextMode,
     output: Option<&Path>,
 ) -> Result<()> {
-    // If this path has no index, check for indexed sub-repos (meta-repo pattern)
-    let db_file = db_path(repo);
-    if !db_file.exists() {
-        let subrepos = discover_indexed_subrepos(repo);
-        if !subrepos.is_empty() {
-            return cmd_context_multi(repo, &subrepos, ask, fmt, max_snippet_lines, mode);
+    // Check for meta-repo pattern: child directories with their own .git
+    let subrepos = discover_subrepos(repo);
+    if !subrepos.is_empty() {
+        // Auto-index any sub-repos that don't have an index yet
+        for subrepo in &subrepos {
+            if !subrepo.join(INDEX_DIR).join(DB_NAME).exists() {
+                cmd_index_single(subrepo, false)?;
+            }
         }
+        return cmd_context_multi(repo, &subrepos, ask, fmt, max_snippet_lines, mode);
     }
 
     let db = open_or_create_db(repo, false)?;
@@ -905,7 +927,7 @@ fn cmd_context_multi(
     mode: ContextMode,
 ) -> Result<()> {
     eprintln!(
-        "Multi-repo mode: {} indexed sub-repos found",
+        "Multi-repo mode: {} sub-repos found",
         subrepos.len()
     );
 

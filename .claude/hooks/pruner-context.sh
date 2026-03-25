@@ -56,10 +56,10 @@ HAS_INDEX=false
 if [ -e "$REPO/.git" ] || [ -d "$REPO/.pruner" ]; then
   HAS_INDEX=true
 fi
-# Check for indexed sub-repos (meta-repo pattern)
+# Check for sub-repos (meta-repo pattern): child dirs with .git or .pruner/index.db
 if [ "$HAS_INDEX" = false ]; then
   for d in "$REPO"/*/; do
-    if [ -f "${d}.pruner/index.db" ]; then
+    if [ -e "${d}.git" ] || [ -f "${d}.pruner/index.db" ]; then
       HAS_INDEX=true
       break
     fi
