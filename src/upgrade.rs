@@ -151,11 +151,11 @@ fn download_and_extract(version: &str, platform: &Platform) -> Result<PathBuf> {
 }
 
 /// Detect which integrations are currently installed by probing filesystem.
-struct DetectedIntegrations {
-    global: bool,
-    hook: bool,
-    copilot_global: bool,
-    copilot_skill: bool,
+pub(crate) struct DetectedIntegrations {
+    pub(crate) global: bool,
+    pub(crate) hook: bool,
+    pub(crate) copilot_global: bool,
+    pub(crate) copilot_skill: bool,
 }
 
 impl DetectedIntegrations {
@@ -164,7 +164,7 @@ impl DetectedIntegrations {
     }
 }
 
-fn detect_installed_integrations() -> DetectedIntegrations {
+pub(crate) fn detect_installed_integrations() -> DetectedIntegrations {
     let home = dirs::home_dir().unwrap_or_default();
 
     let claude_hook = home.join(".claude/hooks/pruner-context.sh").exists();
