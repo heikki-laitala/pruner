@@ -50,9 +50,22 @@ fi
 # Run pruner context on the project directory
 REPO="${CLAUDE_PROJECT_DIR:-.}"
 
-# Only run if this looks like a code repo (has .git or .pruner already).
+# Only run if this looks like a code repo or meta-repo with indexed sub-repos.
 # Avoids creating .pruner/ in random directories like ~ or ~/Downloads.
-if [ ! -e "$REPO/.git" ] && [ ! -d "$REPO/.pruner" ]; then
+HAS_INDEX=false
+if [ -e "$REPO/.git" ] || [ -d "$REPO/.pruner" ]; then
+  HAS_INDEX=true
+fi
+# Check for indexed sub-repos (meta-repo pattern)
+if [ "$HAS_INDEX" = false ]; then
+  for d in "$REPO"/*/; do
+    if [ -f "${d}.pruner/index.db" ]; then
+      HAS_INDEX=true
+      break
+    fi
+  done
+fi
+if [ "$HAS_INDEX" = false ]; then
   exit 0
 fi
 

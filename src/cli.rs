@@ -804,6 +804,22 @@ fn cmd_query(repo: &Path, ask: &str, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+/// Discover sub-directories that have a pruner index.
+fn discover_indexed_subrepos(parent: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut repos = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() && path.join(INDEX_DIR).join(DB_NAME).exists() {
+            repos.push(path);
+        }
+    }
+    repos.sort();
+    repos
+}
+
 fn cmd_context(
     repo: &Path,
     ask: &str,
@@ -812,6 +828,15 @@ fn cmd_context(
     mode: ContextMode,
     output: Option<&Path>,
 ) -> Result<()> {
+    // If this path has no index, check for indexed sub-repos (meta-repo pattern)
+    let db_file = db_path(repo);
+    if !db_file.exists() {
+        let subrepos = discover_indexed_subrepos(repo);
+        if !subrepos.is_empty() {
+            return cmd_context_multi(repo, &subrepos, ask, fmt, max_snippet_lines, mode);
+        }
+    }
+
     let db = open_or_create_db(repo, false)?;
     let repo_path = repo.canonicalize()?;
     let result = query::analyze_query(ask, &db)?;
@@ -865,6 +890,82 @@ fn cmd_context(
             }
             _ => println!("{}", format_context_text(&ctx)),
         }
+    }
+
+    Ok(())
+}
+
+/// Run context across multiple sub-repos and combine output.
+fn cmd_context_multi(
+    parent: &Path,
+    subrepos: &[PathBuf],
+    ask: &str,
+    fmt: &str,
+    max_snippet_lines: usize,
+    mode: ContextMode,
+) -> Result<()> {
+    eprintln!(
+        "Multi-repo mode: {} indexed sub-repos found",
+        subrepos.len()
+    );
+
+    let mut combined_text = String::new();
+    let mut combined_json: Vec<serde_json::Value> = Vec::new();
+
+    for subrepo in subrepos {
+        let db = open_or_create_db(subrepo, false)?;
+        let repo_path = subrepo.canonicalize()?;
+        let result = query::analyze_query(ask, &db)?;
+
+        // Skip sub-repos with no relevant results
+        if result.matching_files.is_empty() && result.matching_symbols.is_empty() {
+            continue;
+        }
+
+        let resolved = if mode == ContextMode::Auto {
+            detect_mode(&result)
+        } else {
+            mode
+        };
+
+        let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, resolved)?;
+
+        // Use relative path from parent for cleaner display
+        let repo_name = subrepo
+            .strip_prefix(parent)
+            .unwrap_or(subrepo)
+            .display()
+            .to_string();
+
+        match fmt {
+            "json" => {
+                let mut json: serde_json::Value =
+                    serde_json::from_str(&format_context_json(&ctx)?)?;
+                json["repo"] = serde_json::Value::String(repo_name);
+                combined_json.push(json);
+            }
+            _ => {
+                if !combined_text.is_empty() {
+                    combined_text.push('\n');
+                }
+                combined_text.push_str(&format!("# Repo: {repo_name}\n\n"));
+                if resolved == ContextMode::Brief {
+                    combined_text.push_str(&format_context_summary(&ctx));
+                } else {
+                    combined_text.push_str(&format_context_text(&ctx));
+                }
+            }
+        }
+    }
+
+    if combined_text.is_empty() && combined_json.is_empty() {
+        eprintln!("No relevant results found in any sub-repo.");
+        return Ok(());
+    }
+
+    match fmt {
+        "json" => println!("{}", serde_json::to_string_pretty(&combined_json)?),
+        _ => print!("{combined_text}"),
     }
 
     Ok(())
