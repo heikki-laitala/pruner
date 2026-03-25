@@ -167,11 +167,12 @@ enum Commands {
         #[arg(long)]
         copilot_global: bool,
     },
-    /// Remove pruner integrations (hooks, skills, config) and optionally the binary
+    /// Remove pruner integrations (hooks, skills, config) and optionally the binary.
+    /// Global uninstall scans ~/ for leftover project-level traces.
     Uninstall {
         /// Path to a project to remove per-project integrations (omit for global uninstall)
         repo: Option<PathBuf>,
-        /// Also remove .pruner/ index data (per-project only)
+        /// Remove all found traces without prompting (global) or remove .pruner/ index (per-project)
         #[arg(long)]
         purge: bool,
     },
@@ -758,7 +759,7 @@ fn cmd_status(repo: Option<&Path>) -> Result<()> {
 }
 
 /// Check if a settings.json file contains a pruner hook entry.
-fn has_pruner_hook(path: &Path) -> bool {
+pub(crate) fn has_pruner_hook(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
@@ -766,7 +767,7 @@ fn has_pruner_hook(path: &Path) -> bool {
 }
 
 /// Check if a markdown file contains a `## Pruner` section.
-fn has_pruner_section(path: &Path) -> bool {
+pub(crate) fn has_pruner_section(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
