@@ -1,4 +1,4 @@
-.PHONY: build release install run test test-quick test-unit test-integration bench lint format check clean index dev-purge dev-test-install
+.PHONY: build release install run test test-quick test-unit test-integration test-ab-unit bench lint format check clean index dev-purge dev-test-install
 
 build:
 	cargo build
@@ -20,6 +20,9 @@ test-integration:
 
 test-quick:
 	cargo test -- --quiet
+
+test-ab-unit:
+	uv run --with pytest pytest tests/test_ab_test.py -v
 
 bench:
 	cargo build --release
