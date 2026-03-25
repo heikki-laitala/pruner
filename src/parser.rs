@@ -1178,11 +1178,9 @@ fn extract_cpp_node(
                         let segments: Vec<&str> = name.rsplitn(2, "::").collect();
                         let scope = segments.get(1).unwrap_or(&"");
                         let class_name = scope.rsplit("::").next().unwrap_or(scope);
-                        if let Some(pos) = result
-                            .symbols
-                            .iter()
-                            .position(|s| s.name == class_name && (s.kind == "class" || s.kind == "struct"))
-                        {
+                        if let Some(pos) = result.symbols.iter().position(|s| {
+                            s.name == class_name && (s.kind == "class" || s.kind == "struct")
+                        }) {
                             ("method", Some(pos))
                         } else if result
                             .symbols
