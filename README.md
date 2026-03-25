@@ -386,6 +386,8 @@ Full tree-sitter parsing (symbols, imports, calls):
 - Rust
 - Go
 - Java
+- C
+- C++
 
 Basic indexing (files, metadata):
 
