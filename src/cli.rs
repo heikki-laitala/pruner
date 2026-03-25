@@ -759,17 +759,21 @@ fn has_pruner_section(path: &Path) -> bool {
 }
 
 fn cmd_index(repo: &Path, verbose: bool) -> Result<()> {
-    // Detect meta-repo: child directories with their own .git
-    let subrepos = discover_subrepos(repo);
-    if !subrepos.is_empty() {
-        eprintln!(
-            "Meta-repo detected: {} sub-repos found, indexing each separately",
-            subrepos.len()
-        );
-        for subrepo in &subrepos {
-            cmd_index_single(subrepo, verbose)?;
+    // Detect meta-repo: child directories with their own .git or index.
+    // Only activate when the parent has no existing index (avoids submodule false positives).
+    let db_file = db_path(repo);
+    if !db_file.exists() {
+        let subrepos = discover_subrepos(repo);
+        if !subrepos.is_empty() {
+            eprintln!(
+                "Meta-repo detected: {} sub-repos found, indexing each separately",
+                subrepos.len()
+            );
+            for subrepo in &subrepos {
+                cmd_index_single(subrepo, verbose)?;
+            }
+            return Ok(());
         }
-        return Ok(());
     }
 
     cmd_index_single(repo, verbose)
@@ -821,8 +825,7 @@ fn cmd_query(repo: &Path, ask: &str, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-/// Discover sub-directories that have a pruner index.
-/// Discover child directories that are git repos (have `.git`).
+/// Discover child directories that are git repos or already have a pruner index.
 fn discover_subrepos(parent: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(parent) else {
         return Vec::new();
@@ -830,7 +833,9 @@ fn discover_subrepos(parent: &Path) -> Vec<PathBuf> {
     let mut repos = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() && path.join(".git").exists() {
+        if path.is_dir()
+            && (path.join(".git").exists() || path.join(INDEX_DIR).join(DB_NAME).exists())
+        {
             repos.push(path);
         }
     }
@@ -846,16 +851,20 @@ fn cmd_context(
     mode: ContextMode,
     output: Option<&Path>,
 ) -> Result<()> {
-    // Check for meta-repo pattern: child directories with their own .git
-    let subrepos = discover_subrepos(repo);
-    if !subrepos.is_empty() {
-        // Auto-index any sub-repos that don't have an index yet
-        for subrepo in &subrepos {
-            if !subrepo.join(INDEX_DIR).join(DB_NAME).exists() {
-                cmd_index_single(subrepo, false)?;
+    // Check for meta-repo pattern: child directories with their own .git or index.
+    // Only activate when the parent has no index of its own (avoids submodule false positives).
+    let db_file = db_path(repo);
+    if !db_file.exists() {
+        let subrepos = discover_subrepos(repo);
+        if !subrepos.is_empty() {
+            // Auto-index any sub-repos that don't have an index yet
+            for subrepo in &subrepos {
+                if !subrepo.join(INDEX_DIR).join(DB_NAME).exists() {
+                    cmd_index_single(subrepo, false)?;
+                }
             }
+            return cmd_context_multi(repo, &subrepos, ask, fmt, max_snippet_lines, mode, output);
         }
-        return cmd_context_multi(repo, &subrepos, ask, fmt, max_snippet_lines, mode);
     }
 
     let db = open_or_create_db(repo, false)?;
@@ -924,6 +933,7 @@ fn cmd_context_multi(
     fmt: &str,
     max_snippet_lines: usize,
     mode: ContextMode,
+    output: Option<&Path>,
 ) -> Result<()> {
     eprintln!("Multi-repo mode: {} sub-repos found", subrepos.len());
 
@@ -983,6 +993,14 @@ fn cmd_context_multi(
 
     match fmt {
         "json" => println!("{}", serde_json::to_string_pretty(&combined_json)?),
+        "both" => {
+            let json_str = serde_json::to_string_pretty(&combined_json)?;
+            println!("{combined_text}");
+            if let Some(out) = output {
+                fs::write(out.join("context.json"), &json_str)?;
+                fs::write(out.join("context.md"), &combined_text)?;
+            }
+        }
         _ => print!("{combined_text}"),
     }
 
