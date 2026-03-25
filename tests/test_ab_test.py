@@ -1,4 +1,4 @@
-"""Unit tests for ab_test.py scheduling and parsing logic.
+"""Unit tests for ab_test.py and ab_test_copilot.py scheduling and parsing logic.
 
 Run with: uv run --with pytest pytest tests/test_ab_test.py -v
 """
@@ -12,6 +12,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from ab_test import interleaved_schedule, parse_stream, ensure_pruner_on_path, TASKS, PRUNER_BIN, WORK_DIR
+from ab_test_copilot import (
+    interleaved_schedule as copilot_interleaved_schedule,
+    ensure_pruner_on_path as copilot_ensure_pruner_on_path,
+    TASKS as COPILOT_TASKS,
+    PRUNER_BIN as COPILOT_PRUNER_BIN,
+    WORK_DIR as COPILOT_WORK_DIR,
+)
 
 
 class TestInterleavedSchedule:
@@ -207,6 +214,50 @@ class TestEnsurePrunerOnPath:
         assert result.returncode == 0
         found = Path(result.stdout.strip()).resolve()
         assert found == PRUNER_BIN.resolve()
+
+
+class TestCopilotInterleavedSchedule:
+    def test_all_tasks_both_sides(self):
+        tasks = list(COPILOT_TASKS.items())
+        schedule = copilot_interleaved_schedule(tasks)
+        assert len(schedule) == len(tasks) * 2
+
+        categories = {t[0] for t in tasks}
+        for cat in categories:
+            sides = [r[2] for r in schedule if r[0] == cat]
+            assert sorted(sides) == ["with", "without"], f"{cat} missing a side"
+
+    def test_no_adjacent_same_category(self):
+        random.seed(42)
+        tasks = list(COPILOT_TASKS.items())
+        schedule = copilot_interleaved_schedule(tasks)
+        for i in range(1, len(schedule)):
+            assert schedule[i][0] != schedule[i - 1][0], (
+                f"Adjacent same category at {i}: {schedule[i][0]}"
+            )
+
+    def test_only_with(self):
+        tasks = list(COPILOT_TASKS.items())
+        schedule = copilot_interleaved_schedule(tasks, only="with")
+        assert all(r[2] == "with" for r in schedule)
+        assert len(schedule) == len(tasks)
+
+    def test_only_without(self):
+        tasks = list(COPILOT_TASKS.items())
+        schedule = copilot_interleaved_schedule(tasks, only="without")
+        assert all(r[2] == "without" for r in schedule)
+        assert len(schedule) == len(tasks)
+
+
+class TestCopilotEnsurePrunerOnPath:
+    def test_creates_symlink(self):
+        if not COPILOT_PRUNER_BIN.exists():
+            return  # skip if not built
+        bin_dir = copilot_ensure_pruner_on_path()
+        link = bin_dir / "pruner"
+        assert link.exists()
+        assert link.is_symlink()
+        assert link.resolve() == COPILOT_PRUNER_BIN.resolve()
 
 
 if __name__ == "__main__":
