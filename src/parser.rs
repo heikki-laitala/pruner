@@ -1112,6 +1112,11 @@ fn extract_c_calls(
                         .map(|f| node_text(f, src).to_string())
                         .unwrap_or_default()
                 }
+                "qualified_identifier" | "scoped_identifier" => {
+                    // std::move, ns::foo, Type::static_fn — use rightmost segment
+                    let full = node_text(func, src);
+                    full.rsplit("::").next().unwrap_or(full).to_string()
+                }
                 _ => String::new(),
             };
             if !name.is_empty() {
@@ -1162,23 +1167,36 @@ fn extract_cpp_node(
                 if let Some(declarator) = child.child_by_field_name("declarator")
                     && let Some(name) = extract_cpp_fn_name(&declarator, src)
                 {
-                    let is_method = name.contains("::");
-                    let kind = if is_method { "method" } else { "function" };
-                    let display_name = if is_method {
-                        name.rsplit("::").next().unwrap_or(&name).to_string()
-                    } else {
-                        name.clone()
-                    };
+                    let display_name = name.rsplit("::").next().unwrap_or(&name).to_string();
                     let sig = build_c_fn_signature(&child, src);
                     let idx = result.symbols.len();
-                    let parent = if is_method {
-                        let class_name = name.split("::").next().unwrap_or("");
-                        result
+                    // For qualified names (Foo::bar, ns::Foo::bar), resolve parent
+                    // from the second-to-last segment. Classify as method if the
+                    // immediate scope matches a known class/struct, or if it's not
+                    // a known namespace (out-of-line method with class in a header).
+                    let (kind, parent) = if name.contains("::") {
+                        let segments: Vec<&str> = name.rsplitn(2, "::").collect();
+                        let scope = segments.get(1).unwrap_or(&"");
+                        let class_name = scope.rsplit("::").next().unwrap_or(scope);
+                        if let Some(pos) = result
                             .symbols
                             .iter()
-                            .position(|s| s.name == class_name && s.kind == "class")
+                            .position(|s| s.name == class_name && (s.kind == "class" || s.kind == "struct"))
+                        {
+                            ("method", Some(pos))
+                        } else if result
+                            .symbols
+                            .iter()
+                            .any(|s| s.name == class_name && s.kind == "namespace")
+                        {
+                            // Scope is a known namespace — this is a free function
+                            ("function", parent_index)
+                        } else {
+                            // Scope is unknown (likely a class declared in a header)
+                            ("method", parent_index)
+                        }
                     } else {
-                        parent_index
+                        ("function", parent_index)
                     };
                     result.symbols.push(Symbol {
                         name: display_name,
@@ -1230,7 +1248,7 @@ fn extract_cpp_node(
                 extract_c_type(&child, src, result);
             }
             "namespace_definition" => {
-                if let Some(name_node) = child.child_by_field_name("name") {
+                let ns_parent = if let Some(name_node) = child.child_by_field_name("name") {
                     let idx = result.symbols.len();
                     result.symbols.push(Symbol {
                         name: node_text(name_node, src).to_string(),
@@ -1240,9 +1258,13 @@ fn extract_cpp_node(
                         parent_index,
                         signature: None,
                     });
-                    if let Some(body) = child.child_by_field_name("body") {
-                        extract_cpp_node(body, src, result, Some(idx));
-                    }
+                    Some(idx)
+                } else {
+                    // Anonymous namespace — recurse with current parent
+                    parent_index
+                };
+                if let Some(body) = child.child_by_field_name("body") {
+                    extract_cpp_node(body, src, result, ns_parent);
                 }
             }
             "type_definition" => {
@@ -2440,6 +2462,110 @@ void process() {
         let result = parse_source(src, Language::Cpp)?;
         assert!(result.calls.iter().any(|c| c.callee_name == "compute"));
         assert!(result.calls.iter().any(|c| c.callee_name == "sendMessage"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_qualified_free_function_is_function() -> anyhow::Result<()> {
+        let src = r#"
+namespace util {
+    void log();
+}
+
+void util::log() {
+    printf("hello");
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        let log_fn = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "log" && s.kind == "function")
+            .expect("util::log should be classified as function, not method");
+        // Should be parented to namespace, not treated as a class method
+        assert!(
+            log_fn.parent_index.is_none()
+                || result.symbols[log_fn.parent_index.unwrap()].kind == "namespace",
+            "free function should not be parented to a class"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_deeply_qualified_method_parent() -> anyhow::Result<()> {
+        let src = r#"
+namespace auth {
+    class AuthService {};
+}
+
+void auth::AuthService::authenticate() {
+    validate();
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        let method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "authenticate")
+            .expect("should find authenticate");
+        assert_eq!(method.kind, "method");
+        // Parent should be AuthService, not auth
+        if let Some(pi) = method.parent_index {
+            assert_eq!(result.symbols[pi].name, "AuthService");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_anonymous_namespace() -> anyhow::Result<()> {
+        let src = r#"
+namespace {
+    void helper() {
+        do_work();
+    }
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "helper" && s.kind == "function"),
+            "should find function inside anonymous namespace, got: {:?}",
+            result.symbols
+        );
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "do_work"),
+            "should find calls inside anonymous namespace"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_qualified_calls() -> anyhow::Result<()> {
+        let src = r#"
+void process() {
+    std::move(x);
+    ns::foo(42);
+    Type::static_fn();
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "move"),
+            "should capture std::move, got: {:?}",
+            result.calls
+        );
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "foo"),
+            "should capture ns::foo, got: {:?}",
+            result.calls
+        );
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "static_fn"),
+            "should capture Type::static_fn, got: {:?}",
+            result.calls
+        );
         Ok(())
     }
 }
