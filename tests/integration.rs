@@ -1300,14 +1300,15 @@ mod upgrade {
         let output = pruner().args(["upgrade", "--check"]).output().unwrap();
 
         // Allow network failures (GitHub API rate limiting in CI)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{stdout}{stderr}");
         if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
-                stdout.contains("v0.1.") || stdout.contains("up to date"),
-                "unexpected output: {stdout}"
+                combined.contains("v0.1.") || combined.contains("up to date"),
+                "unexpected output: stdout={stdout} stderr={stderr}"
             );
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 stderr.contains("403") || stderr.contains("Failed to fetch"),
                 "unexpected error: {stderr}"
