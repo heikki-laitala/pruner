@@ -15,6 +15,8 @@ pub enum Language {
     Rust,
     Go,
     Java,
+    C,
+    Cpp,
 }
 
 /// Detect language from file extension. Returns None for unsupported extensions.
@@ -28,6 +30,8 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "rs" => Some(Language::Rust),
         "go" => Some(Language::Go),
         "java" => Some(Language::Java),
+        "c" | "h" => Some(Language::C),
+        "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hxx" | "hh" | "h++" => Some(Language::Cpp),
         _ => None,
     }
 }
@@ -172,9 +176,30 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_language_c() {
+        assert_eq!(detect_language(Path::new("main.c")), Some(Language::C));
+        assert_eq!(detect_language(Path::new("header.h")), Some(Language::C));
+    }
+
+    #[test]
+    fn test_detect_language_cpp() {
+        assert_eq!(detect_language(Path::new("main.cpp")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("main.cc")), Some(Language::Cpp));
+        assert_eq!(detect_language(Path::new("main.cxx")), Some(Language::Cpp));
+        assert_eq!(
+            detect_language(Path::new("header.hpp")),
+            Some(Language::Cpp)
+        );
+        assert_eq!(
+            detect_language(Path::new("header.hxx")),
+            Some(Language::Cpp)
+        );
+        assert_eq!(detect_language(Path::new("header.hh")), Some(Language::Cpp));
+    }
+
+    #[test]
     fn test_detect_language_unsupported() {
         assert_eq!(detect_language(Path::new("file.rb")), None);
-        assert_eq!(detect_language(Path::new("file.c")), None);
     }
 
     #[test]

@@ -1572,6 +1572,148 @@ mod java_project {
     }
 }
 
+mod c_project {
+    use super::*;
+
+    #[test]
+    fn index_succeeds() {
+        let dir = setup_fixture("c_project");
+        let path = dir.path().to_str().unwrap().to_string();
+        pruner().args(["index", &path]).assert().success();
+    }
+
+    #[test]
+    fn finds_c_functions() {
+        let dir = setup_fixture("c_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "authenticate"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("function"))
+            .stdout(predicate::str::contains("auth.c"));
+    }
+
+    #[test]
+    fn finds_c_structs() {
+        let dir = setup_fixture("c_project");
+        let path = index_fixture(&dir);
+
+        // User is a typedef in user.h
+        pruner()
+            .args(["show-symbol", &path, "User"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("type"));
+    }
+
+    #[test]
+    fn detects_c_test_files() {
+        let dir = setup_fixture("c_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json(&path, "authenticate");
+        let tests = json["relevant_tests"].as_array().unwrap();
+
+        assert!(
+            tests
+                .iter()
+                .any(|t| t["path"].as_str().unwrap_or("").contains("test_auth.c")),
+            "should detect C test file"
+        );
+    }
+
+    #[test]
+    fn context_has_execution_paths() {
+        let dir = setup_fixture("c_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "authenticate");
+        let paths = json["execution_paths"].as_array().unwrap();
+
+        assert!(
+            !paths.is_empty(),
+            "should have execution paths from authenticate"
+        );
+    }
+}
+
+mod cpp_project {
+    use super::*;
+
+    #[test]
+    fn index_succeeds() {
+        let dir = setup_fixture("cpp_project");
+        let path = dir.path().to_str().unwrap().to_string();
+        pruner().args(["index", &path]).assert().success();
+    }
+
+    #[test]
+    fn finds_cpp_classes() {
+        let dir = setup_fixture("cpp_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "AuthService"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("class"));
+    }
+
+    #[test]
+    fn finds_cpp_methods() {
+        let dir = setup_fixture("cpp_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "authenticate"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("method"));
+    }
+
+    #[test]
+    fn finds_cpp_namespaces() {
+        let dir = setup_fixture("cpp_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "auth"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("namespace"));
+    }
+
+    #[test]
+    fn context_includes_snippets() {
+        let dir = setup_fixture("cpp_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "authenticate");
+        let snippets = json["snippets"].as_array().unwrap();
+
+        assert!(!snippets.is_empty(), "should include C++ code snippets");
+    }
+
+    #[test]
+    fn detects_cpp_test_files() {
+        let dir = setup_fixture("cpp_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "authenticate");
+        let files = json["key_files"].as_array().unwrap();
+
+        assert!(
+            files.iter().any(
+                |f| f["path"].as_str().unwrap_or("").contains("auth_test.cpp")
+                    && f["is_test"].as_bool().unwrap_or(false)
+            ),
+            "should detect C++ test file as test"
+        );
+    }
+}
+
 #[cfg(test)]
 mod upgrade {
     use assert_cmd::Command;
