@@ -248,6 +248,27 @@ class TestCopilotInterleavedSchedule:
         assert all(r[2] == "without" for r in schedule)
         assert len(schedule) == len(tasks)
 
+    def test_multi_run_interleaved(self):
+        """With --runs 2, repeated runs should also be interleaved."""
+        tasks = [("a", "p1"), ("b", "p2")]
+        for seed in range(20):
+            random.seed(seed)
+            schedule = copilot_interleaved_schedule(tasks, runs=2)
+            # 2 tasks * 2 sides * 2 runs = 8 items
+            assert len(schedule) == 8
+            for i in range(1, len(schedule)):
+                assert schedule[i][0] != schedule[i - 1][0], (
+                    f"seed={seed}: adjacent same category at {i}: {schedule[i][0]}"
+                )
+
+    def test_returns_4_tuples(self):
+        tasks = [("narrow_fix", "prompt")]
+        schedule = copilot_interleaved_schedule(tasks)
+        for item in schedule:
+            assert len(item) == 4, f"Expected 4-tuple, got {len(item)}-tuple"
+            cat, prompt, side, run_idx = item
+            assert run_idx == 1
+
 
 class TestCopilotEnsurePrunerOnPath:
     def test_creates_symlink(self):
