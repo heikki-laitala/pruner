@@ -84,24 +84,31 @@ fn clean_settings_json(path: &Path) {
         if let Some(submit) = hooks.get_mut("UserPromptSubmit")
             && let Some(arr) = submit.as_array_mut()
         {
-            let before = arr.len();
+            // First pass: filter individual pruner hooks within each entry
+            for entry in arr.iter_mut() {
+                if let Some(hook_list) = entry.get_mut("hooks")
+                    && let Some(hook_arr) = hook_list.as_array_mut()
+                {
+                    let before = hook_arr.len();
+                    hook_arr.retain(|h| {
+                        let is_pruner = h
+                            .get("command")
+                            .and_then(|c| c.as_str())
+                            .is_some_and(|c| c.contains("pruner"));
+                        !is_pruner
+                    });
+                    if hook_arr.len() < before {
+                        changed = true;
+                    }
+                }
+            }
+            // Second pass: drop entries whose hooks array is now empty
             arr.retain(|entry| {
-                // Remove entries whose hooks contain "pruner" in the command
-                let dominated_by_pruner = entry
+                entry
                     .get("hooks")
                     .and_then(|h| h.as_array())
-                    .is_some_and(|hooks| {
-                        hooks.iter().all(|h| {
-                            h.get("command")
-                                .and_then(|c| c.as_str())
-                                .is_some_and(|c| c.contains("pruner"))
-                        })
-                    });
-                !dominated_by_pruner
+                    .is_none_or(|a| !a.is_empty())
             });
-            if arr.len() < before {
-                changed = true;
-            }
             // If UserPromptSubmit is now empty, remove it
             if arr.is_empty() {
                 hooks.as_object_mut().map(|m| m.remove("UserPromptSubmit"));
@@ -344,5 +351,42 @@ mod tests {
             result["other_setting"], true,
             "other settings should remain"
         );
+    }
+
+    #[test]
+    fn test_clean_settings_json_mixed_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "matcher": "",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/home/user/.claude/hooks/pruner-context.sh",
+                            "timeout": 60
+                        },
+                        {
+                            "type": "command",
+                            "command": "/home/user/.claude/hooks/other-tool.sh",
+                            "timeout": 30
+                        }
+                    ]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+        clean_settings_json(&path);
+
+        let content = fs::read_to_string(&path).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
+        // The entry should still exist with just the non-pruner hook
+        let hooks = result["hooks"]["UserPromptSubmit"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert!(hooks[0]["command"].as_str().unwrap().contains("other-tool"));
     }
 }
