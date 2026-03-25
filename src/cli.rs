@@ -956,7 +956,11 @@ fn cmd_context(
     Ok(())
 }
 
+/// Minimum fraction of top subrepo score a subrepo must reach to be included.
+const MULTI_REPO_SCORE_THRESHOLD: f64 = 0.3;
+
 /// Run context across multiple sub-repos and combine output.
+/// Scores each subrepo by relevance, drops low-scoring ones, and sorts by score.
 fn cmd_context_multi(
     parent: &Path,
     subrepos: &[PathBuf],
@@ -968,28 +972,85 @@ fn cmd_context_multi(
 ) -> Result<()> {
     eprintln!("Multi-repo mode: {} sub-repos found", subrepos.len());
 
-    let mut combined_text = String::new();
-    let mut combined_json: Vec<serde_json::Value> = Vec::new();
-
+    // Phase 1: score all subrepos
+    let mut scored: Vec<(&PathBuf, query::QueryResult, i32)> = Vec::new();
     for subrepo in subrepos {
         let db = open_or_create_db(subrepo, false)?;
-        let repo_path = subrepo.canonicalize()?;
         let result = query::analyze_query(ask, &db)?;
 
-        // Skip sub-repos with no relevant results
         if result.matching_files.is_empty() && result.matching_symbols.is_empty() {
             continue;
         }
 
+        let score = result.relevance_score();
+        scored.push((subrepo, result, score));
+    }
+
+    if scored.is_empty() {
+        eprintln!("No relevant results found in any sub-repo.");
+        return Ok(());
+    }
+
+    // Phase 2: filter out low-scoring subrepos relative to the best
+    let max_score = scored.iter().map(|(_, _, s)| *s).max().unwrap_or(0);
+    let threshold = (max_score as f64 * MULTI_REPO_SCORE_THRESHOLD) as i32;
+
+    let mut skipped_names: Vec<String> = Vec::new();
+    scored.retain(|(subrepo, _, score)| {
+        let name = subrepo
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if *score < threshold {
+            eprintln!("  Skipping {name} (score {score} < threshold {threshold})");
+            skipped_names.push(name);
+            false
+        } else {
+            eprintln!("  Including {name} (score {score})");
+            true
+        }
+    });
+
+    // Phase 3: sort by score descending (most relevant first)
+    scored.sort_by(|a, b| b.2.cmp(&a.2));
+
+    // Phase 4: generate context output with multi-repo header
+    let mut combined_text = String::new();
+    let mut combined_json: Vec<serde_json::Value> = Vec::new();
+
+    // Inject multi-repo awareness header for the LLM
+    let included_names: Vec<String> = scored
+        .iter()
+        .map(|(s, _, _)| {
+            s.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default()
+        })
+        .collect();
+
+    if fmt != "json" {
+        combined_text.push_str("**Multi-repo context:** results from ");
+        combined_text.push_str(&included_names.join(", "));
+        if !skipped_names.is_empty() {
+            combined_text.push_str(&format!(
+                " (skipped low-relevance: {})",
+                skipped_names.join(", ")
+            ));
+        }
+        combined_text.push_str("\n\n");
+    }
+
+    for (subrepo, result, _score) in &scored {
+        let repo_path = subrepo.canonicalize()?;
+
         let resolved = if mode == ContextMode::Auto {
-            detect_mode(&result)
+            detect_mode(result)
         } else {
             mode
         };
 
-        let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, resolved)?;
+        let ctx = context::generate_context(result, &repo_path, max_snippet_lines, resolved)?;
 
-        // Use relative path from parent for cleaner display
         let repo_name = subrepo
             .strip_prefix(parent)
             .unwrap_or(subrepo)
@@ -1017,15 +1078,24 @@ fn cmd_context_multi(
         }
     }
 
-    if combined_text.is_empty() && combined_json.is_empty() {
-        eprintln!("No relevant results found in any sub-repo.");
-        return Ok(());
-    }
-
     match fmt {
-        "json" => println!("{}", serde_json::to_string_pretty(&combined_json)?),
+        "json" => {
+            let wrapper = serde_json::json!({
+                "multi_repo": true,
+                "included": included_names,
+                "skipped": skipped_names,
+                "repos": combined_json,
+            });
+            println!("{}", serde_json::to_string_pretty(&wrapper)?);
+        }
         "both" => {
-            let json_str = serde_json::to_string_pretty(&combined_json)?;
+            let wrapper = serde_json::json!({
+                "multi_repo": true,
+                "included": included_names,
+                "skipped": skipped_names,
+                "repos": combined_json,
+            });
+            let json_str = serde_json::to_string_pretty(&wrapper)?;
             println!("{combined_text}");
             if let Some(out) = output {
                 fs::write(out.join("context.json"), &json_str)?;
