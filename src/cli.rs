@@ -761,6 +761,15 @@ fn cmd_status(repo: Option<&Path>) -> Result<()> {
         println!("Tip: run `pruner status <path>` to see per-project integrations.");
     }
 
+    // Check for updates (silently ignore network errors)
+    if let Ok(latest) = crate::upgrade::check_latest_version()
+        && crate::upgrade::is_newer(&version, &latest)
+    {
+        println!();
+        println!("Update available: {version} -> {latest}");
+        println!("Run `pruner upgrade` to install.");
+    }
+
     Ok(())
 }
 
