@@ -275,10 +275,10 @@ fn infer_project(path: &Path) -> PathBuf {
     const MARKERS: &[&str] = &[".claude", ".copilot", ".github", ".pruner"];
     // Walk ancestors; the project root is the parent of the first known marker dir.
     for ancestor in path.ancestors() {
-        if let Some(name) = ancestor.file_name() {
-            if MARKERS.iter().any(|m| name == *m) {
-                return ancestor.parent().unwrap_or(ancestor).to_path_buf();
-            }
+        if let Some(name) = ancestor.file_name()
+            && MARKERS.iter().any(|m| name == *m)
+        {
+            return ancestor.parent().unwrap_or(ancestor).to_path_buf();
         }
     }
     // Fallback: parent directory
