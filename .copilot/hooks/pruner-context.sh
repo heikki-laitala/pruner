@@ -26,7 +26,7 @@ fi
 
 # Only run if this looks like a code repo (has .git or .pruner already).
 # Avoids creating .pruner/ in random directories like ~ or ~/Downloads.
-if [ ! -d "$ROOT/.git" ] && [ ! -d "$ROOT/.pruner" ]; then
+if [ ! -e "$ROOT/.git" ] && [ ! -d "$ROOT/.pruner" ]; then
   exit 0
 fi
 
