@@ -48,8 +48,12 @@ fn file_mtime(path: &Path) -> i64 {
 
 /// Full re-index: clears the database and indexes everything.
 pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<IndexStats> {
+    db.set_synchronous_normal()?;
+    db.begin_transaction()?;
     db.clear()?;
-    index_files(repo_path, db, verbose, None)
+    let stats = index_files(repo_path, db, verbose, None)?;
+    db.commit_transaction()?;
+    Ok(stats)
 }
 
 /// Incremental index: only re-parses new/modified files, removes deleted ones.
@@ -114,6 +118,9 @@ pub fn index_repo_incremental(
         return Ok(None);
     }
 
+    db.set_synchronous_normal()?;
+    db.begin_transaction()?;
+
     let deleted_count = existing.keys().filter(|p| !seen_paths.contains(*p)).count();
 
     // Re-index only changed files, then rebuild all edges
@@ -121,6 +128,8 @@ pub fn index_repo_incremental(
 
     stats.unchanged = seen_paths.len() - stats.files;
     stats.deleted = deleted_count;
+
+    db.commit_transaction()?;
 
     Ok(Some(stats))
 }
