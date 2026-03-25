@@ -15,6 +15,7 @@ from ab_test import interleaved_schedule, parse_stream, ensure_pruner_on_path, T
 from ab_test_copilot import (
     interleaved_schedule as copilot_interleaved_schedule,
     ensure_pruner_on_path as copilot_ensure_pruner_on_path,
+    parse_jsonl as copilot_parse_jsonl,
     TASKS as COPILOT_TASKS,
     PRUNER_BIN as COPILOT_PRUNER_BIN,
     WORK_DIR as COPILOT_WORK_DIR,
@@ -268,6 +269,74 @@ class TestCopilotInterleavedSchedule:
             assert len(item) == 4, f"Expected 4-tuple, got {len(item)}-tuple"
             cat, prompt, side, run_idx = item
             assert run_idx == 1
+
+
+class TestCopilotParseJsonl:
+    def _make_stream(self, tool_names=None, premium_requests=1,
+                     total_api_ms=5000, session_ms=10000):
+        lines = []
+        # Assistant message with tool requests
+        tool_requests = [{"name": n} for n in (tool_names or [])]
+        lines.append(json.dumps({
+            "type": "assistant.message",
+            "data": {"toolRequests": tool_requests},
+        }))
+        # Tool execution complete events
+        for n in (tool_names or []):
+            lines.append(json.dumps({
+                "type": "tool.execution_complete",
+                "data": {"toolName": n, "success": True},
+            }))
+        # Result event
+        lines.append(json.dumps({
+            "type": "result",
+            "usage": {
+                "totalApiDurationMs": total_api_ms,
+                "sessionDurationMs": session_ms,
+                "premiumRequests": premium_requests,
+            },
+        }))
+        return "\n".join(lines)
+
+    def test_basic_parse(self):
+        stream = self._make_stream(tool_names=["Grep", "Read"], premium_requests=1)
+        result = copilot_parse_jsonl(stream, "test")
+        assert result is not None
+        assert result["tool_calls"] == 2
+        assert result["tool_names"] == ["Grep", "Read"]
+        assert result["premium_requests"] == 1
+        assert result["assistant_messages"] == 1
+
+    def test_empty_input(self):
+        result = copilot_parse_jsonl("", "test")
+        assert result is None
+
+    def test_no_tools(self):
+        stream = self._make_stream(tool_names=[])
+        result = copilot_parse_jsonl(stream, "test")
+        assert result is not None
+        assert result["tool_calls"] == 0
+        assert result["tool_names"] == []
+
+    def test_invalid_json_skipped(self):
+        stream = "not json\n" + self._make_stream(tool_names=["Grep"])
+        result = copilot_parse_jsonl(stream, "test")
+        assert result is not None
+        assert result["tool_calls"] == 1
+
+    def test_tool_exec_complete_tracked(self):
+        stream = self._make_stream(tool_names=["Grep", "Read"])
+        result = copilot_parse_jsonl(stream, "test")
+        assert len(result["tool_exec_complete"]) == 2
+        assert result["tool_exec_complete"][0]["tool"] == "Grep"
+        assert result["tool_exec_complete"][0]["success"] is True
+
+    def test_usage_fields(self):
+        stream = self._make_stream(total_api_ms=3000, session_ms=8000, premium_requests=2)
+        result = copilot_parse_jsonl(stream, "test")
+        assert result["total_api_duration_ms"] == 3000
+        assert result["session_duration_ms"] == 8000
+        assert result["premium_requests"] == 2
 
 
 class TestCopilotEnsurePrunerOnPath:
