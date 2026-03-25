@@ -103,28 +103,18 @@ fn clean_settings_json(path: &Path) {
                 }
                 // If UserPromptSubmit is now empty, remove it
                 if arr.is_empty() {
-                    hooks
-                        .as_object_mut()
-                        .map(|m| m.remove("UserPromptSubmit"));
+                    hooks.as_object_mut().map(|m| m.remove("UserPromptSubmit"));
                 }
             }
         }
         // If hooks object is now empty, remove it
-        if hooks
-            .as_object()
-            .is_some_and(|m| m.is_empty())
-        {
-            settings
-                .as_object_mut()
-                .map(|m| m.remove("hooks"));
+        if hooks.as_object().is_some_and(|m| m.is_empty()) {
+            settings.as_object_mut().map(|m| m.remove("hooks"));
         }
     }
 
     if changed {
-        if settings
-            .as_object()
-            .is_some_and(|m| m.is_empty())
-        {
+        if settings.as_object().is_some_and(|m| m.is_empty()) {
             let _ = fs::remove_file(path);
             println!("  Removed {} (was pruner-only)", path.display());
         } else {
@@ -205,8 +195,8 @@ fn uninstall_copilot_project(repo: &Path) {
 
 /// Main uninstall entrypoint.
 pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
     if let Some(repo) = repo {
         // Per-project uninstall
@@ -234,8 +224,7 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
         uninstall_copilot_global(&home);
 
         // Remove the binary
-        let exe = std::env::current_exe()
-            .context("Cannot determine binary path")?;
+        let exe = std::env::current_exe().context("Cannot determine binary path")?;
         println!("\nBinary: {}", exe.display());
 
         // On Windows, self-delete isn't straightforward. Use self_replace to swap
@@ -298,7 +287,10 @@ mod tests {
         fs::write(&path, "## Pruner\n\nPruner stuff only.\n").unwrap();
 
         assert!(remove_pruner_section(&path));
-        assert!(!path.exists(), "File should be deleted when only pruner section");
+        assert!(
+            !path.exists(),
+            "File should be deleted when only pruner section"
+        );
     }
 
     #[test]
@@ -348,6 +340,9 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
         let result: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(result.get("hooks").is_none(), "hooks should be removed");
-        assert_eq!(result["other_setting"], true, "other settings should remain");
+        assert_eq!(
+            result["other_setting"], true,
+            "other settings should remain"
+        );
     }
 }
