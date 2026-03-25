@@ -299,6 +299,35 @@ const SCAN_SKIP_DIRS: &[&str] = &[
     "Library",
 ];
 
+/// Check if a settings.json contains a pruner hook command (exact match on `pruner-context`).
+fn has_pruner_hook_entry(path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    // Walk hooks.UserPromptSubmit[].hooks[].command looking for pruner-context
+    settings
+        .get("hooks")
+        .and_then(|h| h.get("UserPromptSubmit"))
+        .and_then(|s| s.as_array())
+        .is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .is_some_and(|hooks| {
+                        hooks.iter().any(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|c| c.contains("pruner-context"))
+                        })
+                    })
+            })
+        })
+}
+
 /// Check if a directory entry is a pruner trace.
 fn match_dir_trace(path: &Path, name: &str) -> Option<TraceKind> {
     match name {
@@ -323,7 +352,15 @@ fn match_dir_trace(path: &Path, name: &str) -> Option<TraceKind> {
 fn match_file_trace(path: &Path, name: &str) -> Option<TraceKind> {
     match name {
         "pruner-context.sh" | "pruner-context.json" | "pruner-context.ps1" => {
-            Some(TraceKind::HookFile)
+            // Only match hook files inside known integration directories
+            let in_hooks_dir = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == "hooks");
+            let parent_of_hooks = path.ancestors().nth(2).and_then(|p| p.file_name());
+            let in_integration_dir = parent_of_hooks
+                .is_some_and(|n| n == ".claude" || n == ".copilot" || n == ".github");
+            (in_hooks_dir && in_integration_dir).then_some(TraceKind::HookFile)
         }
         "CLAUDE.md" | "copilot-instructions.md" => {
             crate::cli::has_pruner_section(path).then_some(TraceKind::PrunerSection)
@@ -333,7 +370,7 @@ fn match_file_trace(path: &Path, name: &str) -> Option<TraceKind> {
                 .parent()
                 .and_then(|p| p.file_name())
                 .is_some_and(|n| n == ".claude");
-            (in_claude && crate::cli::has_pruner_hook(path)).then_some(TraceKind::SettingsHook)
+            (in_claude && has_pruner_hook_entry(path)).then_some(TraceKind::SettingsHook)
         }
         ".gitignore" => {
             let content = fs::read_to_string(path).ok()?;
@@ -610,6 +647,19 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_skips_hook_file_outside_integration_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        // A pruner-context.sh in a random directory should NOT be detected
+        create_file(&dir.path().join("myproject"), "scripts/pruner-context.sh");
+
+        let traces = scan_for_traces(dir.path());
+        assert!(
+            traces.is_empty(),
+            "hook files outside integration dirs should be skipped"
+        );
+    }
+
+    #[test]
     fn test_scan_finds_pruner_section_in_claude_md() {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("myproject");
@@ -650,6 +700,33 @@ mod tests {
         assert_eq!(traces.len(), 1);
         assert_eq!(traces[0].kind, TraceKind::SettingsHook);
         assert_eq!(traces[0].project, project);
+    }
+
+    #[test]
+    fn test_scan_skips_non_pruner_hook_in_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("myproject");
+        fs::create_dir_all(project.join(".claude")).unwrap();
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "command": "superpruner-tool.sh"
+                    }]
+                }]
+            }
+        });
+        fs::write(
+            project.join(".claude/settings.json"),
+            serde_json::to_string(&settings).unwrap(),
+        )
+        .unwrap();
+
+        let traces = scan_for_traces(dir.path());
+        assert!(
+            traces.is_empty(),
+            "settings with non-pruner hooks should not be detected"
+        );
     }
 
     #[test]
