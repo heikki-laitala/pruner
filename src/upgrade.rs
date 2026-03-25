@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const REPO: &str = "heikki-laitala/pruner";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,10 +35,16 @@ fn detect_platform() -> Result<Platform> {
     Ok(Platform { os, arch })
 }
 
-/// Fetch the latest release tag from GitHub.
+/// Fetch the latest release tag from GitHub (5 s timeout).
 pub fn check_latest_version() -> Result<String> {
+    let agent = ureq::Agent::new_with_config(
+        ureq::config::Config::builder()
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build(),
+    );
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let body: serde_json::Value = ureq::get(&url)
+    let body: serde_json::Value = agent
+        .get(&url)
         .header("User-Agent", &format!("pruner/{CURRENT_VERSION}"))
         .header("Accept", "application/vnd.github.v3+json")
         .call()
