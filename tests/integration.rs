@@ -219,6 +219,61 @@ mod uninstall {
 }
 
 // ============================================================================
+// Status
+// ============================================================================
+
+mod status {
+    use super::*;
+
+    #[test]
+    fn status_shows_version() {
+        pruner()
+            .args(["status"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("pruner v"));
+    }
+
+    #[test]
+    fn status_shows_global_section() {
+        pruner()
+            .args(["status"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Global integrations:"));
+    }
+
+    #[test]
+    fn status_with_repo_shows_project() {
+        let dir = setup_fixture("python_webapp");
+        let path = dir.path().to_str().unwrap();
+
+        // Init first
+        pruner().args(["init", path, "--hook"]).assert().success();
+
+        let output = pruner().args(["status", path]).assert().success();
+
+        output
+            .stdout(predicate::str::contains("Claude Code:"))
+            .stdout(predicate::str::contains("Index:"))
+            .stdout(predicate::str::contains(".gitignore:"));
+    }
+
+    #[test]
+    fn status_shows_not_installed_for_empty_project() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        pruner()
+            .args(["status", path])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("not installed"))
+            .stdout(predicate::str::contains("not found"));
+    }
+}
+
+// ============================================================================
 // Hook scripts
 // ============================================================================
 

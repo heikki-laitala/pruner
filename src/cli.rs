@@ -184,6 +184,11 @@ enum Commands {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Show current pruner installation status (global and per-project integrations)
+    Status {
+        /// Path to the project (omit to show only global status)
+        repo: Option<PathBuf>,
+    },
     /// Estimate realistic Claude Code token usage with and without pruner
     Estimate {
         /// Path to the repository
@@ -255,6 +260,7 @@ pub fn run() -> Result<()> {
         Commands::ShowFile { repo, path } => cmd_show_file(&repo, &path),
         Commands::ShowSymbol { repo, name } => cmd_show_symbol(&repo, &name),
         Commands::Stats { repo } => cmd_stats(&repo),
+        Commands::Status { repo } => cmd_status(repo.as_deref()),
         Commands::Uninstall { repo, purge } => {
             crate::uninstall::cmd_uninstall(repo.as_deref(), purge)
         }
@@ -597,6 +603,159 @@ fn cmd_init(
     }
 
     Ok(())
+}
+
+fn cmd_status(repo: Option<&Path>) -> Result<()> {
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    println!("pruner {version}");
+    println!();
+
+    // --- Global integrations ---
+    println!("Global integrations:");
+
+    let claude_dir = home.join(".claude");
+    let claude_skill = claude_dir.join("skills/pruner/SKILL.md").exists();
+    let claude_hook = claude_dir.join("hooks/pruner-context.sh").exists();
+    let claude_settings_has_hook = has_pruner_hook(&claude_dir.join("settings.json"));
+
+    if claude_skill || claude_hook {
+        print!("  Claude Code: skill");
+        if claude_hook || claude_settings_has_hook {
+            print!(" + hook");
+        }
+        println!("  (~/.claude/)");
+    } else {
+        println!("  Claude Code: not installed");
+    }
+
+    let copilot_dir = home.join(".copilot");
+    let copilot_skill = copilot_dir.join("skills/pruner/SKILL.md").exists();
+    let copilot_instructions = has_pruner_section(&copilot_dir.join("copilot-instructions.md"));
+
+    if copilot_skill || copilot_instructions {
+        print!("  Copilot:     skill");
+        if copilot_instructions {
+            print!(" + instructions");
+        }
+        println!("  (~/.copilot/)");
+    } else {
+        println!("  Copilot:     not installed");
+    }
+
+    // --- Per-project integrations ---
+    if let Some(repo) = repo {
+        println!();
+        println!("Project: {}", repo.display());
+
+        let claude_dir = repo.join(".claude");
+        let proj_claude_skill = claude_dir.join("skills/pruner/SKILL.md").exists();
+        let proj_claude_hook = claude_dir.join("hooks/pruner-context.sh").exists();
+        let proj_claude_settings = has_pruner_hook(&claude_dir.join("settings.json"));
+        let proj_claude_md = has_pruner_section(&repo.join("CLAUDE.md"));
+
+        if proj_claude_skill || proj_claude_hook || proj_claude_md {
+            let mut parts = Vec::new();
+            if proj_claude_skill {
+                parts.push("skill");
+            }
+            if proj_claude_hook || proj_claude_settings {
+                parts.push("hook");
+            }
+            if proj_claude_md {
+                parts.push("CLAUDE.md");
+            }
+            println!("  Claude Code: {}", parts.join(" + "));
+        } else {
+            println!("  Claude Code: not installed");
+        }
+
+        let copilot_dir = repo.join(".copilot");
+        let github_dir = repo.join(".github");
+        let proj_copilot_skill = copilot_dir.join("skills/pruner/SKILL.md").exists();
+        let proj_copilot_instructions =
+            has_pruner_section(&github_dir.join("copilot-instructions.md"));
+        let proj_copilot_hook = github_dir.join("hooks/pruner-context.json").exists();
+
+        if proj_copilot_skill || proj_copilot_instructions || proj_copilot_hook {
+            let mut parts = Vec::new();
+            if proj_copilot_skill {
+                parts.push("skill");
+            }
+            if proj_copilot_hook {
+                parts.push("hook");
+            }
+            if proj_copilot_instructions {
+                parts.push("instructions");
+            }
+            println!("  Copilot:     {}", parts.join(" + "));
+        } else {
+            println!("  Copilot:     not installed");
+        }
+
+        // Index status
+        let index_path = repo.join(INDEX_DIR).join(DB_NAME);
+        if index_path.exists() {
+            let metadata = std::fs::metadata(&index_path)?;
+            let modified = metadata.modified()?;
+            let ago = SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or_default();
+            let ago_str = if ago.as_secs() < 60 {
+                "just now".to_string()
+            } else if ago.as_secs() < 3600 {
+                format!("{}m ago", ago.as_secs() / 60)
+            } else if ago.as_secs() < 86400 {
+                format!("{}h ago", ago.as_secs() / 3600)
+            } else {
+                format!("{}d ago", ago.as_secs() / 86400)
+            };
+            println!(
+                "  Index:       {} (updated {})",
+                index_path.display(),
+                ago_str
+            );
+        } else {
+            println!("  Index:       not found (run `pruner index`)");
+        }
+
+        // .gitignore
+        let gitignore = repo.join(".gitignore");
+        if gitignore.exists() {
+            let content = fs::read_to_string(&gitignore).unwrap_or_default();
+            let has_entry = content
+                .lines()
+                .any(|l| l.trim() == ".pruner/" || l.trim() == ".pruner");
+            if has_entry {
+                println!("  .gitignore:  .pruner/ entry present");
+            } else {
+                println!("  .gitignore:  .pruner/ entry MISSING");
+            }
+        }
+    } else {
+        println!();
+        println!("Tip: run `pruner status <path>` to see per-project integrations.");
+    }
+
+    Ok(())
+}
+
+/// Check if a settings.json file contains a pruner hook entry.
+fn has_pruner_hook(path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    content.contains("pruner")
+}
+
+/// Check if a markdown file contains a `## Pruner` section.
+fn has_pruner_section(path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    content.contains("## Pruner")
 }
 
 fn cmd_index(repo: &Path, verbose: bool) -> Result<()> {
