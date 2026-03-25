@@ -18,6 +18,7 @@ Examples:
 import argparse
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -278,7 +279,10 @@ def run_copilot(prompt: str, repo_dir: Path, model: str, label: str = "", save_r
             (cfg_dir / "config.json").write_text(json.dumps(cfg_config, indent=2))
     args.extend(["--config-dir", str(cfg_dir)])
 
+    # Prepend our release binary to PATH so hook scripts use it
+    bin_dir = ensure_pruner_on_path()
     env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
     # Restrict custom instructions to repository-local files for fair A/B behavior.
     env.pop("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", None)
 
@@ -317,25 +321,65 @@ def reset_clone(clone_path: Path, mode: str | None = None):
         subprocess.run(init_args, check=True, capture_output=True, text=True)
 
 
-def run_task(task_name: str, prompt: str, mode: str, model: str, only: str | None, save_raw: bool, run_idx: int):
+def ensure_pruner_on_path():
+    """Create a bin directory with a 'pruner' symlink to the release binary.
+
+    Returns the directory path.  This ensures the hook script finds our
+    freshly-built binary first, regardless of what is installed system-wide.
+    """
+    bin_dir = WORK_DIR / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / "pruner"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(PRUNER_BIN.resolve())
+    return bin_dir
+
+
+def interleaved_schedule(tasks, only=None):
+    """Build a randomized run schedule where same-scenario runs are never adjacent.
+
+    Each task produces two runs (with/without). The schedule interleaves them
+    so that any model-side caching expires between same-scenario runs.
+    """
+    runs = []
+    for category, prompt in tasks:
+        if only != "with":
+            runs.append((category, prompt, "without"))
+        if only != "without":
+            runs.append((category, prompt, "with"))
+
+    # Shuffle with constraint: same category cannot be adjacent
+    for _ in range(200):
+        random.shuffle(runs)
+        valid = True
+        for i in range(1, len(runs)):
+            if runs[i][0] == runs[i - 1][0]:
+                valid = False
+                break
+        if valid:
+            break
+    else:
+        # Fallback: deterministic interleave (with/without alternating)
+        runs.sort(key=lambda r: (r[2], r[0]))
+
+    return runs
+
+
+def run_single(task_name: str, prompt: str, side: str, mode: str, model: str, save_raw: bool, run_idx: int = 1):
+    """Run one side (with or without) of one task."""
     print(f"\n{'=' * 64}", file=sys.stderr)
-    print(f"  Task: {task_name} (run {run_idx})", file=sys.stderr)
+    print(f"  Task: {task_name} [{side}] (run {run_idx})", file=sys.stderr)
     print(f"{'=' * 64}", file=sys.stderr)
 
-    without = None
-    with_pruner = None
-
-    without_prompt = build_prompt(prompt, "without")
-    with_prompt = build_prompt(prompt, mode)
-
-    if only != "with":
-        reset_clone(CLONE_WITHOUT)
-        without = run_copilot(without_prompt, CLONE_WITHOUT, model, f"{task_name}/without/r{run_idx}", save_raw)
-    if only != "without":
+    if side == "with":
         reset_clone(CLONE_WITH, mode=mode)
-        with_pruner = run_copilot(with_prompt, CLONE_WITH, model, f"{task_name}/with/r{run_idx}", save_raw)
-
-    return without, with_pruner
+        with_prompt = build_prompt(prompt, mode)
+        return run_copilot(with_prompt, CLONE_WITH, model, f"{task_name}/with/r{run_idx}", save_raw)
+    else:
+        reset_clone(CLONE_WITHOUT)
+        without_prompt = build_prompt(prompt, "without")
+        return run_copilot(without_prompt, CLONE_WITHOUT, model, f"{task_name}/without/r{run_idx}", save_raw)
 
 
 def print_summary(entries):
@@ -374,20 +418,36 @@ def main():
     setup_clones(args.repo, args.mode)
 
     tasks = [(args.task, TASKS[args.task])] if args.task else list(TASKS.items())
-    entries = []
-    for task_name, prompt in tasks:
+
+    # Build interleaved schedule: randomized order, same scenario never adjacent
+    schedule = interleaved_schedule(tasks, only=args.only)
+    print(f"\nRun schedule ({len(schedule)} runs):", file=sys.stderr)
+    for i, (cat, _, side) in enumerate(schedule):
+        print(f"  {i+1}. {cat} [{side}]", file=sys.stderr)
+
+    # Run all experiments
+    run_results = {}  # category -> {"without": ..., "with": ...}
+    for category, prompt, side in schedule:
         for run_idx in range(1, args.runs + 1):
-            without, with_pruner = run_task(
-                task_name, prompt, args.mode, args.model, args.only, args.save_raw, run_idx
-            )
-            entry = {
+            result = run_single(category, prompt, side, args.mode, args.model, args.save_raw, run_idx)
+            run_results.setdefault(category, {}).setdefault(side, []).append((run_idx, result))
+
+    # Assemble entries for summary
+    entries = []
+    for task_name, _ in tasks:
+        data = run_results.get(task_name, {})
+        for run_idx in range(1, args.runs + 1):
+            without_runs = data.get("without", [])
+            with_runs = data.get("with", [])
+            without = next((r for i, r in without_runs if i == run_idx), None)
+            with_pruner = next((r for i, r in with_runs if i == run_idx), None)
+            entries.append({
                 "task": task_name,
                 "run": run_idx,
                 "mode": args.mode,
                 "without": without,
                 "with_pruner": with_pruner,
-            }
-            entries.append(entry)
+            })
 
     print(json.dumps(entries, indent=2))
     print_summary(entries)
