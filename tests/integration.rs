@@ -131,6 +131,94 @@ mod init {
     }
 }
 
+mod uninstall {
+    use super::*;
+
+    #[test]
+    fn uninstall_removes_project_claude_integration() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        // Init with hook
+        pruner()
+            .args(["init", path, "--hook"])
+            .assert()
+            .success();
+
+        // Verify files exist
+        assert!(dir.path().join(".claude/skills/pruner/SKILL.md").exists());
+        assert!(dir.path().join(".claude/hooks/pruner-context.sh").exists());
+        assert!(dir.path().join(".claude/settings.json").exists());
+        assert!(dir.path().join("CLAUDE.md").exists());
+        assert!(dir.path().join(".pruner/index.db").exists());
+
+        // Uninstall
+        pruner()
+            .args(["uninstall", path])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Removed"));
+
+        // Verify pruner files are gone
+        assert!(!dir.path().join(".claude/skills/pruner/SKILL.md").exists());
+        assert!(!dir.path().join(".claude/hooks/pruner-context.sh").exists());
+
+        // .pruner/ should still exist without --purge
+        assert!(dir.path().join(".pruner").exists());
+    }
+
+    #[test]
+    fn uninstall_purge_removes_index() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        pruner()
+            .args(["init", path, "--hook"])
+            .assert()
+            .success();
+
+        assert!(dir.path().join(".pruner/index.db").exists());
+
+        pruner()
+            .args(["uninstall", path, "--purge"])
+            .assert()
+            .success();
+
+        assert!(!dir.path().join(".pruner").exists());
+    }
+
+    #[test]
+    fn uninstall_removes_copilot_project_integration() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        pruner()
+            .args(["init", path, "--copilot-hook"])
+            .assert()
+            .success();
+
+        assert!(dir.path().join(".github/hooks/pruner-context.json").exists());
+        assert!(dir.path().join(".github/hooks/pruner-context.sh").exists());
+
+        pruner()
+            .args(["uninstall", path])
+            .assert()
+            .success();
+
+        assert!(!dir.path().join(".github/hooks/pruner-context.json").exists());
+        assert!(!dir.path().join(".github/hooks/pruner-context.sh").exists());
+    }
+
+    #[test]
+    fn uninstall_help_shows_options() {
+        pruner()
+            .args(["uninstall", "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--purge"));
+    }
+}
+
 // ============================================================================
 // Hook scripts
 // ============================================================================
@@ -1160,5 +1248,45 @@ mod java_project {
             !paths.is_empty(),
             "should have execution paths from authenticate"
         );
+    }
+}
+
+#[cfg(test)]
+mod upgrade {
+    use assert_cmd::Command;
+    use predicates::prelude::*;
+
+    fn pruner() -> Command {
+        Command::cargo_bin("pruner").unwrap()
+    }
+
+    #[test]
+    fn upgrade_check_shows_version_info() {
+        pruner()
+            .args(["upgrade", "--check"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("v0.1.").or(predicate::str::contains("up to date")));
+    }
+
+    #[test]
+    fn upgrade_check_does_not_modify_binary() {
+        let exe = assert_cmd::cargo::cargo_bin("pruner");
+        let before = std::fs::metadata(&exe).unwrap().modified().unwrap();
+
+        pruner().args(["upgrade", "--check"]).assert().success();
+
+        let after = std::fs::metadata(&exe).unwrap().modified().unwrap();
+        assert_eq!(before, after, "Binary should not be modified by --check");
+    }
+
+    #[test]
+    fn upgrade_help_shows_options() {
+        pruner()
+            .args(["upgrade", "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--check"))
+            .stdout(predicate::str::contains("--version"));
     }
 }
