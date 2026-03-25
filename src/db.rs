@@ -194,11 +194,79 @@ impl IndexDb {
         Ok(map)
     }
 
-    /// Delete all edges (used before rebuilding call/test edges during incremental index).
+    /// Delete all edges and calls.
     pub fn clear_edges(&self) -> Result<()> {
         self.conn
             .execute_batch("DELETE FROM edges; DELETE FROM calls;")?;
         Ok(())
+    }
+
+    /// Delete edges and calls involving specific file IDs.
+    pub fn clear_edges_for_files(&self, file_ids: &[i64]) -> Result<()> {
+        if file_ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: String = file_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        // Delete calls for symbols in these files
+        let sql = format!(
+            "DELETE FROM calls WHERE caller_symbol_id IN (SELECT id FROM symbols WHERE file_id IN ({placeholders}))"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> = file_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+        stmt.execute(params.as_slice())?;
+
+        // Delete edges where source or target is one of these files
+        let sql = format!(
+            "DELETE FROM edges WHERE source_file_id IN ({placeholders}) OR target_file_id IN ({placeholders})"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut double_params: Vec<&dyn rusqlite::types::ToSql> = Vec::new();
+        for id in file_ids {
+            double_params.push(id as &dyn rusqlite::types::ToSql);
+        }
+        for id in file_ids {
+            double_params.push(id as &dyn rusqlite::types::ToSql);
+        }
+        stmt.execute(double_params.as_slice())?;
+
+        Ok(())
+    }
+
+    /// Load all symbols as a name -> Vec<(symbol_id, file_id)> map in one query.
+    pub fn all_symbol_map(&self) -> Result<HashMap<String, Vec<(i64, i64)>>> {
+        let mut stmt = self.conn.prepare("SELECT id, file_id, name FROM symbols")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut map: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
+        for row in rows {
+            let (id, file_id, name) = row?;
+            map.entry(name).or_default().push((id, file_id));
+        }
+        Ok(map)
+    }
+
+    /// Load all calls in one query: (caller_symbol_id, callee_name, line).
+    pub fn all_calls(&self) -> Result<Vec<(i64, String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT caller_symbol_id, callee_name, line FROM calls")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     #[allow(clippy::too_many_arguments)]
