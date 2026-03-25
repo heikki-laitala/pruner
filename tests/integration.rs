@@ -274,6 +274,49 @@ mod status {
 }
 
 // ============================================================================
+// Unsupported repos
+// ============================================================================
+
+mod unsupported {
+    use super::*;
+
+    #[test]
+    fn index_reports_zero_symbols_for_unsupported_repo() {
+        let dir = TempDir::new().unwrap();
+        // Create a markdown-only repo
+        std::fs::write(dir.path().join("README.md"), "# Hello").unwrap();
+
+        pruner()
+            .args(["index", dir.path().to_str().unwrap()])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("0 symbols"));
+    }
+
+    #[test]
+    fn context_skips_repo_with_no_supported_files() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Hello").unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+
+        let output = pruner()
+            .args(["context", dir.path().to_str().unwrap(), "hello"])
+            .output()
+            .unwrap();
+
+        // Should fail gracefully (non-zero exit or empty output)
+        assert!(
+            !output.status.success() || output.stdout.is_empty(),
+            "should not produce context for unsupported repo"
+        );
+        assert!(
+            !dir.path().join(".pruner").exists(),
+            ".pruner/ should not remain for unsupported repos"
+        );
+    }
+}
+
+// ============================================================================
 // Multi-repo (meta-repo pattern)
 // ============================================================================
 

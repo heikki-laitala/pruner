@@ -314,6 +314,12 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
         let db = IndexDb::open(&path)?;
         let repo_path = repo.canonicalize()?;
         let stats = indexer::index_repo(&repo_path, &db, verbose)?;
+        if stats.symbols == 0 {
+            // No parseable source code — remove the empty index to avoid clutter
+            drop(db);
+            let _ = fs::remove_dir_all(repo.join(INDEX_DIR));
+            anyhow::bail!("No supported source files found in {}", repo.display());
+        }
         if let Some(head) = git_head(repo) {
             db.set_metadata(META_GIT_HEAD, &head)?;
         }
