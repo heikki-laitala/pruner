@@ -316,10 +316,19 @@ mod multi_repo {
         );
 
         // Each sub-repo should have its own index
-        assert!(sub1.join(".pruner/index.db").exists(), "webapp should be indexed");
-        assert!(sub2.join(".pruner/index.db").exists(), "backend should be indexed");
+        assert!(
+            sub1.join(".pruner/index.db").exists(),
+            "webapp should be indexed"
+        );
+        assert!(
+            sub2.join(".pruner/index.db").exists(),
+            "backend should be indexed"
+        );
         // Parent should NOT have an index
-        assert!(!meta.path().join(".pruner/index.db").exists(), "meta-repo should not have flat index");
+        assert!(
+            !meta.path().join(".pruner/index.db").exists(),
+            "meta-repo should not have flat index"
+        );
     }
 
     #[test]
@@ -382,7 +391,10 @@ mod multi_repo {
         copy_dir_all(&fixture1, &sub1).unwrap();
         make_git_dir(&sub1);
 
-        assert!(!sub1.join(".pruner/index.db").exists(), "should not be indexed yet");
+        assert!(
+            !sub1.join(".pruner/index.db").exists(),
+            "should not be indexed yet"
+        );
 
         // Context should auto-index the sub-repo and return results
         let output = pruner()
@@ -391,7 +403,10 @@ mod multi_repo {
             .unwrap();
 
         assert!(output.status.success(), "context should succeed");
-        assert!(sub1.join(".pruner/index.db").exists(), "sub-repo should be auto-indexed");
+        assert!(
+            sub1.join(".pruner/index.db").exists(),
+            "sub-repo should be auto-indexed"
+        );
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
