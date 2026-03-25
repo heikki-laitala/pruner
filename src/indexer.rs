@@ -54,9 +54,16 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
     db.set_synchronous_normal()?;
     db.begin_transaction()?;
     db.clear()?;
-    let stats = index_files(repo_path, db, verbose, None)?;
-    db.commit_transaction()?;
-    Ok(stats)
+    match index_files(repo_path, db, verbose, None) {
+        Ok(stats) => {
+            db.commit_transaction()?;
+            Ok(stats)
+        }
+        Err(e) => {
+            let _ = db.rollback_transaction();
+            Err(e)
+        }
+    }
 }
 
 /// Incremental index: only re-parses new/modified files, removes deleted ones.
@@ -127,14 +134,18 @@ pub fn index_repo_incremental(
     let deleted_count = existing.keys().filter(|p| !seen_paths.contains(*p)).count();
 
     // Re-index only changed files, then rebuild all edges
-    let mut stats = index_files(repo_path, db, verbose, Some(&changed_paths))?;
-
-    stats.unchanged = seen_paths.len() - stats.files;
-    stats.deleted = deleted_count;
-
-    db.commit_transaction()?;
-
-    Ok(Some(stats))
+    match index_files(repo_path, db, verbose, Some(&changed_paths)) {
+        Ok(mut stats) => {
+            stats.unchanged = seen_paths.len() - stats.files;
+            stats.deleted = deleted_count;
+            db.commit_transaction()?;
+            Ok(Some(stats))
+        }
+        Err(e) => {
+            let _ = db.rollback_transaction();
+            Err(e)
+        }
+    }
 }
 
 /// Walk the repo, respecting .gitignore and filtering pruner's own ignored directories.
