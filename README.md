@@ -6,7 +6,7 @@ AI coding agents (Claude Code, Codex, Copilot) spend most of their time explorin
 
 Pruner eliminates this. It pre-indexes your entire repository using plain structural code analysis — call graphs, symbols, imports, execution paths — and gives the agent exactly the context it needs in one shot. **No LLM, no embeddings, no API keys, no network calls.** Just fast, deterministic tree-sitter parsing that runs locally in seconds. The agent skips exploration and goes straight to work.
 
-**Measured on real Claude Code sessions** (openclaw, 9.8K files):
+**Measured on real Claude Code sessions** ([full results](#ab-test-results-claude-code), openclaw, 9.8K files):
 
 | Task type | Cost saved | Time saved | Tool calls saved |
 |-----------|-----------|-----------|-----------------|
@@ -15,11 +15,9 @@ Pruner eliminates this. It pre-indexes your entire repository using plain struct
 | Small implementation | **30%** | **53%** | **59%** |
 | Cross-package tracing | **24%** | **46%** | **66%** |
 
-Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command. Claude Code users save on both cost and time. Copilot users save time — Copilot pricing is per premium request regardless of tool calls, so pruner speeds up tasks without affecting cost.
+Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command. Claude Code users save on both cost and time. Copilot users save time ([Copilot results](#ab-test-results-copilot-cli)) — Copilot pricing is per premium request regardless of tool calls, so pruner speeds up tasks without affecting cost.
 
 ## Install
-
-### Quick install (pre-built binary)
 
 ```bash
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash
@@ -44,15 +42,10 @@ curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.s
 
 # Just install the binary, no setup
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --no-interactive
-
-# Install to a custom directory
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --dir /usr/local/bin
-
-# Install a specific version
-curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --version v0.1.0
 ```
 
-### Build from source
+<details>
+<summary>Build from source</summary>
 
 Requires Rust (1.85+) and a C compiler (for tree-sitter):
 
@@ -76,11 +69,13 @@ make install
 
 This builds a release binary and installs it to `~/.cargo/bin/pruner`.
 
-### Set up
+</details>
 
-Two approaches: **global** (install once, works in every repo) or **per-project** (adds config files to the repo).
+## Setup
 
-#### Global install (recommended)
+Two approaches: **global** (install once, works in every repo) or **per-project** (adds config files to the repo). The install script handles this interactively, but you can also run `pruner init` manually.
+
+### Global install (recommended)
 
 Install once — pruner works automatically in every git repository:
 
@@ -102,7 +97,7 @@ Add `.pruner/` to your `.gitignore` (global install does not modify it automatic
 echo '.pruner/' >> .gitignore
 ```
 
-#### Per-project install
+### Per-project install
 
 Adds pruner config files directly to the repository (useful for teams):
 
@@ -115,7 +110,74 @@ pruner init /path/to/project --copilot-hook  # Copilot CLI hook mode
 
 This creates config files inside the repo (`.claude/` or `.copilot/`), updates `.gitignore` to exclude `.pruner/`, and auto-indexes the project.
 
-## Usage
+### Claude Code integration
+
+Two modes available:
+
+| Mode | How it works | Setup |
+|------|-------------|-------|
+| **Hook** (recommended) | Context injected automatically via `UserPromptSubmit` hook — zero tool calls | `pruner init --global --hook` |
+| **Skill** | Claude calls `pruner context` as a tool when it needs context | `pruner init --global` |
+
+**What gets installed (global):**
+
+| File | Purpose |
+|------|---------|
+| `~/.claude/skills/pruner/SKILL.md` | Skill definition — tells Claude how to use pruner |
+| `~/.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
+| `~/.claude/settings.json` | Hook configuration (hook mode only) |
+
+**Note on global skill mode:** Global install does not modify the repository's `CLAUDE.md`. In skill mode, Claude relies on auto-invocation from the skill description alone. For more reliable behavior, run `pruner init /path/to/project` on repos where you want the extra guidance — this adds a pruner section to `CLAUDE.md` and is safe to run on repos that already have the global skill. Hook mode does not have this limitation since the hook fires automatically regardless of `CLAUDE.md`.
+
+**What gets installed (per-project):**
+
+| File | Purpose |
+|------|---------|
+| `.claude/skills/pruner/SKILL.md` | Skill definition |
+| `.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
+| `.claude/settings.json` | Hook configuration (hook mode only) |
+| `CLAUDE.md` | Pruner usage guidance (created if missing) |
+| `.gitignore` | `.pruner/` entry added |
+
+**What happens at runtime:** When you start Claude Code in a git repository and ask a question, pruner auto-indexes the repo (creating `.pruner/` with a SQLite database), then returns relevant context. On subsequent prompts, incremental indexing updates only changed files. The `.pruner/` directory is only created inside git repositories — pruner skips non-repo directories.
+
+**Note for global install:** `.gitignore` is not modified automatically. Add `.pruner/` to each repo's `.gitignore` (or your global gitignore) to avoid committing the index.
+
+### Copilot CLI integration
+
+| Mode | How it works | Setup |
+|------|-------------|-------|
+| **Skill** | Copilot calls `pruner context` as a tool | `pruner init --copilot-skill --copilot-global` |
+| **Hook** (experimental) | Background hook writes `.pruner/copilot-context.md` | `pruner init /path/to/project --copilot-hook` |
+
+**Skill mode** creates:
+- `.copilot/skills/pruner/SKILL.md` (global: `~/.copilot/`)
+- `.github/copilot-instructions.md` guidance (or `~/.copilot/copilot-instructions.md` for global)
+
+Then in Copilot CLI:
+
+```text
+/skills add pruner
+/skills run pruner "fix login token refresh bug"
+```
+
+**Hook mode** (per-project only) creates:
+- `.github/hooks/pruner-context.json` + `.sh` + `.ps1`
+
+Requires `--experimental` flag in Copilot CLI 1.0.x. The hook runs on `userPromptSubmitted` and writes `.pruner/copilot-context.md`.
+
+**Note:** Copilot's `userPromptSubmitted` hook is observational — the model doesn't wait for it to complete before starting. On large repos, the model may start exploring before the context file is written. For reliable results, use **skill mode**.
+
+### What happens automatically
+
+Once set up, when you ask the agent to do something like "fix the login flow":
+
+1. Pruner provides context (injected via hook, or the agent runs `pruner context`)
+2. Auto-detects task scope: focused context with code snippets (~10-15K tokens) or brief pointers (~3K tokens)
+3. The agent works directly from the output — no grep/glob exploration needed
+4. If a snippet is truncated, the agent reads the specific file using the file:line pointers
+
+## CLI reference
 
 ### Index a repository
 
@@ -125,11 +187,7 @@ pruner index .              # current directory
 pruner index . -v           # verbose output
 ```
 
-This creates a `.pruner/` directory inside the repo containing the SQLite index database. Add it to your `.gitignore`:
-
-```bash
-echo '.pruner/' >> .gitignore
-```
+This creates a `.pruner/` directory inside the repo containing the SQLite index database.
 
 **Indexing is automatic.** You don't need to run `pruner index` manually — `pruner context` auto-indexes on first run if no index exists. After that, it runs incremental updates when the index is older than 5 minutes (checks for new, modified, and deleted files). Override with `PRUNER_RECHECK_SECS=0` to force a check every time.
 
@@ -294,6 +352,20 @@ src/
 └── languages.rs    # Language detection, test classification
 ```
 
+### Supported languages
+
+Full tree-sitter parsing (symbols, imports, calls):
+
+- Python
+- JavaScript / TypeScript / TSX / JSX
+- Rust
+- Go
+- Java
+
+Basic indexing (files, metadata):
+
+- All text files not in the ignore list
+
 ### Indexing pipeline
 
 1. Walk repository files, skip ignored dirs (node_modules, .git, etc.)
@@ -323,19 +395,13 @@ src/
 4. Graph expansion: files discovered via execution paths added to candidates
 5. Output as human-readable text and/or structured JSON
 
-## Supported languages
+### Limitations
 
-Full tree-sitter parsing (symbols, imports, calls):
-
-- Python
-- JavaScript / TypeScript / TSX / JSX
-- Rust
-- Go
-- Java
-
-Basic indexing (files, metadata):
-
-- All text files not in the ignore list
+- Call graph is best-effort — dynamic dispatch, string-based lookups, and indirect calls are not tracked
+- Query analysis uses keyword matching with heuristic scoring, not semantic understanding
+- Import resolution is heuristic (module name -> file path mapping)
+- Relevance scoring can miss results when keywords don't appear in file paths or symbol names (e.g., a function that handles authentication but is named `validateRequest`)
+- On very large repos (10K+ files), full mode produces ~55-70K tokens — the default auto mode caps output at ~10-15K tokens
 
 ## Development
 
@@ -369,83 +435,6 @@ cargo test --test bench -- --nocapture      # benchmarks
 cargo clippy -- -D warnings          # lint
 cargo fmt                            # format
 ```
-
-## Limitations
-
-- Call graph is best-effort — dynamic dispatch, string-based lookups, and indirect calls are not tracked
-- Query analysis uses keyword matching with heuristic scoring, not semantic understanding
-- Import resolution is heuristic (module name -> file path mapping)
-- Relevance scoring can miss results when keywords don't appear in file paths or symbol names (e.g., a function that handles authentication but is named `validateRequest`)
-- On very large repos (10K+ files), full mode produces ~55-70K tokens — the default auto mode caps output at ~10-15K tokens
-
-## Integration details
-
-### Claude Code
-
-Two modes available:
-
-| Mode | How it works | Setup |
-|------|-------------|-------|
-| **Hook** (recommended) | Context injected automatically via `UserPromptSubmit` hook — zero tool calls | `pruner init --global --hook` |
-| **Skill** | Claude calls `pruner context` as a tool when it needs context | `pruner init --global` |
-
-**What gets installed (global):**
-
-| File | Purpose |
-|------|---------|
-| `~/.claude/skills/pruner/SKILL.md` | Skill definition — tells Claude how to use pruner |
-| `~/.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
-| `~/.claude/settings.json` | Hook configuration (hook mode only) |
-
-**Note on global skill mode:** Global install does not modify the repository's `CLAUDE.md`. In skill mode, Claude relies on auto-invocation from the skill description alone. For more reliable behavior, run `pruner init /path/to/project` on repos where you want the extra guidance — this adds a pruner section to `CLAUDE.md` and is safe to run on repos that already have the global skill. Hook mode does not have this limitation since the hook fires automatically regardless of `CLAUDE.md`.
-
-**What gets installed (per-project):**
-
-| File | Purpose |
-|------|---------|
-| `.claude/skills/pruner/SKILL.md` | Skill definition |
-| `.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
-| `.claude/settings.json` | Hook configuration (hook mode only) |
-| `CLAUDE.md` | Pruner usage guidance (created if missing) |
-| `.gitignore` | `.pruner/` entry added |
-
-**What happens at runtime:** When you start Claude Code in a git repository and ask a question, pruner auto-indexes the repo (creating `.pruner/` with a SQLite database), then returns relevant context. On subsequent prompts, incremental indexing updates only changed files. The `.pruner/` directory is only created inside git repositories — pruner skips non-repo directories.
-
-**Note for global install:** `.gitignore` is not modified automatically. Add `.pruner/` to each repo's `.gitignore` (or your global gitignore) to avoid committing the index.
-
-### Copilot CLI
-
-| Mode | How it works | Setup |
-|------|-------------|-------|
-| **Skill** | Copilot calls `pruner context` as a tool | `pruner init --copilot-skill --copilot-global` |
-| **Hook** (experimental) | Background hook writes `.pruner/copilot-context.md` | `pruner init /path/to/project --copilot-hook` |
-
-**Skill mode** creates:
-- `.copilot/skills/pruner/SKILL.md` (global: `~/.copilot/`)
-- `.github/copilot-instructions.md` guidance (or `~/.copilot/copilot-instructions.md` for global)
-
-Then in Copilot CLI:
-
-```text
-/skills add pruner
-/skills run pruner "fix login token refresh bug"
-```
-
-**Hook mode** (per-project only) creates:
-- `.github/hooks/pruner-context.json` + `.sh` + `.ps1`
-
-Requires `--experimental` flag in Copilot CLI 1.0.x. The hook runs on `userPromptSubmitted` and writes `.pruner/copilot-context.md`.
-
-**Note:** Copilot's `userPromptSubmitted` hook is observational — the model doesn't wait for it to complete before starting. On large repos, the model may start exploring before the context file is written. For reliable results, use **skill mode**.
-
-### What happens automatically
-
-Once set up, when you ask the agent to do something like "fix the login flow":
-
-1. Pruner provides context (injected via hook, or the agent runs `pruner context`)
-2. Auto-detects task scope: focused context with code snippets (~10-15K tokens) or brief pointers (~3K tokens)
-3. The agent works directly from the output — no grep/glob exploration needed
-4. If a snippet is truncated, the agent reads the specific file using the file:line pointers
 
 ## Similar projects
 
