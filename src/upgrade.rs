@@ -175,7 +175,7 @@ fn detect_installed_integrations() -> DetectedIntegrations {
         global: claude_hook || claude_skill,
         hook: claude_hook,
         copilot_global: copilot_skill,
-        copilot_skill: copilot_skill,
+        copilot_skill,
     }
 }
 
@@ -225,12 +225,11 @@ pub fn cmd_upgrade(check: bool, target_version: Option<&str>) -> Result<()> {
     // Resolve target version
     let latest = match target_version {
         Some(v) => {
-            let v = if v.starts_with('v') {
+            if v.starts_with('v') {
                 v.to_string()
             } else {
                 format!("v{v}")
-            };
-            v
+            }
         }
         None => {
             eprintln!("Checking for updates...");

@@ -81,30 +81,30 @@ fn clean_settings_json(path: &Path) {
     // Remove pruner hooks from UserPromptSubmit
     let mut changed = false;
     if let Some(hooks) = settings.get_mut("hooks") {
-        if let Some(submit) = hooks.get_mut("UserPromptSubmit") {
-            if let Some(arr) = submit.as_array_mut() {
-                let before = arr.len();
-                arr.retain(|entry| {
-                    // Remove entries whose hooks contain "pruner" in the command
-                    let dominated_by_pruner = entry
-                        .get("hooks")
-                        .and_then(|h| h.as_array())
-                        .is_some_and(|hooks| {
-                            hooks.iter().all(|h| {
-                                h.get("command")
-                                    .and_then(|c| c.as_str())
-                                    .is_some_and(|c| c.contains("pruner"))
-                            })
-                        });
-                    !dominated_by_pruner
-                });
-                if arr.len() < before {
-                    changed = true;
-                }
-                // If UserPromptSubmit is now empty, remove it
-                if arr.is_empty() {
-                    hooks.as_object_mut().map(|m| m.remove("UserPromptSubmit"));
-                }
+        if let Some(submit) = hooks.get_mut("UserPromptSubmit")
+            && let Some(arr) = submit.as_array_mut()
+        {
+            let before = arr.len();
+            arr.retain(|entry| {
+                // Remove entries whose hooks contain "pruner" in the command
+                let dominated_by_pruner = entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .is_some_and(|hooks| {
+                        hooks.iter().all(|h| {
+                            h.get("command")
+                                .and_then(|c| c.as_str())
+                                .is_some_and(|c| c.contains("pruner"))
+                        })
+                    });
+                !dominated_by_pruner
+            });
+            if arr.len() < before {
+                changed = true;
+            }
+            // If UserPromptSubmit is now empty, remove it
+            if arr.is_empty() {
+                hooks.as_object_mut().map(|m| m.remove("UserPromptSubmit"));
             }
         }
         // If hooks object is now empty, remove it
