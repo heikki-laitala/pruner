@@ -99,6 +99,24 @@ impl IndexDb {
         Ok(())
     }
 
+    /// Begin an explicit transaction (disables auto-commit per statement).
+    pub fn begin_transaction(&self) -> Result<()> {
+        self.conn.execute_batch("BEGIN")?;
+        Ok(())
+    }
+
+    /// Commit the current transaction.
+    pub fn commit_transaction(&self) -> Result<()> {
+        self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    /// Set synchronous mode for performance tuning during bulk writes.
+    pub fn set_synchronous_normal(&self) -> Result<()> {
+        self.conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
+        Ok(())
+    }
+
     /// Clear all data from the database.
     pub fn clear(&self) -> Result<()> {
         self.conn.execute_batch(
