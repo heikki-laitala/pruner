@@ -23,7 +23,7 @@ Requires:
 Default repo: /tmp/pruner-bench/openclaw
 """
 
-import subprocess, json, os, sys, time, shutil, argparse
+import subprocess, json, os, sys, time, shutil, argparse, random
 from pathlib import Path
 
 PRUNER_DIR = Path(__file__).resolve().parent.parent
@@ -286,6 +286,21 @@ def parse_stream(stdout, label="", save_path=None):
     }
 
 
+def ensure_pruner_on_path():
+    """Create a bin directory with a 'pruner' symlink to the release binary.
+
+    Returns the directory path.  This ensures the hook script finds our
+    freshly-built binary first, regardless of what is installed system-wide.
+    """
+    bin_dir = WORK_DIR / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link = bin_dir / "pruner"
+    if link.exists() or link.is_symlink():
+        link.unlink()
+    link.symlink_to(PRUNER_BIN.resolve())
+    return bin_dir
+
+
 def run_claude(prompt, repo_dir, label="", save_raw=False):
     """Run claude -p inside the repo directory and return parsed results."""
     wrapper = WORK_DIR / "run_claude.sh"
@@ -304,9 +319,14 @@ def run_claude(prompt, repo_dir, label="", save_raw=False):
         "--no-session-persistence",
     ]
 
+    # Prepend our release binary to PATH so the hook script uses it
+    bin_dir = ensure_pruner_on_path()
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
     print(f"  Starting [{label}] ...", file=sys.stderr)
     start = time.time()
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=600, env=env)
     wall_time = time.time() - start
 
     save_path = RAW_DIR / f"{label.replace('/', '_')}.jsonl" if save_raw else None
@@ -379,29 +399,53 @@ def reset_clone(clone_path, reinstall_pruner=False, mode="hook"):
         )
 
 
-def run_task(category, prompt, mode="hook", only=None, save_raw=False):
-    """Run one task with and without pruner, sequentially."""
+def run_single(category, prompt, side, mode="hook", save_raw=False):
+    """Run one side (with or without) of one task."""
     print(f"\n{'='*60}", file=sys.stderr)
-    print(f"  Task: {category}", file=sys.stderr)
+    print(f"  Task: {category} [{side}]", file=sys.stderr)
     print(f"{'='*60}", file=sys.stderr)
 
-    without = None
-    with_p = None
-
-    if only != "with":
-        reset_clone(CLONE_WITHOUT)
-        without = run_claude(prompt, CLONE_WITHOUT, f"{category}/without", save_raw)
-    if only != "without":
+    if side == "with":
         reset_clone(CLONE_WITH, reinstall_pruner=True, mode=mode)
-        with_p = run_claude(prompt, CLONE_WITH, f"{category}/with", save_raw)
+        result = run_claude(prompt, CLONE_WITH, f"{category}/with", save_raw)
+    else:
+        reset_clone(CLONE_WITHOUT)
+        result = run_claude(prompt, CLONE_WITHOUT, f"{category}/without", save_raw)
 
-    # Print detailed breakdown
-    if without:
-        print_detailed_results(f"{category}/without", without)
-    if with_p:
-        print_detailed_results(f"{category}/with", with_p)
+    if result:
+        print_detailed_results(f"{category}/{side}", result)
+    return result
 
-    return without, with_p
+
+def interleaved_schedule(tasks, only=None):
+    """Build a randomized run schedule where same-scenario runs are never adjacent.
+
+    Each task produces two runs (with/without). The schedule interleaves them
+    so that Anthropic's prompt cache (~5 min TTL) expires between same-scenario
+    runs, eliminating cache-warming bias.
+    """
+    runs = []
+    for category, prompt in tasks:
+        if only != "with":
+            runs.append((category, prompt, "without"))
+        if only != "without":
+            runs.append((category, prompt, "with"))
+
+    # Shuffle with constraint: same category cannot be adjacent
+    for _ in range(200):
+        random.shuffle(runs)
+        valid = True
+        for i in range(1, len(runs)):
+            if runs[i][0] == runs[i - 1][0]:
+                valid = False
+                break
+        if valid:
+            break
+    else:
+        # Fallback: deterministic interleave (with/without alternating)
+        runs.sort(key=lambda r: (r[2], r[0]))
+
+    return runs
 
 
 def print_summary(results):
@@ -464,10 +508,24 @@ def main():
     else:
         tasks = list(TASKS.items())
 
-    results = []
-    for category, prompt in tasks:
-        without, with_p = run_task(category, prompt, mode=args.mode, only=args.only, save_raw=args.save_raw)
+    # Build interleaved schedule: randomized order, same scenario never adjacent
+    schedule = interleaved_schedule(tasks, only=args.only)
+    print(f"\nRun schedule ({len(schedule)} runs):", file=sys.stderr)
+    for i, (cat, _, side) in enumerate(schedule):
+        print(f"  {i+1}. {cat} [{side}]", file=sys.stderr)
 
+    # Run all experiments
+    run_results = {}  # category -> {"without": ..., "with": ...}
+    for category, prompt, side in schedule:
+        result = run_single(category, prompt, side, mode=args.mode, save_raw=args.save_raw)
+        run_results.setdefault(category, {})[side] = result
+
+    # Assemble results
+    results = []
+    for category, _ in tasks:
+        data = run_results.get(category, {})
+        without = data.get("without")
+        with_p = data.get("with")
         entry = {"category": category, "without": without, "with_pruner": with_p}
         if without and with_p:
             entry["token_delta_pct"] = round(
