@@ -397,6 +397,8 @@ Two modes available:
 | `~/.claude/hooks/pruner-context.sh` | Hook script (hook mode only) |
 | `~/.claude/settings.json` | Hook configuration (hook mode only) |
 
+**Note on global skill mode:** Global install does not modify the repository's `CLAUDE.md`. In skill mode, Claude relies on auto-invocation from the skill description alone. For more reliable behavior, run `pruner init /path/to/project` on repos where you want the extra guidance — this adds a pruner section to `CLAUDE.md` and is safe to run on repos that already have the global skill. Hook mode does not have this limitation since the hook fires automatically regardless of `CLAUDE.md`.
+
 **What gets installed (per-project):**
 
 | File | Purpose |
