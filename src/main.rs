@@ -6,6 +6,8 @@ mod languages;
 mod parser;
 mod query;
 mod tokens;
+mod uninstall;
+mod upgrade;
 
 fn main() -> anyhow::Result<()> {
     cli::run()

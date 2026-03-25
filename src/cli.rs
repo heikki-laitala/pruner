@@ -180,6 +180,23 @@ enum Commands {
         #[arg(long)]
         copilot_global: bool,
     },
+    /// Remove pruner integrations (hooks, skills, config) and optionally the binary
+    Uninstall {
+        /// Path to a project to remove per-project integrations (omit for global uninstall)
+        repo: Option<PathBuf>,
+        /// Also remove .pruner/ index data (per-project only)
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Upgrade pruner to the latest (or a specific) version
+    Upgrade {
+        /// Only check if an update is available, don't install
+        #[arg(long)]
+        check: bool,
+        /// Install a specific version (e.g., v0.1.6)
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Estimate realistic Claude Code token usage with and without pruner
     Estimate {
         /// Path to the repository
@@ -257,6 +274,12 @@ pub fn run() -> Result<()> {
             max_snippet_lines,
             json_output,
         } => cmd_measure(&repo, &ask, max_snippet_lines, json_output),
+        Commands::Uninstall { repo, purge } => {
+            crate::uninstall::cmd_uninstall(repo.as_deref(), purge)
+        }
+        Commands::Upgrade { check, version } => {
+            crate::upgrade::cmd_upgrade(check, version.as_deref())
+        }
         Commands::Estimate {
             repo,
             ask,
