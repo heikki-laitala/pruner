@@ -587,6 +587,15 @@ fn cmd_init(
         cmd_index(repo, false)?;
     }
 
+    // Best-effort upgrade check (don't fail init if network is unavailable)
+    if let Ok(latest) = crate::upgrade::check_latest_version() {
+        let current = format!("v{}", env!("CARGO_PKG_VERSION"));
+        if crate::upgrade::is_newer(&current, &latest) {
+            println!("\nUpdate available: {current} -> {latest}");
+            println!("Run `pruner upgrade` to update.");
+        }
+    }
+
     Ok(())
 }
 

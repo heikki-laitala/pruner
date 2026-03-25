@@ -35,7 +35,7 @@ fn detect_platform() -> Result<Platform> {
 }
 
 /// Fetch the latest release tag from GitHub.
-fn fetch_latest_version() -> Result<String> {
+pub fn check_latest_version() -> Result<String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body: serde_json::Value = ureq::get(&url)
         .header("User-Agent", &format!("pruner/{CURRENT_VERSION}"))
@@ -58,7 +58,7 @@ fn version_bare(v: &str) -> &str {
 }
 
 /// Compare two semver-ish version strings. Returns true if `latest` is newer than `current`.
-fn is_newer(current: &str, latest: &str) -> bool {
+pub fn is_newer(current: &str, latest: &str) -> bool {
     let cur = version_bare(current);
     let lat = version_bare(latest);
     // Simple lexicographic comparison works for semver with same segment count
@@ -235,7 +235,7 @@ pub fn cmd_upgrade(check: bool, target_version: Option<&str>) -> Result<()> {
         }
         None => {
             eprintln!("Checking for updates...");
-            fetch_latest_version()?
+            check_latest_version()?
         }
     };
 
