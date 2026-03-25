@@ -274,6 +274,94 @@ mod status {
 }
 
 // ============================================================================
+// Multi-repo (meta-repo pattern)
+// ============================================================================
+
+mod multi_repo {
+    use super::*;
+
+    #[test]
+    fn context_discovers_indexed_subrepos() {
+        // Create a meta-repo with two indexed sub-repos
+        let meta = TempDir::new().unwrap();
+
+        // Sub-repo 1: python webapp
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        pruner()
+            .args(["index", sub1.to_str().unwrap()])
+            .assert()
+            .success();
+
+        // Sub-repo 2: rust crate
+        let sub2 = meta.path().join("backend");
+        let fixture2 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust_crate");
+        std::fs::create_dir_all(&sub2).unwrap();
+        copy_dir_all(&fixture2, &sub2).unwrap();
+        pruner()
+            .args(["index", sub2.to_str().unwrap()])
+            .assert()
+            .success();
+
+        // Run context from meta-repo level — should discover sub-repos
+        let output = pruner()
+            .args([
+                "context",
+                meta.path().to_str().unwrap(),
+                "login authentication",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success(), "context should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            stderr.contains("Multi-repo mode"),
+            "should report multi-repo mode, got stderr: {stderr}"
+        );
+        // Should include output from at least one sub-repo with repo header
+        assert!(
+            stdout.contains("# Repo:"),
+            "should have repo header in output, got: {stdout}"
+        );
+    }
+
+    #[test]
+    fn context_skips_irrelevant_subrepos() {
+        let meta = TempDir::new().unwrap();
+
+        // Only index one sub-repo
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        pruner()
+            .args(["index", sub1.to_str().unwrap()])
+            .assert()
+            .success();
+
+        // Create an empty dir (no index)
+        std::fs::create_dir_all(meta.path().join("docs")).unwrap();
+
+        let output = pruner()
+            .args(["context", meta.path().to_str().unwrap(), "login"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("1 indexed sub-repos"),
+            "should find only 1 indexed sub-repo, got: {stderr}"
+        );
+    }
+}
+
+// ============================================================================
 // Hook scripts
 // ============================================================================
 

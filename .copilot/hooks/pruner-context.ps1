@@ -13,9 +13,17 @@ if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) {
     $root = "."
 }
 
-# Only run if this looks like a code repo (has .git or .pruner already).
+# Only run if this looks like a code repo or meta-repo with indexed sub-repos.
 # Avoids creating .pruner/ in random directories like ~ or ~/Downloads.
-if (-not (Test-Path (Join-Path $root ".git")) -and -not (Test-Path (Join-Path $root ".pruner"))) {
+$hasIndex = (Test-Path (Join-Path $root ".git")) -or (Test-Path (Join-Path $root ".pruner"))
+if (-not $hasIndex) {
+    # Check for indexed sub-repos (meta-repo pattern)
+    $subIndexes = Get-ChildItem -Path $root -Directory | Where-Object {
+        Test-Path (Join-Path $_.FullName ".pruner\index.db")
+    }
+    if ($subIndexes.Count -gt 0) { $hasIndex = $true }
+}
+if (-not $hasIndex) {
     exit 0
 }
 
