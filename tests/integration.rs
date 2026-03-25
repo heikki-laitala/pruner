@@ -1242,10 +1242,7 @@ mod upgrade {
 
     #[test]
     fn upgrade_check_shows_version_info() {
-        let output = pruner()
-            .args(["upgrade", "--check"])
-            .output()
-            .unwrap();
+        let output = pruner().args(["upgrade", "--check"]).output().unwrap();
 
         // Allow network failures (GitHub API rate limiting in CI)
         if output.status.success() {
