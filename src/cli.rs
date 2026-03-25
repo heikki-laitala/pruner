@@ -960,6 +960,22 @@ fn cmd_stats(repo: &Path) -> Result<()> {
     Ok(())
 }
 
+fn delta_pct(from: usize, to: usize) -> String {
+    if from == 0 {
+        return String::new();
+    }
+    let pct = (to as f64 - from as f64) / from as f64 * 100.0;
+    format!("{pct:+.0}%")
+}
+
+fn delta_pct_f64(from: f64, to: f64) -> String {
+    if from == 0.0 {
+        return String::new();
+    }
+    let pct = (to - from) / from * 100.0;
+    format!("{pct:+.0}%")
+}
+
 fn format_tokens(n: usize) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -1026,26 +1042,31 @@ fn cmd_estimate(
 
         // Table header
         println!(
-            "  {:<24} {:>12} {:>12} {:>10}",
-            "", "Without", "With pruner", "Delta"
+            "  {:<20} {:>12} {:>12} {:>10} {:>8}",
+            "", "Without", "With pruner", "Delta", "Δ%"
         );
-        println!("  {}", "-".repeat(60));
+        println!("  {}", "-".repeat(66));
 
         // Turns
         let turn_delta = est.with_turns.len() as i64 - est.without_turns.len() as i64;
         println!(
-            "  {:<24} {:>12} {:>12} {:>+10}",
+            "  {:<20} {:>12} {:>12} {:>+10} {:>7}",
             "Turns",
             est.without_turns.len(),
             est.with_turns.len(),
-            turn_delta
+            turn_delta,
+            delta_pct(est.without_turns.len(), est.with_turns.len())
         );
 
         // Tool calls
         let tool_delta = est.with_tool_calls as i64 - est.without_tool_calls as i64;
         println!(
-            "  {:<24} {:>12} {:>12} {:>+10}",
-            "Tool calls", est.without_tool_calls, est.with_tool_calls, tool_delta
+            "  {:<20} {:>12} {:>12} {:>+10} {:>7}",
+            "Tool calls",
+            est.without_tool_calls,
+            est.with_tool_calls,
+            tool_delta,
+            delta_pct(est.without_tool_calls, est.with_tool_calls)
         );
 
         // Files read
@@ -1059,57 +1080,66 @@ fn cmd_estimate(
             est.without_files_read.to_string()
         };
         println!(
-            "  {:<24} {:>12} {:>12} {:>+10}",
-            "Files read", without_files_detail, est.with_files_read, file_delta
+            "  {:<20} {:>12} {:>12} {:>+10} {:>7}",
+            "Files read",
+            without_files_detail,
+            est.with_files_read,
+            file_delta,
+            delta_pct(est.without_files_read, est.with_files_read)
         );
 
         // Input tokens
         let input_delta = est.with_input_tokens as i64 - est.without_input_tokens as i64;
         println!(
-            "  {:<24} {:>12} {:>12} {:>+10}",
+            "  {:<20} {:>12} {:>12} {:>10} {:>7}",
             "Input tokens",
             format_tokens(est.without_input_tokens),
             format_tokens(est.with_input_tokens),
-            format_tokens_signed(input_delta)
+            format_tokens_signed(input_delta),
+            delta_pct(est.without_input_tokens, est.with_input_tokens)
         );
 
         // Output tokens
         let output_delta = est.with_output_tokens as i64 - est.without_output_tokens as i64;
         println!(
-            "  {:<24} {:>12} {:>12} {:>+10}",
+            "  {:<20} {:>12} {:>12} {:>10} {:>7}",
             "Output tokens",
             format_tokens(est.without_output_tokens),
             format_tokens(est.with_output_tokens),
-            format_tokens_signed(output_delta)
+            format_tokens_signed(output_delta),
+            delta_pct(est.without_output_tokens, est.with_output_tokens)
         );
 
         // Total tokens
         println!(
-            "  {:<24} {:>12} {:>12} {:>+10}",
+            "  {:<20} {:>12} {:>12} {:>10} {:>7}",
             "Total tokens",
             format_tokens(est.without_total_tokens),
             format_tokens(est.with_total_tokens),
-            format_tokens_signed(-est.token_saving())
+            format_tokens_signed(-est.token_saving()),
+            delta_pct(est.without_total_tokens, est.with_total_tokens)
         );
 
         // Cost
         let cost_delta = est.with_cost() - est.without_cost();
         println!(
-            "  {:<24} {:>11} {:>11} {:>+10}",
+            "  {:<20} {:>11} {:>11} {:>+10} {:>7}",
             "Est. cost",
             format!("${:.4}", est.without_cost()),
             format!("${:.4}", est.with_cost()),
-            format!("${:.4}", cost_delta)
+            format!("${:.4}", cost_delta),
+            delta_pct_f64(est.without_cost(), est.with_cost())
         );
 
         // Wall time
         let time_delta = est.with_wall_secs - est.without_wall_secs;
         println!(
-            "  {:<24} {:>11}s {:>11}s {:>+9}s",
+            "  {:<20} {:>11}s {:>11}s {:>+9}s {:>7}",
             "Est. wall time",
             format!("{:.0}", est.without_wall_secs),
             format!("{:.0}", est.with_wall_secs),
-            format!("{:.0}", time_delta)
+            format!("{:.0}", time_delta),
+            delta_pct_f64(est.without_wall_secs, est.with_wall_secs)
         );
 
         println!();
