@@ -36,3 +36,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --bin pruner --test integration
+
+  test-ab-unit:
+    name: A/B test unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - name: Build release binary
+        run: cargo build --release
+      - name: Run A/B test unit tests
+        run: uv run --with pytest pytest tests/test_ab_test.py -v
