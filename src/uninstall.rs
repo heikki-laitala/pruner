@@ -272,10 +272,13 @@ impl FoundTrace {
 /// Infer the project root from a trace path by stripping known integration subdirs.
 /// e.g. `/home/user/myproject/.claude/skills/pruner` -> `/home/user/myproject`
 fn infer_project(path: &Path) -> PathBuf {
-    let s = path.to_string_lossy();
-    for marker in ["/.claude/", "/.copilot/", "/.github/", "/.pruner"] {
-        if let Some(idx) = s.find(marker) {
-            return PathBuf::from(&s[..idx]);
+    const MARKERS: &[&str] = &[".claude", ".copilot", ".github", ".pruner"];
+    // Walk ancestors; the project root is the parent of the first known marker dir.
+    for ancestor in path.ancestors() {
+        if let Some(name) = ancestor.file_name() {
+            if MARKERS.iter().any(|m| name == *m) {
+                return ancestor.parent().unwrap_or(ancestor).to_path_buf();
+            }
         }
     }
     // Fallback: parent directory
