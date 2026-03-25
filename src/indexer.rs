@@ -26,6 +26,7 @@ fn normalize_path(path: &str) -> String {
 #[derive(Debug, Default)]
 pub struct IndexStats {
     pub files: usize,
+    pub parsed: usize,
     pub symbols: usize,
     pub imports: usize,
     pub calls: usize,
@@ -226,6 +227,7 @@ fn index_files(
 
         // Parse if language is supported
         if let Some(lang) = language {
+            stats.parsed += 1;
             let parse_result = match parser::parse_source(&content, lang) {
                 Ok(r) => r,
                 Err(e) => {
@@ -571,7 +573,8 @@ mod tests {
 
         let stats = index_repo(dir.path(), &db, false)?;
         assert_eq!(stats.files, 1);
-        assert_eq!(stats.symbols, 0); // no tree-sitter support
+        assert_eq!(stats.parsed, 0); // no tree-sitter support
+        assert_eq!(stats.symbols, 0);
         Ok(())
     }
 
