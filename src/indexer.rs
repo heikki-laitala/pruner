@@ -54,7 +54,7 @@ pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<Index
     db.set_synchronous_normal()?;
     db.begin_transaction()?;
     db.clear()?;
-    match index_files(repo_path, db, verbose, None) {
+    match index_files(repo_path, db, verbose) {
         Ok(stats) => {
             db.commit_transaction()?;
             Ok(stats)
@@ -382,7 +382,7 @@ fn index_incremental_inner(
     }
 
     // Step 9: Rebuild test edges for changed files only
-    build_test_edges_for_files(repo_path, db, &new_file_ids)?;
+    build_test_edges_for_files(db, &new_file_ids)?;
 
     stats.unchanged = 0; // Caller sets this
 
@@ -418,14 +418,8 @@ struct ParsedFile {
     parse_result: Option<parser::ParseResult>,
 }
 
-/// Index files into the DB. If `only_paths` is Some, only index those relative paths
-/// (but still rebuild all edges from the full symbol set). None means index all files.
-fn index_files(
-    repo_path: &Path,
-    db: &IndexDb,
-    verbose: bool,
-    only_paths: Option<&HashSet<String>>,
-) -> Result<IndexStats> {
+/// Full index: walk all files, parse in parallel, insert into DB, build all edges.
+fn index_files(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<IndexStats> {
     let mut stats = IndexStats::default();
 
     // symbol_name -> Vec<(symbol_db_id, file_db_id)> for call resolution
@@ -445,28 +439,6 @@ fn index_files(
         let path = entry.path();
         if languages::is_ignored_file(path) {
             stats.skipped += 1;
-            continue;
-        }
-
-        let rel_path = normalize_path(
-            &path
-                .strip_prefix(repo_path)
-                .unwrap_or(path)
-                .to_string_lossy(),
-        );
-
-        // In incremental mode, skip files that don't need re-indexing
-        // but still collect their symbols for edge resolution
-        if only_paths.is_some_and(|paths| !paths.contains(&rel_path)) {
-            if let Some(f) = db.get_file_by_path(&rel_path)? {
-                for sym in db.symbols_for_file(f.id)? {
-                    symbol_map
-                        .entry(sym.name.clone())
-                        .or_default()
-                        .push((sym.id, f.id));
-                }
-            }
-            stats.unchanged += 1;
             continue;
         }
 
@@ -576,20 +548,6 @@ fn index_files(
         }
     }
 
-    // In incremental mode, collect calls from unchanged files before clearing edges
-    if let Some(paths) = only_paths {
-        for f in db.all_files()? {
-            if paths.contains(&f.path) {
-                continue; // Already collected from fresh parse above
-            }
-            for sym in db.symbols_for_file(f.id)? {
-                for call in db.calls_by_symbol(sym.id)? {
-                    pending_calls.push((sym.id, call.callee_name.clone(), call.line as usize));
-                }
-            }
-        }
-    }
-
     // Clear progress line
     if !verbose && stats.files > 0 && is_tty {
         eprint!("\r  {} files indexed, resolving edges...", stats.files);
@@ -646,7 +604,7 @@ fn index_files(
     }
 
     // Build test edges
-    build_test_edges(repo_path, db)?;
+    build_test_edges(db)?;
 
     // Clear progress line
     if !verbose && stats.files > 0 && std::io::stderr().is_terminal() {
@@ -658,7 +616,7 @@ fn index_files(
 }
 
 /// Heuristic test edges: test files -> source files.
-fn build_test_edges(_repo_path: &Path, db: &IndexDb) -> Result<()> {
+fn build_test_edges(db: &IndexDb) -> Result<()> {
     let all_files = db.all_files()?;
     let test_files: Vec<_> = all_files.iter().filter(|f| f.is_test).collect();
     let source_files: Vec<_> = all_files.iter().filter(|f| !f.is_test).collect();
@@ -703,7 +661,7 @@ fn build_test_edges(_repo_path: &Path, db: &IndexDb) -> Result<()> {
 }
 
 /// Build test edges only for specific file IDs (incremental mode).
-fn build_test_edges_for_files(_repo_path: &Path, db: &IndexDb, file_ids: &[i64]) -> Result<()> {
+fn build_test_edges_for_files(db: &IndexDb, file_ids: &[i64]) -> Result<()> {
     if file_ids.is_empty() {
         return Ok(());
     }
