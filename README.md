@@ -226,6 +226,15 @@ pruner estimate . "fix login flow" --show-steps
 
 Simulates a Claude Code session with and without pruner to estimate token savings.
 
+### Check installation status
+
+```bash
+pruner status              # show global integrations
+pruner status /path/to/repo  # show global + per-project integrations
+```
+
+Shows which integrations are installed (Claude/Copilot skills, hooks, CLAUDE.md), index age, and .gitignore status.
+
 ### Upgrade and uninstall
 
 ```bash
