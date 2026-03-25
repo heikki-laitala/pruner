@@ -3,12 +3,15 @@
 
 use crate::db::IndexDb;
 use crate::languages;
+use crate::languages::Language;
 use crate::parser;
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 /// Normalize a path string to use forward slashes (for cross-platform DB consistency).
@@ -151,6 +154,18 @@ fn walk_repo(repo_path: &Path) -> impl Iterator<Item = Result<ignore::DirEntry, 
         .build()
 }
 
+/// A file that has been read and parsed on a worker thread, ready for DB insertion.
+struct ParsedFile {
+    rel_path: String,
+    lang_str: Option<String>,
+    size: i64,
+    line_count: i64,
+    is_test: bool,
+    mtime: i64,
+    language: Option<Language>,
+    parse_result: Option<parser::ParseResult>,
+}
+
 /// Index files into the DB. If `only_paths` is Some, only index those relative paths
 /// (but still rebuild all edges from the full symbol set). None means index all files.
 fn index_files(
@@ -165,6 +180,9 @@ fn index_files(
     let mut symbol_map: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
     // (caller_symbol_db_id, callee_name, line) for deferred call resolution
     let mut pending_calls: Vec<(i64, String, usize)> = Vec::new();
+
+    // Phase 1: Walk and collect file paths to process
+    let mut to_parse: Vec<PathBuf> = Vec::new();
 
     for entry in walk_repo(repo_path) {
         let entry = entry?;
@@ -188,7 +206,6 @@ fn index_files(
         // In incremental mode, skip files that don't need re-indexing
         // but still collect their symbols for edge resolution
         if only_paths.is_some_and(|paths| !paths.contains(&rel_path)) {
-            // Collect existing symbols for call resolution
             if let Some(f) = db.get_file_by_path(&rel_path)? {
                 for sym in db.symbols_for_file(f.id)? {
                     symbol_map
@@ -201,52 +218,78 @@ fn index_files(
             continue;
         }
 
-        let language = languages::detect_language(path);
-        let is_test = languages::is_test_file(path);
-        let mtime = file_mtime(path);
+        to_parse.push(path.to_path_buf());
+    }
 
-        let content = match fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => {
-                stats.skipped += 1;
-                continue;
-            }
-        };
+    // Phase 2: Read + parse files in parallel
+    let skipped_count = AtomicUsize::new(0);
+    let parsed_files: Vec<ParsedFile> = to_parse
+        .par_iter()
+        .filter_map(|path| {
+            let rel_path = normalize_path(
+                &path
+                    .strip_prefix(repo_path)
+                    .unwrap_or(path)
+                    .to_string_lossy(),
+            );
+            let language = languages::detect_language(path);
+            let is_test = languages::is_test_file(path);
+            let mtime = file_mtime(path);
 
-        let line_count = content.lines().count() as i64;
-        let size = content.len() as i64;
-        let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
+            let content = match fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => {
+                    skipped_count.fetch_add(1, Ordering::Relaxed);
+                    return None;
+                }
+            };
 
+            let line_count = content.lines().count() as i64;
+            let size = content.len() as i64;
+            let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
+
+            let parse_result = language.and_then(|lang| parser::parse_source(&content, lang).ok());
+
+            Some(ParsedFile {
+                rel_path,
+                lang_str,
+                size,
+                line_count,
+                is_test,
+                mtime,
+                language,
+                parse_result,
+            })
+        })
+        .collect();
+
+    stats.skipped += skipped_count.load(Ordering::Relaxed);
+
+    // Phase 3: Insert into DB serially (SQLite is single-threaded)
+    let is_tty = std::io::stderr().is_terminal();
+    for pf in &parsed_files {
         let file_id = db.insert_file(
-            &rel_path,
-            lang_str.as_deref(),
-            size,
-            line_count,
-            is_test,
-            mtime,
+            &pf.rel_path,
+            pf.lang_str.as_deref(),
+            pf.size,
+            pf.line_count,
+            pf.is_test,
+            pf.mtime,
         )?;
         stats.files += 1;
 
         if verbose {
-            eprintln!("  {rel_path} ({} lines)", line_count);
-        } else if stats.files % 50 == 0 && std::io::stderr().is_terminal() {
+            eprintln!("  {} ({} lines)", pf.rel_path, pf.line_count);
+        } else if stats.files % 50 == 0 && is_tty {
             eprint!("\r  {} files indexed...", stats.files);
             let _ = std::io::stderr().flush();
         }
 
-        // Parse if language is supported
-        if let Some(lang) = language {
+        if pf.language.is_some() {
             stats.parsed += 1;
-            let parse_result = match parser::parse_source(&content, lang) {
-                Ok(r) => r,
-                Err(e) => {
-                    if verbose {
-                        eprintln!("    parse error: {e}");
-                    }
-                    continue;
-                }
-            };
+        }
 
+        if let Some(ref parse_result) = pf.parse_result {
             let mut symbol_id_map: Vec<i64> = Vec::new();
 
             for sym in &parse_result.symbols {
@@ -296,7 +339,7 @@ fn index_files(
     }
 
     // Clear progress line
-    if !verbose && stats.files > 0 && std::io::stderr().is_terminal() {
+    if !verbose && stats.files > 0 && is_tty {
         eprint!("\r  {} files indexed, resolving edges...", stats.files);
         let _ = std::io::stderr().flush();
     }
@@ -304,9 +347,14 @@ fn index_files(
     // Clear old edges and rebuild
     db.clear_edges()?;
 
+    // Re-add contains edges (cleared above)
+    for f in db.all_files()? {
+        db.insert_edge("contains", None, None, Some(f.id), None, None)?;
+        stats.edges += 1;
+    }
+
     // Resolve calls to edges
     let total_calls = pending_calls.len();
-    let is_tty = std::io::stderr().is_terminal();
     for (i, (caller_id, callee_name, line)) in pending_calls.iter().enumerate() {
         db.insert_call(*caller_id, callee_name, *line as i64)?;
 
@@ -343,12 +391,6 @@ fn index_files(
             );
             let _ = std::io::stderr().flush();
         }
-    }
-
-    // Add contains edges for new files
-    for f in db.all_files()? {
-        db.insert_edge("contains", None, None, Some(f.id), None, None)?;
-        stats.edges += 1;
     }
 
     // Build test edges
