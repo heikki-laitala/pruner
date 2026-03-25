@@ -197,10 +197,12 @@ pub fn estimate_claude_session(
         });
         turn2_tokens += grep_output_tokens;
     }
-    without_turns.push(Turn {
-        steps: turn2_steps,
-        new_tokens: turn2_tokens,
-    });
+    if !turn2_steps.is_empty() {
+        without_turns.push(Turn {
+            steps: turn2_steps,
+            new_tokens: turn2_tokens,
+        });
+    }
 
     // Turn 3: Read irrelevant files (wrong guesses based on keyword matches)
     let all_indexed = db.all_files()?;
