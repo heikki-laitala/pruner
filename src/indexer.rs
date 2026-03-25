@@ -378,6 +378,18 @@ fn index_incremental_inner(
                     stats.edges += 1;
                 }
             }
+        } else {
+            // Symbol was removed/renamed — keep an unresolved edge so
+            // call-graph queries remain complete until a full reindex.
+            db.insert_edge(
+                "calls",
+                None,
+                Some(*caller_id),
+                None,
+                None,
+                Some(callee_name),
+            )?;
+            stats.edges += 1;
         }
     }
 
@@ -701,13 +713,15 @@ fn build_test_edges_for_files(db: &IndexDb, file_ids: &[i64]) -> Result<()> {
             }
         }
 
-        if test_is_new {
-            let imports = db.imports_for_file(tf.id)?;
-            for imp in &imports {
-                for sf in &source_files {
-                    if sf.path.contains(&imp.module.replace('.', "/")) {
-                        db.insert_edge("tests", Some(tf.id), None, Some(sf.id), None, None)?;
-                    }
+        // Rebuild import-based edges if the test or any matched source is new/changed
+        let imports = db.imports_for_file(tf.id)?;
+        for imp in &imports {
+            for sf in &source_files {
+                if !test_is_new && !file_id_set.contains(&sf.id) {
+                    continue;
+                }
+                if sf.path.contains(&imp.module.replace('.', "/")) {
+                    db.insert_edge("tests", Some(tf.id), None, Some(sf.id), None, None)?;
                 }
             }
         }
