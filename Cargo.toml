@@ -29,6 +29,8 @@ zip = "2"
 self-replace = "1"
 tempfile = "3"
 rayon = "1.11.0"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -899,8 +899,8 @@ mod tests {
         let dir = TempDir::new()?;
         let db = IndexDb::open_memory()?;
 
-        // .c is unsupported — file gets indexed but no symbols parsed
-        fs::write(dir.path().join("main.c"), "int main() { return 0; }\n")?;
+        // .rb is unsupported — file gets indexed but no symbols parsed
+        fs::write(dir.path().join("main.rb"), "def hello; end\n")?;
 
         let stats = index_repo(dir.path(), &db, false)?;
         assert_eq!(stats.files, 1);

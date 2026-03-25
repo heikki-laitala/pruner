@@ -56,6 +56,8 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult> {
         Language::Rust => extract_rust(root, src),
         Language::Go => extract_go(root, src),
         Language::Java => extract_java(root, src),
+        Language::C => extract_c(root, src),
+        Language::Cpp => extract_cpp(root, src),
     }
 }
 
@@ -68,6 +70,8 @@ fn ts_language_for(language: Language) -> tree_sitter::Language {
         Language::Rust => tree_sitter_rust::LANGUAGE.into(),
         Language::Go => tree_sitter_go::LANGUAGE.into(),
         Language::Java => tree_sitter_java::LANGUAGE.into(),
+        Language::C => tree_sitter_c::LANGUAGE.into(),
+        Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
     }
 }
 
@@ -947,6 +951,383 @@ fn build_java_constructor_signature(node: &tree_sitter::Node, src: &[u8]) -> Str
     format!("{name}{params}")
 }
 
+// -- C extraction --
+
+fn extract_c(root: tree_sitter::Node, src: &[u8]) -> Result<ParseResult> {
+    let mut result = ParseResult::default();
+    extract_c_node(root, src, &mut result, None);
+    Ok(result)
+}
+
+fn extract_c_node(
+    node: tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    parent_index: Option<usize>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(declarator) = child.child_by_field_name("declarator")
+                    && let Some(name) = extract_c_declarator_name(&declarator, src)
+                {
+                    let sig = build_c_fn_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name,
+                        kind: "function".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: Some(sig),
+                    });
+                    extract_c_calls(&child, src, result, idx);
+                }
+            }
+            "declaration" => {
+                // Function declarations (prototypes) — skip, only extract definitions
+                // But extract global variable declarations if needed
+            }
+            "struct_specifier" | "enum_specifier" | "union_specifier" => {
+                extract_c_type(&child, src, result);
+            }
+            "type_definition" => {
+                extract_c_typedef(&child, src, result);
+            }
+            "preproc_include" => {
+                if let Some(path_node) = child.child_by_field_name("path") {
+                    let raw = node_text(path_node, src);
+                    let module = raw.trim_matches(&['"', '<', '>'] as &[char]).to_string();
+                    result.imports.push(Import {
+                        module,
+                        names: None,
+                    });
+                }
+            }
+            _ => {
+                extract_c_node(child, src, result, parent_index);
+            }
+        }
+    }
+}
+
+/// Extract the name from a C declarator (handles function_declarator, pointer_declarator, etc.)
+fn extract_c_declarator_name(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" => Some(node_text(*node, src).to_string()),
+        "function_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|d| extract_c_declarator_name(&d, src)),
+        "pointer_declarator" | "parenthesized_declarator" | "array_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|d| extract_c_declarator_name(&d, src)),
+        _ => {
+            // Try first named child as fallback
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(name) = extract_c_declarator_name(&child, src) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+    }
+}
+
+fn extract_c_type(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    let kind = match node.kind() {
+        "struct_specifier" => "struct",
+        "enum_specifier" => "enum",
+        "union_specifier" => "union",
+        _ => "type",
+    };
+    if let Some(name_node) = node.child_by_field_name("name") {
+        // Only extract if it has a body (definition, not just forward declaration)
+        if node.child_by_field_name("body").is_some() {
+            result.symbols.push(Symbol {
+                name: node_text(name_node, src).to_string(),
+                kind: kind.to_string(),
+                line_start: node.start_position().row + 1,
+                line_end: node.end_position().row + 1,
+                parent_index: None,
+                signature: None,
+            });
+        }
+    }
+}
+
+fn extract_c_typedef(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    // typedef struct { ... } Name; — the name is a type_identifier child
+    // typedef int MyInt; — the name is also a type_identifier child
+    // typedef void (*FuncPtr)(int); — the name is in a function_declarator
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "type_identifier" => {
+                result.symbols.push(Symbol {
+                    name: node_text(child, src).to_string(),
+                    kind: "type".to_string(),
+                    line_start: node.start_position().row + 1,
+                    line_end: node.end_position().row + 1,
+                    parent_index: None,
+                    signature: None,
+                });
+                return;
+            }
+            "function_declarator" | "pointer_declarator" => {
+                if let Some(name) = extract_c_declarator_name(&child, src) {
+                    result.symbols.push(Symbol {
+                        name,
+                        kind: "type".to_string(),
+                        line_start: node.start_position().row + 1,
+                        line_end: node.end_position().row + 1,
+                        parent_index: None,
+                        signature: None,
+                    });
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_c_calls(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    caller_index: usize,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression"
+            && let Some(func) = child.child_by_field_name("function")
+        {
+            let name = match func.kind() {
+                "identifier" => node_text(func, src).to_string(),
+                "field_expression" => {
+                    // obj->method or obj.method
+                    func.child_by_field_name("field")
+                        .map(|f| node_text(f, src).to_string())
+                        .unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            if !name.is_empty() {
+                result.calls.push(Call {
+                    caller_index,
+                    callee_name: name,
+                    line: child.start_position().row + 1,
+                });
+            }
+        }
+        extract_c_calls(&child, src, result, caller_index);
+    }
+}
+
+fn build_c_fn_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let return_type = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, src))
+        .unwrap_or("void");
+    let declarator = node.child_by_field_name("declarator");
+    if let Some(decl) = declarator {
+        let decl_text = node_text(decl, src);
+        // Remove the body, just keep the declaration part
+        format!("{return_type} {decl_text}")
+    } else {
+        return_type.to_string()
+    }
+}
+
+// -- C++ extraction --
+
+fn extract_cpp(root: tree_sitter::Node, src: &[u8]) -> Result<ParseResult> {
+    let mut result = ParseResult::default();
+    extract_cpp_node(root, src, &mut result, None);
+    Ok(result)
+}
+
+fn extract_cpp_node(
+    node: tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    parent_index: Option<usize>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(declarator) = child.child_by_field_name("declarator")
+                    && let Some(name) = extract_cpp_fn_name(&declarator, src)
+                {
+                    let is_method = name.contains("::");
+                    let kind = if is_method { "method" } else { "function" };
+                    let display_name = if is_method {
+                        name.rsplit("::").next().unwrap_or(&name).to_string()
+                    } else {
+                        name.clone()
+                    };
+                    let sig = build_c_fn_signature(&child, src);
+                    let idx = result.symbols.len();
+                    let parent = if is_method {
+                        let class_name = name.split("::").next().unwrap_or("");
+                        result
+                            .symbols
+                            .iter()
+                            .position(|s| s.name == class_name && s.kind == "class")
+                    } else {
+                        parent_index
+                    };
+                    result.symbols.push(Symbol {
+                        name: display_name,
+                        kind: kind.to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: parent,
+                        signature: Some(sig),
+                    });
+                    extract_c_calls(&child, src, result, idx);
+                }
+            }
+            "class_specifier" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "class".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    // Extract inline method definitions inside the class body
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_cpp_class_body(&body, src, result, Some(idx));
+                    }
+                }
+            }
+            "struct_specifier" => {
+                if let Some(name_node) = child.child_by_field_name("name")
+                    && child.child_by_field_name("body").is_some()
+                {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "struct".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_cpp_class_body(&body, src, result, Some(idx));
+                    }
+                }
+            }
+            "enum_specifier" => {
+                extract_c_type(&child, src, result);
+            }
+            "namespace_definition" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "namespace".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    if let Some(body) = child.child_by_field_name("body") {
+                        extract_cpp_node(body, src, result, Some(idx));
+                    }
+                }
+            }
+            "type_definition" => {
+                extract_c_typedef(&child, src, result);
+            }
+            "preproc_include" => {
+                if let Some(path_node) = child.child_by_field_name("path") {
+                    let raw = node_text(path_node, src);
+                    let module = raw.trim_matches(&['"', '<', '>'] as &[char]).to_string();
+                    result.imports.push(Import {
+                        module,
+                        names: None,
+                    });
+                }
+            }
+            "template_declaration" => {
+                // Recurse into template to find the class/function inside
+                extract_cpp_node(child, src, result, parent_index);
+            }
+            _ => {
+                extract_cpp_node(child, src, result, parent_index);
+            }
+        }
+    }
+}
+
+/// Extract function/method name from a C++ declarator, handling qualified names like Class::method.
+fn extract_cpp_fn_name(node: &tree_sitter::Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" | "field_identifier" | "destructor_name" => {
+            Some(node_text(*node, src).to_string())
+        }
+        "qualified_identifier" => Some(node_text(*node, src).to_string()),
+        "function_declarator" | "reference_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|d| extract_cpp_fn_name(&d, src)),
+        "pointer_declarator" | "parenthesized_declarator" => node
+            .child_by_field_name("declarator")
+            .and_then(|d| extract_cpp_fn_name(&d, src)),
+        "operator_name" => Some(node_text(*node, src).to_string()),
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if let Some(name) = extract_cpp_fn_name(&child, src) {
+                    return Some(name);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Extract inline method definitions from a class/struct body.
+fn extract_cpp_class_body(
+    body: &tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    parent_index: Option<usize>,
+) {
+    let mut cursor = body.walk();
+    for child in body.children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(declarator) = child.child_by_field_name("declarator")
+                    && let Some(name) = extract_cpp_fn_name(&declarator, src)
+                {
+                    let sig = build_c_fn_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name,
+                        kind: "method".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: Some(sig),
+                    });
+                    extract_c_calls(&child, src, result, idx);
+                }
+            }
+            "access_specifier" | "field_declaration" => {}
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1813,5 +2194,252 @@ class Foo {
         assert_eq!(normalize_java_type_name("List<Map<K,V>>"), "List");
         assert_eq!(normalize_java_type_name("com.foo.User"), "User");
         assert_eq!(normalize_java_type_name("com.foo.Box<String>"), "Box");
+    }
+
+    // -- C tests --
+
+    #[test]
+    fn test_parse_c_function() -> anyhow::Result<()> {
+        let src = r#"
+#include <stdio.h>
+
+int authenticate(const char* email, const char* password) {
+    return 1;
+}
+"#;
+        let result = parse_source(src, Language::C)?;
+        assert!(result.symbols.iter().any(|s| s.name == "authenticate"
+            && s.kind == "function"
+            && s.signature.as_ref().unwrap().contains("authenticate")));
+        assert!(result.imports.iter().any(|i| i.module == "stdio.h"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_c_struct_and_typedef() -> anyhow::Result<()> {
+        let src = r#"
+struct User {
+    int id;
+    char* name;
+};
+
+typedef struct {
+    int x;
+    int y;
+} Point;
+"#;
+        let result = parse_source(src, Language::C)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "User" && s.kind == "struct"),
+            "should find struct User"
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Point" && s.kind == "type"),
+            "should find typedef Point, got: {:?}",
+            result.symbols
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_c_enum() -> anyhow::Result<()> {
+        let src = r#"
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+"#;
+        let result = parse_source(src, Language::C)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Color" && s.kind == "enum")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_c_calls() -> anyhow::Result<()> {
+        let src = r#"
+void process(void) {
+    int x = calculate(42);
+    printf("result: %d\n", x);
+}
+"#;
+        let result = parse_source(src, Language::C)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "calculate"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "printf"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_c_includes() -> anyhow::Result<()> {
+        let src = r#"
+#include <stdio.h>
+#include "myheader.h"
+#include <stdlib.h>
+"#;
+        let result = parse_source(src, Language::C)?;
+        assert_eq!(result.imports.len(), 3);
+        assert!(result.imports.iter().any(|i| i.module == "stdio.h"));
+        assert!(result.imports.iter().any(|i| i.module == "myheader.h"));
+        assert!(result.imports.iter().any(|i| i.module == "stdlib.h"));
+        Ok(())
+    }
+
+    // -- C++ tests --
+
+    #[test]
+    fn test_parse_cpp_class_and_methods() -> anyhow::Result<()> {
+        let src = r#"
+#include <string>
+
+class UserService {
+public:
+    void authenticate(const std::string& email) {
+        findUser(email);
+    }
+};
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "UserService" && s.kind == "class"),
+            "should find class UserService, got: {:?}",
+            result.symbols
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "authenticate" && s.kind == "method"),
+            "should find method authenticate, got: {:?}",
+            result.symbols
+        );
+        // Method should be parented to class
+        let method = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "authenticate")
+            .unwrap();
+        assert!(method.parent_index.is_some());
+        let parent = &result.symbols[method.parent_index.unwrap()];
+        assert_eq!(parent.name, "UserService");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_namespace() -> anyhow::Result<()> {
+        let src = r#"
+namespace auth {
+    void login() {}
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "auth" && s.kind == "namespace")
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "login" && s.kind == "function")
+        );
+        // login should be parented to namespace
+        let login = result.symbols.iter().find(|s| s.name == "login").unwrap();
+        assert!(login.parent_index.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_out_of_line_method() -> anyhow::Result<()> {
+        let src = r#"
+class Server {
+};
+
+void Server::start() {
+    listen(8080);
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "start" && s.kind == "method"),
+            "should find out-of-line method, got: {:?}",
+            result.symbols
+        );
+        // Should have a call to listen
+        assert!(result.calls.iter().any(|c| c.callee_name == "listen"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_includes() -> anyhow::Result<()> {
+        let src = r#"
+#include <iostream>
+#include <vector>
+#include "server.h"
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert_eq!(result.imports.len(), 3);
+        assert!(result.imports.iter().any(|i| i.module == "iostream"));
+        assert!(result.imports.iter().any(|i| i.module == "vector"));
+        assert!(result.imports.iter().any(|i| i.module == "server.h"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_struct() -> anyhow::Result<()> {
+        let src = r#"
+struct Point {
+    int x;
+    int y;
+    double distance() { return 0.0; }
+};
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "Point" && s.kind == "struct")
+        );
+        assert!(
+            result
+                .symbols
+                .iter()
+                .any(|s| s.name == "distance" && s.kind == "method"),
+            "should find inline method in struct"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_cpp_calls() -> anyhow::Result<()> {
+        let src = r#"
+void process() {
+    auto result = compute(42);
+    obj->sendMessage("hello");
+}
+"#;
+        let result = parse_source(src, Language::Cpp)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "compute"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "sendMessage"));
+        Ok(())
     }
 }
