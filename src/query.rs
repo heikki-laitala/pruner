@@ -110,6 +110,16 @@ impl From<TraceRow> for PathStep {
 }
 
 impl QueryResult {
+    /// Aggregate relevance score for ranking across multiple repos.
+    /// Combines file count, symbol count, execution path depth, and test coverage.
+    pub fn relevance_score(&self) -> i32 {
+        let file_score = self.matching_files.len() as i32 * 10;
+        let symbol_score = self.matching_symbols.len() as i32 * 5;
+        let path_score: i32 = self.execution_paths.iter().map(|p| p.len() as i32).sum();
+        let test_score = self.related_tests.len() as i32 * 3;
+        file_score + symbol_score + path_score + test_score
+    }
+
     /// All unique file IDs referenced in this result.
     pub fn all_relevant_file_ids(&self) -> HashSet<i64> {
         let mut ids = HashSet::new();
@@ -1465,5 +1475,29 @@ mod tests {
         let path = trace_execution_path_cte(&start, &db, 5)?;
         assert_eq!(path.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn test_relevance_score_proportional() {
+        let empty = QueryResult {
+            ask: "test".into(),
+            keywords: vec![],
+            matching_files: vec![],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec![],
+        };
+        assert_eq!(empty.relevance_score(), 0);
+
+        let db = IndexDb::open_memory().unwrap();
+        db.insert_file("a.py", Some("python"), 10, 100, false, 0)
+            .unwrap();
+        let files = db.search_files("a.py").unwrap();
+        let with_files = QueryResult {
+            matching_files: files,
+            ..empty
+        };
+        assert!(with_files.relevance_score() > 0);
     }
 }

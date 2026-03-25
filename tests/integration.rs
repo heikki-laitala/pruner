@@ -459,6 +459,75 @@ mod multi_repo {
     }
 
     #[test]
+    fn context_multi_repo_ranks_by_relevance() {
+        // Meta-repo with two sub-repos: webapp has auth symbols, rust_crate does not.
+        // Query for "authenticate" should put webapp first.
+        let meta = TempDir::new().unwrap();
+
+        // Sub-repo that should score HIGH for "authenticate"
+        let sub_webapp = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub_webapp).unwrap();
+        copy_dir_all(&fixture1, &sub_webapp).unwrap();
+        make_git_dir(&sub_webapp);
+        pruner()
+            .args(["index", sub_webapp.to_str().unwrap()])
+            .assert()
+            .success();
+
+        // Sub-repo that should score LOW for "authenticate"
+        let sub_rust = meta.path().join("rust_crate");
+        let fixture2 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rust_crate");
+        std::fs::create_dir_all(&sub_rust).unwrap();
+        copy_dir_all(&fixture2, &sub_rust).unwrap();
+        make_git_dir(&sub_rust);
+        pruner()
+            .args(["index", sub_rust.to_str().unwrap()])
+            .assert()
+            .success();
+
+        let output = pruner()
+            .args([
+                "context",
+                meta.path().to_str().unwrap(),
+                "authenticate user login",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        // Verify scoring info is logged
+        assert!(
+            stderr.contains("Including webapp"),
+            "webapp should be included, got stderr: {stderr}"
+        );
+
+        // Multi-repo header should be present
+        assert!(
+            stdout.contains("**Multi-repo context:**"),
+            "should have multi-repo header, got: {stdout}"
+        );
+
+        // webapp should appear first in output (highest score)
+        let webapp_pos = stdout.find("# Repo: webapp");
+        assert!(
+            webapp_pos.is_some(),
+            "webapp should appear in output, got: {stdout}"
+        );
+
+        // If rust_crate appears, it should be after webapp
+        if let Some(rust_pos) = stdout.find("# Repo: rust_crate") {
+            assert!(
+                webapp_pos.unwrap() < rust_pos,
+                "webapp should appear before rust_crate (higher relevance)"
+            );
+        }
+    }
+
+    #[test]
     fn context_skips_non_git_dirs() {
         let meta = TempDir::new().unwrap();
 
