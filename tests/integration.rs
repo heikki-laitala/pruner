@@ -996,25 +996,6 @@ mod incremental {
 }
 
 // ============================================================================
-// Cross-cutting: measure command
-// ============================================================================
-
-mod measure {
-    use super::*;
-
-    #[test]
-    fn measure_produces_token_comparison() {
-        let dir = setup_fixture("python_webapp");
-        let path = index_fixture(&dir);
-
-        pruner()
-            .args(["measure", &path, "authenticate user"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("token"));
-    }
-}
-
 // ============================================================================
 // Optional: real repo tests (run with PRUNER_TEST_REPO=/path/to/repo)
 // ============================================================================

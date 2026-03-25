@@ -1,7 +1,7 @@
 //! Token estimation and usage measurement.
 //!
 
-use crate::context::{self, ContextMode, format_context_text, generate_context};
+use crate::context::{ContextMode, format_context_text, generate_context};
 use crate::db::IndexDb;
 use crate::languages;
 use crate::query::QueryResult;
@@ -20,97 +20,6 @@ pub fn estimate_tokens(text: &str) -> usize {
 }
 
 static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w+|[^\w\s]|\n").unwrap());
-
-/// Token usage comparison between naive and pruner approaches.
-pub struct Measurement {
-    pub ask: String,
-    pub naive_files: Vec<String>,
-    pub naive_tokens: usize,
-    pub naive_lines: usize,
-    pub pruner_tokens_text: usize,
-    pub pruner_tokens_json: usize,
-    pub pruner_files: usize,
-    pub pruner_symbols: usize,
-    pub pruner_snippets: usize,
-    pub repo_total_tokens: usize,
-    pub repo_total_files: usize,
-}
-
-impl Measurement {
-    pub fn reduction_vs_naive(&self) -> f64 {
-        if self.naive_tokens == 0 {
-            return 0.0;
-        }
-        (1.0 - self.pruner_tokens_text as f64 / self.naive_tokens as f64) * 100.0
-    }
-
-    pub fn reduction_vs_repo(&self) -> f64 {
-        if self.repo_total_tokens == 0 {
-            return 0.0;
-        }
-        (1.0 - self.pruner_tokens_text as f64 / self.repo_total_tokens as f64) * 100.0
-    }
-}
-
-/// Measure token usage: pruner context vs naive full-file inclusion.
-pub fn measure(
-    query_result: &QueryResult,
-    db: &IndexDb,
-    repo_path: &Path,
-    max_snippet_lines: usize,
-) -> Result<Measurement> {
-    // Generate pruner context
-    let ctx = generate_context(
-        query_result,
-        repo_path,
-        max_snippet_lines,
-        ContextMode::Full,
-    )?;
-    let text_output = format_context_text(&ctx);
-    let json_output = context::format_context_json(&ctx)?;
-
-    // Naive approach: read full contents of all relevant files
-    let relevant_file_ids = query_result.all_relevant_file_ids();
-    let mut naive_content = String::new();
-    let mut naive_files = Vec::new();
-    let mut naive_lines: usize = 0;
-
-    for fid in &relevant_file_ids {
-        if let Some(f) = db.get_file_by_path_id(*fid)? {
-            let fpath = repo_path.join(&f.path);
-            if let Ok(content) = fs::read_to_string(&fpath) {
-                naive_content.push_str(&format!("\n\n--- {} ---\n\n{}", f.path, content));
-                naive_files.push(f.path.clone());
-                naive_lines += content.lines().count() + 1;
-            }
-        }
-    }
-
-    // Whole repo baseline
-    let mut repo_tokens = 0;
-    let mut repo_files = 0;
-    for f in db.all_files()? {
-        let fpath = repo_path.join(&f.path);
-        if let Ok(content) = fs::read_to_string(&fpath) {
-            repo_tokens += estimate_tokens(&content);
-            repo_files += 1;
-        }
-    }
-
-    Ok(Measurement {
-        ask: query_result.ask.clone(),
-        naive_files,
-        naive_tokens: estimate_tokens(&naive_content),
-        naive_lines,
-        pruner_tokens_text: estimate_tokens(&text_output),
-        pruner_tokens_json: estimate_tokens(&json_output),
-        pruner_files: ctx.key_files.len(),
-        pruner_symbols: ctx.key_symbols.len(),
-        pruner_snippets: ctx.snippets.len(),
-        repo_total_tokens: repo_tokens,
-        repo_total_files: repo_files,
-    })
-}
 
 /// A single step in a simulated Claude Code exploration.
 pub struct ExplorationStep {
@@ -395,63 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn test_measurement_reduction() {
-        let m = Measurement {
-            ask: "test".to_string(),
-            naive_files: vec!["a.py".to_string()],
-            naive_tokens: 1000,
-            naive_lines: 100,
-            pruner_tokens_text: 300,
-            pruner_tokens_json: 400,
-            pruner_files: 1,
-            pruner_symbols: 5,
-            pruner_snippets: 3,
-            repo_total_tokens: 10000,
-            repo_total_files: 50,
-        };
-        assert!((m.reduction_vs_naive() - 70.0).abs() < 0.1);
-        assert!((m.reduction_vs_repo() - 97.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_measurement_reduction_zero_naive() {
-        let m = Measurement {
-            ask: "test".to_string(),
-            naive_files: vec![],
-            naive_tokens: 0,
-            naive_lines: 0,
-            pruner_tokens_text: 0,
-            pruner_tokens_json: 0,
-            pruner_files: 0,
-            pruner_symbols: 0,
-            pruner_snippets: 0,
-            repo_total_tokens: 0,
-            repo_total_files: 0,
-        };
-        assert_eq!(m.reduction_vs_naive(), 0.0);
-        assert_eq!(m.reduction_vs_repo(), 0.0);
-    }
-
-    #[test]
-    fn test_measurement_no_reduction() {
-        let m = Measurement {
-            ask: "test".to_string(),
-            naive_files: vec!["a.py".to_string()],
-            naive_tokens: 500,
-            naive_lines: 50,
-            pruner_tokens_text: 500,
-            pruner_tokens_json: 500,
-            pruner_files: 1,
-            pruner_symbols: 1,
-            pruner_snippets: 1,
-            repo_total_tokens: 500,
-            repo_total_files: 1,
-        };
-        assert!((m.reduction_vs_naive()).abs() < 0.1);
-        assert!((m.reduction_vs_repo()).abs() < 0.1);
-    }
-
-    #[test]
     fn test_estimate_saving_pct() {
         let est = ClaudeEstimate {
             ask: "test".to_string(),
@@ -593,46 +445,6 @@ mod tests {
         let _ = verify_sym; // used for DB only
 
         (tmp, db)
-    }
-
-    #[test]
-    fn test_measure_produces_valid_output() {
-        let (tmp, db) = setup_mini_repo();
-        let result = crate::query::analyze_query("login authentication", &db).unwrap();
-        let m = measure(&result, &db, tmp.path(), 50).unwrap();
-
-        assert!(!m.ask.is_empty());
-        assert!(m.repo_total_files > 0);
-        assert!(m.repo_total_tokens > 0);
-        assert!(m.pruner_tokens_text > 0);
-        assert!(m.pruner_tokens_json > 0);
-    }
-
-    #[test]
-    fn test_measure_reduction_is_valid_percentage() {
-        let (tmp, db) = setup_mini_repo();
-        let result = crate::query::analyze_query("login", &db).unwrap();
-        let m = measure(&result, &db, tmp.path(), 50).unwrap();
-
-        // Reduction percentages should be finite numbers (not NaN/Inf)
-        assert!(m.reduction_vs_naive().is_finite());
-        assert!(m.reduction_vs_repo().is_finite());
-        // On tiny repos pruner overhead may exceed naive, so reduction can be negative
-        // Just verify the math is correct: reduction = (1 - pruner/naive) * 100
-        if m.naive_tokens > 0 {
-            let expected = (1.0 - m.pruner_tokens_text as f64 / m.naive_tokens as f64) * 100.0;
-            assert!((m.reduction_vs_naive() - expected).abs() < 0.01);
-        }
-    }
-
-    #[test]
-    fn test_measure_no_matches() {
-        let (tmp, db) = setup_mini_repo();
-        let result = crate::query::analyze_query("nonexistent_xyz", &db).unwrap();
-        let m = measure(&result, &db, tmp.path(), 50).unwrap();
-
-        assert!(m.naive_files.is_empty());
-        assert_eq!(m.naive_tokens, 0);
     }
 
     #[test]
