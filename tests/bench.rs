@@ -11,10 +11,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use std::sync::Once;
+
 const DEFAULT_REPO_URL: &str = "https://github.com/openclaw/openclaw.git";
 const PINNED_COMMIT: &str = "fb602c9b02014ec9a8bc256c149b39861c1435ab";
 const CACHE_DIR: &str = "/tmp/pruner-bench";
 const QUERY_TIMEOUT: Duration = Duration::from_secs(120);
+
+static INDEX_ONCE: Once = Once::new();
 
 /// Queries representing different task types for A/B measurement.
 const BENCHMARK_QUERIES: &[(&str, &str)] = &[
@@ -107,6 +111,29 @@ fn get_repo_path() -> PathBuf {
     repo_dir
 }
 
+/// Ensure the repo is cloned and indexed exactly once across all bench tests.
+/// Prevents SQLite "database is locked" errors from concurrent indexing.
+fn ensure_indexed() -> PathBuf {
+    let repo_path = get_repo_path();
+    let bin = pruner_bin();
+
+    INDEX_ONCE.call_once(|| {
+        eprintln!("\n=== Indexing {} ===", repo_path.display());
+        let output = Command::new(&bin)
+            .args(["index", repo_path.to_str().unwrap(), "-v"])
+            .output()
+            .expect("pruner index failed");
+        assert!(
+            output.status.success(),
+            "pruner index failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        eprintln!("{}", String::from_utf8_lossy(&output.stdout).trim());
+    });
+
+    repo_path
+}
+
 fn parse_stats(stdout: &str) -> IndexStats {
     let get = |prefix: &str| -> i64 {
         stdout
@@ -132,28 +159,11 @@ fn estimate_tokens(text: &str) -> usize {
 
 #[test]
 fn bench_real_repo() {
-    let repo_path = get_repo_path();
+    let repo_path = ensure_indexed();
     let repo_str = repo_path.to_str().unwrap();
     let bin = pruner_bin();
     let repo_url =
         std::env::var("PRUNER_TEST_REPO").unwrap_or_else(|_| DEFAULT_REPO_URL.to_string());
-
-    eprintln!("Using binary: {}", bin.display());
-
-    // Index
-    eprintln!("\n=== Indexing {} ===", repo_path.display());
-    let start = Instant::now();
-    let output = Command::new(&bin)
-        .args(["index", repo_str, "-v"])
-        .output()
-        .expect("pruner index failed");
-    assert!(
-        output.status.success(),
-        "pruner index failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    eprintln!("Index time: {:.1}s", start.elapsed().as_secs_f64());
-    eprintln!("{}", String::from_utf8_lossy(&output.stdout).trim());
 
     // Get stats
     let output = Command::new(&bin)
@@ -315,16 +325,9 @@ fn bench_real_repo() {
 /// and PASS after. This is the TDD "red" test.
 #[test]
 fn relevance_quality() {
-    let repo_path = get_repo_path();
+    let repo_path = ensure_indexed();
     let repo_str = repo_path.to_str().unwrap();
     let bin = pruner_bin();
-
-    // Ensure indexed
-    let status = Command::new(&bin)
-        .args(["index", repo_str])
-        .status()
-        .expect("pruner index failed");
-    assert!(status.success());
 
     // --- Query: "fix WebSocket reconnection timeout" ---
     let json = run_query_json(&bin, repo_str, "fix WebSocket reconnection timeout");
