@@ -505,7 +505,7 @@ fn cmd_init(
                     "matcher": "",
                     "hooks": [{
                         "type": "command",
-                        "command": hook_path.to_str().unwrap(),
+                        "command": path_to_hook_command(&hook_path),
                         "timeout": 60
                     }]
                 }]
@@ -1409,4 +1409,32 @@ fn cmd_estimate(
         }
     }
     Ok(())
+}
+
+/// Convert a path to a forward-slash string for use in shell commands.
+/// On Windows, `PathBuf::to_str` returns backslash-separated paths. Bash (used
+/// by Claude Code to execute hooks) treats backslashes as escape sequences, so
+/// `C:\Users\foo` becomes `C:Usersfoo`. Forward slashes work on all platforms.
+fn path_to_hook_command(path: &std::path::Path) -> String {
+    path.to_str().unwrap().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_hook_command_uses_forward_slashes() {
+        // Windows-style path with backslashes — must be normalised to forward slashes
+        // so that bash (used by Claude Code to run hooks) does not interpret them as
+        // escape sequences (which would turn C:\Users\foo into C:Usersfoo).
+        let hook_path = Path::new(r"C:\Users\testuser\.claude\hooks\pruner-context.sh");
+        let command = path_to_hook_command(hook_path);
+        assert!(
+            !command.contains('\\'),
+            "hook command path must use forward slashes for bash compatibility, got: {command}"
+        );
+        assert_eq!(command, "C:/Users/testuser/.claude/hooks/pruner-context.sh");
+    }
 }
