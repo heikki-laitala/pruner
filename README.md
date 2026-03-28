@@ -257,7 +257,7 @@ pruner stats .
 
 ## A/B test results (Claude Code)
 
-All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla Claude Code. Runs are interleaved in randomized order (no same-scenario runs adjacent) to avoid Anthropic prompt-cache warming bias. It takes around 1 minute to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
+All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run twice: once with pruner installed, once vanilla Claude Code. Runs are interleaved in randomized order (no same-scenario runs adjacent) to avoid Anthropic prompt-cache warming bias. It takes around 10 seconds to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
 
 **Test environment:** Claude Code v2.1.81, pruner v0.2.0. Hook-mode results last run 2026-03-25. Skill-mode results last run 2026-03-20.
 
