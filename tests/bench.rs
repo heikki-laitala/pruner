@@ -71,7 +71,11 @@ struct QueryMetrics {
 }
 
 fn pruner_bin() -> PathBuf {
-    let exe = if cfg!(windows) { "pruner.exe" } else { "pruner" };
+    let exe = if cfg!(windows) {
+        "pruner.exe"
+    } else {
+        "pruner"
+    };
     // Prefer release binary for performance
     let release = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("target/release")
