@@ -71,13 +71,18 @@ struct QueryMetrics {
 }
 
 fn pruner_bin() -> PathBuf {
+    let exe = if cfg!(windows) { "pruner.exe" } else { "pruner" };
     // Prefer release binary for performance
-    let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/release/pruner");
+    let release = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/release")
+        .join(exe);
     if release.exists() {
         return release;
     }
     // Fall back to debug
-    let debug = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/pruner");
+    let debug = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/debug")
+        .join(exe);
     assert!(
         debug.exists(),
         "pruner binary not found — run cargo build first"
