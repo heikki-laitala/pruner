@@ -1,3 +1,5 @@
+**Note (2026-03-31):** A bug report revealed that Claude Code uses a 1-hour TTL cache — longer than the 5-minute TTL documented publicly. This likely influences the A/B test results: the current tests run long enough to exceed the 5-minute window, but not to fully account for the 1-hour cache. To isolate its impact, the tests would need to either be run multiple times or be redesigned to control for cache state.
+
 # Pruner
 
 **Cut AI coding costs by 8-44% with Claude Code. Speed up any agent by 61-80%.**
