@@ -1,0 +1,506 @@
+
+########################################################################################################################
+#  SINGLE-REPO A/B TEST (results.json, 3 rounds, by task category)
+########################################################################################################################
+
+========================================================================================================================
+DATA QUALITY: per_message_usage vs reported input_tokens
+  Deduped = sum of per-message input tokens after adjacent dedup
+  Reported = input_tokens from result event (authoritative billing total)
+  Runs where these diverge significantly have unreliable cache breakdowns.
+========================================================================================================================
+Category           Side     Rnd      Deduped     Reported    Ratio     Status
+--------------------------------------------------------------------------------
+cross_package      without  R1    2,005,353       49,130   40.82x   MISMATCH
+cross_package      without  R2    3,551,414       49,107   72.32x   MISMATCH
+cross_package      without  R3    1,017,483       48,764   20.87x   MISMATCH
+cross_package      with     R1      206,358      206,358    1.00x         ok
+cross_package      with     R2      170,571      170,571    1.00x         ok
+cross_package      with     R3       26,676       26,676    1.00x         ok
+
+data_flow          without  R1    1,000,757       49,691   20.14x   MISMATCH
+data_flow          without  R2      728,861       49,637   14.68x   MISMATCH
+data_flow          without  R3      964,819       51,775   18.63x   MISMATCH
+data_flow          with     R1      100,822      100,822    1.00x         ok
+data_flow          with     R2      100,679      100,679    1.00x         ok
+data_flow          with     R3      101,364      101,364    1.00x         ok
+
+implement          without  R1    1,088,611      450,106    2.42x   MISMATCH
+implement          without  R2    1,395,139      510,504    2.73x   MISMATCH
+implement          without  R3    1,726,962      473,225    3.65x   MISMATCH
+implement          with     R1      549,196      549,196    1.00x         ok
+implement          with     R2      538,911      538,911    1.00x         ok
+implement          with     R3      540,242      540,242    1.00x         ok
+
+implement_large    without  R1    1,755,078      592,225    2.96x   MISMATCH
+implement_large    without  R2    1,667,012      570,086    2.92x   MISMATCH
+implement_large    without  R3    2,187,141      740,400    2.95x   MISMATCH
+implement_large    with     R1    1,187,797      574,126    2.07x   MISMATCH
+implement_large    with     R2    3,373,581      700,536    4.82x   MISMATCH
+implement_large    with     R3    1,542,465      585,075    2.64x   MISMATCH
+
+narrow_fix         without  R1      194,612      194,612    1.00x         ok
+narrow_fix         without  R2      203,516      203,516    1.00x         ok
+narrow_fix         without  R3      173,098      173,098    1.00x         ok
+narrow_fix         with     R1       57,635       57,635    1.00x         ok
+narrow_fix         with     R2      138,776      138,776    1.00x         ok
+narrow_fix         with     R3      121,229      121,229    1.00x         ok
+
+understanding      without  R1      786,265       50,072   15.70x   MISMATCH
+understanding      without  R2    1,399,779       49,779   28.12x   MISMATCH
+understanding      without  R3    1,072,270       49,602   21.62x   MISMATCH
+understanding      with     R1      128,519      128,519    1.00x         ok
+understanding      with     R2       92,253       92,253    1.00x         ok
+understanding      with     R3       90,718       90,718    1.00x         ok
+
+  Reconciled: 18/36 runs. WARNING: cache analysis unreliable for mismatched runs.
+
+========================================================================================================================
+PER-RUN CACHE BREAKDOWN (WARNING: unreliable for MISMATCH runs above)
+========================================================================================================================
+Category           Side     Rnd APICalls      Fresh    CacheRead  CacheCreate  CacheRd%  Discount Match
+------------------------------------------------------------------------------------------------------------------------
+cross_package      without  R1       38         29    1,920,630       84,694     95.8%   0.1486 MISMATCH
+cross_package      without  R2       58         28    3,450,549      100,837     97.2%   0.1327 MISMATCH
+cross_package      without  R3       20        126      957,355       60,002     94.1%   0.1679 MISMATCH
+cross_package      with     R1        6          8      182,514       23,836     88.4%   0.2329    ok
+cross_package      with     R2        5          7      164,196        6,368     96.3%   0.1430    ok
+cross_package      with     R3        1          3       26,673            0    100.0%   0.1001    ok
+
+data_flow          without  R1       18        699      918,704       81,354     91.8%   0.1941 MISMATCH
+data_flow          without  R2       15        359      659,145       69,357     90.4%   0.2099 MISMATCH
+data_flow          without  R3       18        110      890,864       73,845     92.3%   0.1881 MISMATCH
+data_flow          with     R1        3          5       76,186       24,631     75.6%   0.3810    ok
+data_flow          with     R2        3          5       88,003       12,671     87.4%   0.2448    ok
+data_flow          with     R3        3          5       88,287       13,072     87.1%   0.2483    ok
+
+implement          without  R1       28        151    1,014,098       74,362     93.2%   0.1787 MISMATCH
+implement          without  R2       32        124    1,311,804       83,211     94.0%   0.1687 MISMATCH
+implement          without  R3       41        322    1,661,784       64,856     96.2%   0.1434 MISMATCH
+implement          with     R1       15         17      519,181       29,998     94.5%   0.1628    ok
+implement          with     R2       15         17      521,734       17,160     96.8%   0.1366    ok
+implement          with     R3       15         17      520,669       19,556     96.4%   0.1417    ok
+
+implement_large    without  R1       33        697    1,615,073      139,308     92.0%   0.1916 MISMATCH
+implement_large    without  R2       34      3,286    1,558,937      104,789     93.5%   0.1741 MISMATCH
+implement_large    without  R3       42      3,337    2,065,686      118,118     94.4%   0.1635 MISMATCH
+implement_large    with     R1       28      3,338    1,091,014       93,445     91.9%   0.1930 MISMATCH
+implement_large    with     R2       66      2,094    3,213,482      158,005     95.3%   0.1544 MISMATCH
+implement_large    with     R3       32        452    1,466,437       75,576     95.1%   0.1566 MISMATCH
+
+narrow_fix         without  R1        6          8      172,459       22,145     88.6%   0.2309    ok
+narrow_fix         without  R2        7          9      193,655        9,852     95.2%   0.1557    ok
+narrow_fix         without  R3        6          8      163,305        9,785     94.3%   0.1650    ok
+narrow_fix         with     R1        2          4       35,366       22,265     61.4%   0.5443    ok
+narrow_fix         with     R2        4        436      121,313       17,027     87.4%   0.2439    ok
+narrow_fix         with     R3        4          6      113,362        7,861     93.5%   0.1746    ok
+
+understanding      without  R1       12         70      683,300      102,895     86.9%   0.2506 MISMATCH
+understanding      without  R2       25        128    1,320,469       79,182     94.3%   0.1651 MISMATCH
+understanding      without  R3       20      2,152      994,078       76,040     92.7%   0.1834 MISMATCH
+understanding      with     R1        4          6      106,544       21,969     82.9%   0.2966    ok
+understanding      with     R2        3          5       84,127        8,121     91.2%   0.2013    ok
+understanding      with     R3        3          5       84,132        6,581     92.7%   0.1835    ok
+
+========================================================================================================================
+CROSS-CONVERSATION CACHE (turn-1 cache_read = tokens warm from previous runs)
+========================================================================================================================
+Category           Side     Rnd  Turn1 CacheRead  Turn1 Total  CrossConv%
+--------------------------------------------------------------------------------
+cross_package      without  R1           14,852       22,958       64.7%
+cross_package      without  R2           22,955       22,958      100.0%
+cross_package      without  R3           22,955       22,958      100.0%
+cross_package      with     R1           14,861       26,676       55.7%
+cross_package      with     R2           26,673       26,676      100.0%
+cross_package      with     R3           26,673       26,676      100.0%
+
+data_flow          without  R1           14,852       22,948       64.7%
+data_flow          without  R2           22,945       22,948      100.0%
+data_flow          without  R3           22,945       22,948      100.0%
+data_flow          with     R1           14,861       26,694       55.7%
+data_flow          with     R2           26,691       26,694      100.0%
+data_flow          with     R3           26,691       26,694      100.0%
+
+implement          without  R1           14,852       22,956       64.7%
+implement          without  R2           22,953       22,956      100.0%
+implement          without  R3           22,953       22,956      100.0%
+implement          with     R1           14,861       26,712       55.6%
+implement          with     R2           26,709       26,712      100.0%
+implement          with     R3           26,709       26,712      100.0%
+
+implement_large    without  R1            6,562       23,007       28.5%
+implement_large    without  R2           23,004       23,007      100.0%
+implement_large    without  R3           23,004       23,007      100.0%
+implement_large    with     R1           14,861       26,718       55.6%
+implement_large    with     R2           26,715       26,718      100.0%
+implement_large    with     R3           26,715       26,718      100.0%
+
+narrow_fix         without  R1           14,852       22,950       64.7%
+narrow_fix         without  R2           22,947       22,950      100.0%
+narrow_fix         without  R3           22,947       22,950      100.0%
+narrow_fix         with     R1            8,814       26,555       33.2%
+narrow_fix         with     R2           26,552       26,555      100.0%
+narrow_fix         with     R3           26,552       26,555      100.0%
+
+understanding      without  R1           14,852       22,950       64.7%
+understanding      without  R2           22,947       22,950      100.0%
+understanding      without  R3           22,947       22,950      100.0%
+understanding      with     R1           14,861       26,681       55.7%
+understanding      with     R2           26,678       26,681      100.0%
+understanding      with     R3           26,678       26,681      100.0%
+
+========================================================================================================================
+COST COMPARISON: REPORTED (with caching) vs ESTIMATED NO-CACHE
+========================================================================================================================
+Category           Side     Rnd  Reported$   NoCache$  CacheSaving
+---------------------------------------------------------------------------
+cross_package      without  R1 $   0.4440 $   2.9359        84.9%
+cross_package      without  R2 $   0.5925 $   4.4150        86.6%
+cross_package      without  R3 $   0.2787 $   1.6131        82.7%
+cross_package      with     R1 $   0.2963 $   1.0878        72.8%
+cross_package      with     R2 $   0.1723 $   0.9032        80.9%
+cross_package      with     R3 $   0.0361 $   0.1561        76.9%
+
+data_flow          without  R1 $   0.3444 $   1.7302        80.1%
+data_flow          without  R2 $   0.2715 $   1.2461        78.2%
+data_flow          without  R3 $   0.3211 $   1.6558        80.6%
+data_flow          with     R1 $   0.2455 $   0.5575        56.0%
+data_flow          with     R2 $   0.1726 $   0.5527        68.8%
+data_flow          with     R3 $   0.1756 $   0.5566        68.4%
+
+implement          without  R1 $   0.6043 $   3.1671        80.9%
+implement          without  R2 $   0.6554 $   3.6846        82.2%
+implement          without  R3 $   0.6160 $   4.0869        84.9%
+implement          with     R1 $   0.5222 $   2.8210        81.5%
+implement          with     R2 $   0.4411 $   2.7675        84.1%
+implement          with     R3 $   0.4600 $   2.7786        83.4%
+
+implement_large    without  R1 $   0.9016 $   4.5392        80.1%
+implement_large    without  R2 $   0.7948 $   4.2824        81.4%
+implement_large    without  R3 $   1.0214 $   5.9040        82.7%
+implement_large    with     R1 $   0.7115 $   3.4632        79.5%
+implement_large    with     R2 $   1.1579 $   6.9932        83.4%
+implement_large    with     R3 $   0.7747 $   4.4289        82.5%
+
+narrow_fix         without  R1 $   0.3036 $   1.0519        71.1%
+narrow_fix         without  R2 $   0.2396 $   1.0987        78.2%
+narrow_fix         without  R3 $   0.2225 $   0.9452        76.5%
+narrow_fix         with     R1 $   0.1910 $   0.3223        40.7%
+narrow_fix         with     R2 $   0.2033 $   0.7280        72.1%
+narrow_fix         with     R3 $   0.1577 $   0.6580        76.0%
+
+understanding      without  R1 $   0.3445 $   1.3473        74.4%
+understanding      without  R2 $   0.3497 $   2.0725        83.1%
+understanding      without  R3 $   0.3104 $   1.6492        81.2%
+understanding      with     R1 $   0.2304 $   0.6824        66.2%
+understanding      with     R2 $   0.1277 $   0.4961        74.3%
+understanding      with     R3 $   0.1209 $   0.4913        75.4%
+
+========================================================================================================================
+SUMMARY: REPORTED vs CACHE-NORMALIZED COST DELTAS
+========================================================================================================================
+Category           W/O Reported  W/ Reported  D Reported  W/O NoCache   W/ NoCache   D NoCache    Shift
+----------------------------------------------------------------------------------------------------
+cross_package      $     0.4384 $     0.1682      -61.6% $     2.9880 $     0.7157      -76.0%   -14.4pp
+data_flow          $     0.3123 $     0.1979      -36.6% $     1.5440 $     0.5556      -64.0%   -27.4pp
+implement          $     0.6252 $     0.4745      -24.1% $     3.6462 $     2.7890      -23.5%    +0.6pp
+implement_large    $     0.9059 $     0.8814       -2.7% $     4.9085 $     4.9618       +1.1%    +3.8pp
+narrow_fix         $     0.2552 $     0.1840      -27.9% $     1.0319 $     0.5694      -44.8%   -16.9pp
+understanding      $     0.3349 $     0.1597      -52.3% $     1.6897 $     0.5566      -67.1%   -14.7pp
+
+========================================================================================================================
+CACHE DISCOUNT FACTOR BY SIDE (lower = more cache benefit)
+  1.0 = no caching, 0.1 = fully cached reads, 1.25 = fully cache writes
+========================================================================================================================
+Category             W/O Discount    W/ Discount   Difference   Bias Direction
+--------------------------------------------------------------------------------
+cross_package              0.1497         0.1587     +0.0089          neutral
+data_flow                  0.1974         0.2914     +0.0940  helps 'without'
+implement                  0.1636         0.1470     -0.0166     helps 'with'
+implement_large            0.1764         0.1680     -0.0084          neutral
+narrow_fix                 0.1839         0.3209     +0.1371  helps 'without'
+understanding              0.1997         0.2271     +0.0274  helps 'without'
+
+========================================================================================================================
+TOOL CALLS (cache-independent — purely behavioral, not affected by prompt caching)
+========================================================================================================================
+Category           Side     Rnd  ToolCalls  APICalls   WallTime
+-----------------------------------------------------------------
+cross_package      without  R1         37        38     123.4s
+cross_package      without  R2         57        58     154.9s
+cross_package      without  R3         46        20      99.5s
+cross_package      with     R1         10         6      56.7s
+cross_package      with     R2          9         5      50.5s
+cross_package      with     R3          0         1      27.1s
+
+data_flow          without  R1         48        18     103.9s
+data_flow          without  R2         44        15      93.5s
+data_flow          without  R3         42        18     120.3s
+data_flow          with     R1         10         3      47.4s
+data_flow          with     R2         10         3      44.7s
+data_flow          with     R3         10         3      45.1s
+
+implement          without  R1         49        28     127.0s
+implement          without  R2         62        32     145.9s
+implement          without  R3         59        41     139.5s
+implement          with     R1         22        15      74.7s
+implement          with     R2         20        15      87.4s
+implement          with     R3         24        15      75.9s
+
+implement_large    without  R1         65        33     145.1s
+implement_large    without  R2         65        34     191.8s
+implement_large    without  R3         68        42     185.4s
+implement_large    with     R1         47        28    1315.6s
+implement_large    with     R2         91        66     231.3s
+implement_large    with     R3         58        32     190.5s
+
+narrow_fix         without  R1         21         6      56.9s
+narrow_fix         without  R2         24         7      56.4s
+narrow_fix         without  R3         23         6      57.0s
+narrow_fix         with     R1          2         2      28.9s
+narrow_fix         with     R2          8         4      39.7s
+narrow_fix         with     R3         12         4      41.3s
+
+understanding      without  R1         34        12      84.9s
+understanding      without  R2         47        25     107.9s
+understanding      without  R3         47        20     105.9s
+understanding      with     R1          7         4      40.1s
+understanding      with     R2          5         3      36.7s
+understanding      with     R3          5         3      37.8s
+
+========================================================================================================================
+TOOL CALLS & WALL TIME DELTAS (mean across rounds)
+========================================================================================================================
+Category            W/O Tools   W/ Tools   D Tools   W/O Time    W/ Time    D Time  W/O API   W/ API  s/call W/O  s/call W/
+------------------------------------------------------------------------------------------------------------------------
+cross_package            46.7        6.3      -86%     125.9s      44.8s      -64%     38.7      4.0        3.3s      11.2s
+data_flow                44.7       10.0      -78%     105.9s      45.7s      -57%     17.0      3.0        6.2s      15.2s
+implement                56.7       22.0      -61%     137.5s      79.3s      -42%     33.7     15.0        4.1s       5.3s
+implement_large          66.0       65.3       -1%     174.1s     579.1s     +233%     36.3     42.0        4.8s      13.8s
+narrow_fix               22.7        7.3      -68%      56.8s      36.6s      -35%      6.3      3.3        9.0s      11.0s
+understanding            42.7        5.7      -87%      99.6s      38.2s      -62%     19.0      3.3        5.2s      11.5s
+
+========================================================================================================================
+SUMMARY: CACHE IMPACT BY METRIC
+========================================================================================================================
+
+  Metric        Cache impact                                    Reported deltas reliable?
+  -----------   ---------------------------------------------   -----------------------------------------------
+  Tool calls    None - purely behavioral, cache is transparent  Yes, accurate as reported
+                to the model. Same tokens, same decisions.
+  Cost          Helps "without" more (more API calls = more     Mostly conservative; implement overstated by ~8pp
+                cached prefix re-sends at discounted price)
+  Wall time     Helps "without" more (faster TTFT per cached    Likely conservative for same reason as cost
+                API call, compounded over 3-10x more calls)
+
+
+########################################################################################################################
+#  MULTI-REPO A/B TEST (results_multi_repo.json, 4 rounds, by repo)
+########################################################################################################################
+
+========================================================================================================================
+DATA QUALITY: per_message_usage vs reported input_tokens
+  Deduped = sum of per-message input tokens after adjacent dedup
+  Reported = input_tokens from result event (authoritative billing total)
+  Runs where these diverge significantly have unreliable cache breakdowns.
+========================================================================================================================
+Repo               Side     Rnd      Deduped     Reported    Ratio     Status
+--------------------------------------------------------------------------------
+calcom             without  R1    1,844,775    1,050,145    1.76x   MISMATCH
+calcom             without  R2    2,386,674    1,232,595    1.94x   MISMATCH
+calcom             without  R3    2,358,871    1,297,379    1.82x   MISMATCH
+calcom             without  R4    3,125,869    1,218,876    2.56x   MISMATCH
+calcom             with     R1    1,768,547    1,290,240    1.37x   MISMATCH
+calcom             with     R2    1,216,662    1,216,662    1.00x         ok
+calcom             with     R3    1,251,925    1,251,925    1.00x         ok
+calcom             with     R4    3,209,059      160,037   20.05x   MISMATCH
+
+openclaw           without  R1    4,167,729      930,513    4.48x   MISMATCH
+openclaw           without  R2    2,597,951    1,029,349    2.52x   MISMATCH
+openclaw           without  R3    4,191,458      940,140    4.46x   MISMATCH
+openclaw           without  R4    4,065,369      966,221    4.21x   MISMATCH
+openclaw           with     R1    2,010,086    1,028,328    1.95x   MISMATCH
+openclaw           with     R2    2,715,121    1,065,610    2.55x   MISMATCH
+openclaw           with     R3    2,372,067      914,615    2.59x   MISMATCH
+openclaw           with     R4    2,003,981    1,097,174    1.83x   MISMATCH
+
+twenty             without  R1    4,393,053      941,159    4.67x   MISMATCH
+twenty             without  R2    3,446,516      723,700    4.76x   MISMATCH
+twenty             without  R3    2,310,021      854,315    2.70x   MISMATCH
+twenty             without  R4    2,137,340      882,201    2.42x   MISMATCH
+twenty             with     R1    1,181,603      801,057    1.48x   MISMATCH
+twenty             with     R2    1,491,826      829,028    1.80x   MISMATCH
+twenty             with     R3    1,048,067      774,001    1.35x   MISMATCH
+twenty             with     R4    1,945,173      973,806    2.00x   MISMATCH
+
+  Reconciled: 2/24 runs. WARNING: cache analysis unreliable for mismatched runs.
+
+========================================================================================================================
+PER-RUN CACHE BREAKDOWN (WARNING: unreliable for MISMATCH runs above)
+========================================================================================================================
+Repo               Side     Rnd APICalls      Fresh    CacheRead  CacheCreate  CacheRd%  Discount Match
+------------------------------------------------------------------------------------------------------------------------
+calcom             without  R1       30        106    1,719,328      125,341     93.2%   0.1782 MISMATCH
+calcom             without  R2       36        130    2,273,906      112,638     95.3%   0.1543 MISMATCH
+calcom             without  R3       35        188    2,222,819      135,864     94.2%   0.1663 MISMATCH
+calcom             without  R4       49      5,767    2,916,911      203,191     93.3%   0.1764 MISMATCH
+calcom             with     R1       28         72    1,633,549      134,926     92.4%   0.1878 MISMATCH
+calcom             with     R2       20         22    1,195,184       21,456     98.2%   0.1203    ok
+calcom             with     R3       20         22    1,226,585       25,318     98.0%   0.1233    ok
+calcom             with     R4       51         66    2,994,620      214,373     93.3%   0.1768 MISMATCH
+
+openclaw           without  R1       77      1,782    3,946,720      219,227     94.7%   0.1609 MISMATCH
+openclaw           without  R2       43        138    2,461,265      136,548     94.7%   0.1605 MISMATCH
+openclaw           without  R3       80      2,729    3,979,456      209,273     94.9%   0.1580 MISMATCH
+openclaw           without  R4       76      3,016    3,758,322      304,031     92.4%   0.1867 MISMATCH
+openclaw           with     R1       36        132    1,871,071      138,883     93.1%   0.1795 MISMATCH
+openclaw           with     R2       60      1,502    2,550,456      163,163     93.9%   0.1696 MISMATCH
+openclaw           with     R3       44      3,914    2,276,046       92,107     96.0%   0.1461 MISMATCH
+openclaw           with     R4       37      9,876    1,868,875      125,230     93.3%   0.1763 MISMATCH
+
+twenty             without  R1       82      7,580    4,129,845      255,628     94.0%   0.1685 MISMATCH
+twenty             without  R2       74      4,127    3,262,232      180,157     94.7%   0.1612 MISMATCH
+twenty             without  R3       48        712    2,186,082      123,227     94.6%   0.1616 MISMATCH
+twenty             without  R4       39        101    2,003,488      133,751     93.7%   0.1720 MISMATCH
+twenty             with     R1       29        536    1,084,608       96,459     91.8%   0.1943 MISMATCH
+twenty             with     R2       32        104    1,395,257       96,465     93.5%   0.1744 MISMATCH
+twenty             with     R3       27         67      969,484       78,516     92.5%   0.1862 MISMATCH
+twenty             with     R4       39         95    1,826,438      118,640     93.9%   0.1702 MISMATCH
+
+========================================================================================================================
+CROSS-CONVERSATION CACHE (turn-1 cache_read = tokens warm from previous runs)
+========================================================================================================================
+Repo               Side     Rnd  Turn1 CacheRead  Turn1 Total  CrossConv%
+--------------------------------------------------------------------------------
+calcom             without  R1            8,814       45,450       19.4%
+calcom             without  R2           45,447       45,450      100.0%
+calcom             without  R3           14,990       45,453       33.0%
+calcom             without  R4           45,447       45,450      100.0%
+calcom             with     R1            8,814       49,199       17.9%
+calcom             with     R2           49,196       49,199      100.0%
+calcom             with     R3           49,196       49,199      100.0%
+calcom             with     R4            8,814       49,199       17.9%
+
+openclaw           without  R1            8,814       23,102       38.2%
+openclaw           without  R2           23,099       23,102      100.0%
+openclaw           without  R3           23,099       23,102      100.0%
+openclaw           without  R4           14,942       23,102       64.7%
+openclaw           with     R1            8,814       26,813       32.9%
+openclaw           with     R2           26,810       26,813      100.0%
+openclaw           with     R3           26,810       26,813      100.0%
+openclaw           with     R4           26,810       26,813      100.0%
+
+twenty             without  R1            6,562       18,873       34.8%
+twenty             without  R2           18,870       18,873      100.0%
+twenty             without  R3           18,870       18,873      100.0%
+twenty             without  R4            8,814       18,873       46.7%
+twenty             with     R1            8,814       22,234       39.6%
+twenty             with     R2           22,231       22,234      100.0%
+twenty             with     R3           22,231       22,234      100.0%
+twenty             with     R4           14,974       22,234       67.3%
+
+========================================================================================================================
+COST COMPARISON: REPORTED (with caching) vs ESTIMATED NO-CACHE
+========================================================================================================================
+Repo               Side     Rnd  Reported$   NoCache$  CacheSaving
+---------------------------------------------------------------------------
+calcom             without  R1 $   1.2943 $   6.6205        80.4%
+calcom             without  R2 $   1.1450 $   7.0083        83.7%
+calcom             without  R3 $   1.4918 $   8.1101        81.6%
+calcom             without  R4 $   1.3538 $   7.3872        81.7%
+calcom             with     R1 $   1.3513 $   6.6379        79.6%
+calcom             with     R2 $   0.8812 $   6.2327        85.9%
+calcom             with     R3 $   0.9983 $   6.4863        84.6%
+calcom             with     R4 $   2.0183 $  11.3557        82.2%
+
+openclaw           without  R1 $   1.5976 $   9.4502        83.1%
+openclaw           without  R2 $   1.2230 $   7.1362        82.9%
+openclaw           without  R3 $   1.4389 $   8.6452        83.4%
+openclaw           without  R4 $   1.6549 $   8.4837        80.5%
+openclaw           with     R1 $   1.2404 $   6.4354        80.7%
+openclaw           with     R2 $   1.3421 $   7.1486        81.2%
+openclaw           with     R3 $   1.1368 $   6.9637        83.7%
+openclaw           with     R4 $   1.3269 $   6.6581        80.1%
+
+twenty             without  R1 $   1.4875 $   8.5058        82.5%
+twenty             without  R2 $   1.1221 $   6.7177        83.3%
+twenty             without  R3 $   1.3070 $   7.0388        81.4%
+twenty             without  R4 $   1.1763 $   6.4184        81.7%
+twenty             with     R1 $   0.9880 $   4.4548        77.8%
+twenty             with     R2 $   0.9179 $   4.8042        80.9%
+twenty             with     R3 $   0.8963 $   4.0753        78.0%
+twenty             with     R4 $   1.2280 $   6.4617        81.0%
+
+========================================================================================================================
+SUMMARY: REPORTED vs CACHE-NORMALIZED COST DELTAS
+========================================================================================================================
+Repo               W/O Reported  W/ Reported  D Reported  W/O NoCache   W/ NoCache   D NoCache    Shift
+----------------------------------------------------------------------------------------------------
+calcom             $     1.3212 $     1.3123       -0.7% $     7.2815 $     7.6782       +5.4%    +6.1pp
+openclaw           $     1.4786 $     1.2616      -14.7% $     8.4288 $     6.8014      -19.3%    -4.6pp
+twenty             $     1.2732 $     1.0075      -20.9% $     7.1702 $     4.9490      -31.0%   -10.1pp
+
+========================================================================================================================
+CACHE DISCOUNT FACTOR BY SIDE (lower = more cache benefit)
+  1.0 = no caching, 0.1 = fully cached reads, 1.25 = fully cache writes
+========================================================================================================================
+Repo                 W/O Discount    W/ Discount   Difference   Bias Direction
+--------------------------------------------------------------------------------
+calcom                     0.1688         0.1521     -0.0167     helps 'with'
+openclaw                   0.1665         0.1679     +0.0013          neutral
+twenty                     0.1658         0.1813     +0.0154  helps 'without'
+
+========================================================================================================================
+TOOL CALLS (cache-independent — purely behavioral, not affected by prompt caching)
+========================================================================================================================
+Repo               Side     Rnd  ToolCalls  APICalls   WallTime
+-----------------------------------------------------------------
+calcom             without  R1         62        30     213.2s
+calcom             without  R2         71        36     180.8s
+calcom             without  R3         68        35     339.3s
+calcom             without  R4         95        49    3887.3s
+calcom             with     R1         47        28     175.2s
+calcom             with     R2         28        20     118.7s
+calcom             with     R3         27        20     165.1s
+calcom             with     R4         61        51    3925.9s
+
+openclaw           without  R1        100        77    1520.3s
+openclaw           without  R2         72        43     222.9s
+openclaw           without  R3        103        80     237.9s
+openclaw           without  R4        100        76     940.4s
+openclaw           with     R1         64        36     205.7s
+openclaw           with     R2         81        60     265.3s
+openclaw           with     R3         67        44     258.0s
+openclaw           with     R4         57        37    1109.7s
+
+twenty             without  R1        139        82     227.3s
+twenty             without  R2        134        74     188.0s
+twenty             without  R3        104        48     312.5s
+twenty             without  R4         77        39     222.6s
+twenty             with     R1         57        29     202.4s
+twenty             with     R2         66        32     198.2s
+twenty             with     R3         55        27     195.0s
+twenty             with     R4         77        39     295.2s
+
+========================================================================================================================
+TOOL CALLS & WALL TIME DELTAS (mean across rounds)
+========================================================================================================================
+Repo                W/O Tools   W/ Tools   D Tools   W/O Time    W/ Time    D Time  W/O API   W/ API  s/call W/O  s/call W/
+------------------------------------------------------------------------------------------------------------------------
+calcom                   74.0       40.8      -45%    1155.2s    1096.2s       -5%     37.5     29.8       30.8s      36.8s
+openclaw                 93.8       67.2      -28%     730.4s     459.7s      -37%     69.0     44.2       10.6s      10.4s
+twenty                  113.5       63.8      -44%     237.6s     222.7s       -6%     60.8     31.8        3.9s       7.0s
+
+========================================================================================================================
+SUMMARY: CACHE IMPACT BY METRIC
+========================================================================================================================
+
+  Metric        Cache impact                                    Reported deltas reliable?
+  -----------   ---------------------------------------------   -----------------------------------------------
+  Tool calls    None - purely behavioral, cache is transparent  Yes, accurate as reported
+                to the model. Same tokens, same decisions.
+  Cost          Helps "without" more (more API calls = more     Mostly conservative; implement overstated by ~8pp
+                cached prefix re-sends at discounted price)
+  Wall time     Helps "without" more (faster TTFT per cached    Likely conservative for same reason as cost
+                API call, compounded over 3-10x more calls)
+
