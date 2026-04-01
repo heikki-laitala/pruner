@@ -11,7 +11,11 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from ab_test import interleaved_schedule, parse_stream, ensure_pruner_on_path, TASKS, PRUNER_BIN, WORK_DIR
+from ab_test import (
+    interleaved_schedule, parse_stream, ensure_pruner_on_path,
+    compute_cache_hit_rate, validate_cache_symmetry,
+    TASKS, PRUNER_BIN, WORK_DIR,
+)
 from ab_test_copilot import (
     interleaved_schedule as copilot_interleaved_schedule,
     ensure_pruner_on_path as copilot_ensure_pruner_on_path,
@@ -183,6 +187,132 @@ class TestParseStream:
         result = parse_stream(stream)
         assert len(result["per_message_usage"]) == 1
         assert result["per_message_usage"][0]["turn"] == 1
+
+
+class TestComputeCacheHitRate:
+    def test_all_cached(self):
+        result = {
+            "per_message_usage": [
+                {"turn": 1, "input_tokens": 100, "cache_read": 900, "cache_creation": 0, "output_tokens": 50},
+            ],
+        }
+        rate = compute_cache_hit_rate(result)
+        assert rate == 0.9
+        assert result["first_turn_cache_rate"] == 0.9
+
+    def test_no_cache(self):
+        result = {
+            "per_message_usage": [
+                {"turn": 1, "input_tokens": 1000, "cache_read": 0, "cache_creation": 500, "output_tokens": 50},
+            ],
+        }
+        rate = compute_cache_hit_rate(result)
+        assert rate == 0.0
+        assert result["first_turn_cache_rate"] == 0.0
+
+    def test_empty_usage_returns_none(self):
+        result = {"per_message_usage": []}
+        rate = compute_cache_hit_rate(result)
+        assert rate is None
+        assert result.get("first_turn_cache_rate") is None
+
+    def test_missing_usage_returns_none(self):
+        result = {}
+        rate = compute_cache_hit_rate(result)
+        assert rate is None
+
+    def test_only_first_turn_used(self):
+        result = {
+            "per_message_usage": [
+                {"turn": 1, "input_tokens": 200, "cache_read": 800, "cache_creation": 0, "output_tokens": 50},
+                {"turn": 2, "input_tokens": 50, "cache_read": 950, "cache_creation": 0, "output_tokens": 50},
+            ],
+        }
+        rate = compute_cache_hit_rate(result)
+        assert rate == 0.8  # 800 / (200 + 800 + 0), not turn 2's rate
+
+    def test_zero_total_returns_none(self):
+        result = {
+            "per_message_usage": [
+                {"turn": 1, "input_tokens": 0, "cache_read": 0, "cache_creation": 0, "output_tokens": 0},
+            ],
+        }
+        rate = compute_cache_hit_rate(result)
+        assert rate is None
+
+
+class TestValidateCacheSymmetry:
+    def test_symmetric_rates_no_warning(self):
+        results = [{
+            "category": "narrow_fix",
+            "without": {"first_turn_cache_rate": 0.85},
+            "with_pruner": {"first_turn_cache_rate": 0.85},
+        }]
+        warnings = validate_cache_symmetry(results)
+        assert warnings == []
+
+    def test_asymmetric_rates_warns(self):
+        results = [{
+            "category": "narrow_fix",
+            "without": {"first_turn_cache_rate": 0.70},
+            "with_pruner": {"first_turn_cache_rate": 0.90},
+        }]
+        warnings = validate_cache_symmetry(results)
+        assert len(warnings) == 1
+        assert "narrow_fix" in warnings[0]
+
+    def test_missing_rate_skips(self):
+        results = [{
+            "category": "narrow_fix",
+            "without": {"first_turn_cache_rate": 0.85},
+            "with_pruner": {},
+        }]
+        warnings = validate_cache_symmetry(results)
+        assert warnings == []
+
+    def test_missing_side_skips(self):
+        results = [{
+            "category": "narrow_fix",
+            "without": {"first_turn_cache_rate": 0.85},
+            "with_pruner": None,
+        }]
+        warnings = validate_cache_symmetry(results)
+        assert warnings == []
+
+    def test_multiple_tasks_mixed(self):
+        results = [
+            {
+                "category": "narrow_fix",
+                "without": {"first_turn_cache_rate": 0.85},
+                "with_pruner": {"first_turn_cache_rate": 0.84},
+            },
+            {
+                "category": "cross_package",
+                "without": {"first_turn_cache_rate": 0.50},
+                "with_pruner": {"first_turn_cache_rate": 0.90},
+            },
+        ]
+        warnings = validate_cache_symmetry(results)
+        assert len(warnings) == 1
+        assert "cross_package" in warnings[0]
+
+    def test_threshold_boundary_no_warning(self):
+        results = [{
+            "category": "narrow_fix",
+            "without": {"first_turn_cache_rate": 0.80},
+            "with_pruner": {"first_turn_cache_rate": 0.90},
+        }]
+        warnings = validate_cache_symmetry(results, threshold=0.10)
+        assert warnings == []  # exactly 0.10 is not > 0.10
+
+    def test_custom_threshold(self):
+        results = [{
+            "category": "narrow_fix",
+            "without": {"first_turn_cache_rate": 0.80},
+            "with_pruner": {"first_turn_cache_rate": 0.86},
+        }]
+        warnings = validate_cache_symmetry(results, threshold=0.05)
+        assert len(warnings) == 1
 
 
 class TestEnsurePrunerOnPath:

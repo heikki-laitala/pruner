@@ -85,6 +85,8 @@ def parse_args():
                         help="Pruner delivery mode: hook (prompt-submit) or skill (tool call)")
     parser.add_argument("--save-raw", action="store_true",
                         help="Save raw stream-json output for analysis")
+    parser.add_argument("--validate-cache", action="store_true",
+                        help="Warn if cache hit rates differ >10%% between paired runs")
     return parser.parse_args()
 
 
@@ -301,6 +303,87 @@ def ensure_pruner_on_path():
     return bin_dir
 
 
+def compute_cache_hit_rate(result):
+    """Compute first-turn cache hit rate from per_message_usage.
+
+    Returns the fraction of first-turn input tokens that came from cache.
+    The first turn is the best signal for whether the prompt prefix was warm,
+    since it sends the system prompt + tool schemas before any conversation.
+
+    Mutates result dict to add 'first_turn_cache_rate' key.
+    Returns the rate (float 0.0-1.0) or None if no usage data.
+    """
+    pmu = result.get("per_message_usage", [])
+    if not pmu:
+        return None
+    first = pmu[0]
+    total = first["input_tokens"] + first["cache_read"] + first["cache_creation"]
+    if total == 0:
+        return None
+    rate = first["cache_read"] / total
+    result["first_turn_cache_rate"] = rate
+    return rate
+
+
+def validate_cache_symmetry(results, threshold=0.10):
+    """Check if cache hit rates differ significantly between paired runs.
+
+    Returns a list of warning strings for pairs where the absolute difference
+    in first_turn_cache_rate exceeds the threshold.
+    """
+    warnings = []
+    for entry in results:
+        without = entry.get("without")
+        with_p = entry.get("with_pruner")
+        if not without or not with_p:
+            continue
+        rate_wo = without.get("first_turn_cache_rate")
+        rate_w = with_p.get("first_turn_cache_rate")
+        if rate_wo is None or rate_w is None:
+            continue
+        diff = abs(rate_w - rate_wo)
+        if diff > threshold:
+            warnings.append(
+                f"{entry['category']}: cache rate diff={diff:.0%} "
+                f"(without={rate_wo:.0%}, with={rate_w:.0%})"
+            )
+    return warnings
+
+
+def warmup_cache(repo_dir):
+    """Run a minimal throwaway Claude prompt to prime the prompt cache.
+
+    Anthropic's prompt cache (~1 hour TTL) caches the system prompt + tool
+    schemas prefix. This warmup ensures both sides start with equally warm
+    caches, eliminating asymmetric first-call cache advantages.
+    """
+    wrapper = WORK_DIR / "run_claude.sh"
+    if not wrapper.exists():
+        wrapper.write_text("#!/bin/bash\ncd \"$1\" && shift && exec claude \"$@\"\n")
+        wrapper.chmod(0o755)
+
+    bin_dir = ensure_pruner_on_path()
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+    label = Path(repo_dir).name
+    print(f"  Cache warmup [{label}] ...", file=sys.stderr)
+
+    try:
+        subprocess.run(
+            [str(wrapper), str(repo_dir),
+             "-p", "hello",
+             "--output-format", "stream-json",
+             "--max-turns", "1",
+             "--model", MODEL,
+             "--permission-mode", "bypassPermissions",
+             "--no-session-persistence"],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  Cache warmup [{label}] timed out (continuing)", file=sys.stderr)
+
+
 def run_claude(prompt, repo_dir, label="", save_raw=False):
     """Run claude -p inside the repo directory and return parsed results."""
     wrapper = WORK_DIR / "run_claude.sh"
@@ -350,9 +433,13 @@ def print_detailed_results(label, data):
         print(f"\n  [{label}] No data", file=sys.stderr)
         return
 
+    cache_str = ""
+    cache_rate = data.get("first_turn_cache_rate")
+    if cache_rate is not None:
+        cache_str = f" cache={cache_rate:.0%}"
     print(f"\n  [{label}] Summary: turns={data['turns']} tools={data['tool_calls']} "
           f"tokens={data['total_tokens']:,} (in={data['input_tokens']:,} out={data['output_tokens']:,}) "
-          f"cost=${data['cost_usd']:.4f} time={data['wall_time_s']}s",
+          f"cost=${data['cost_usd']:.4f} time={data['wall_time_s']}s{cache_str}",
           file=sys.stderr)
 
     # Per-turn tool breakdown
@@ -407,12 +494,15 @@ def run_single(category, prompt, side, mode="hook", save_raw=False):
 
     if side == "with":
         reset_clone(CLONE_WITH, reinstall_pruner=True, mode=mode)
+        warmup_cache(CLONE_WITH)
         result = run_claude(prompt, CLONE_WITH, f"{category}/with", save_raw)
     else:
         reset_clone(CLONE_WITHOUT)
+        warmup_cache(CLONE_WITHOUT)
         result = run_claude(prompt, CLONE_WITHOUT, f"{category}/without", save_raw)
 
     if result:
+        compute_cache_hit_rate(result)
         print_detailed_results(f"{category}/{side}", result)
     return result
 
@@ -421,8 +511,8 @@ def interleaved_schedule(tasks, only=None):
     """Build a randomized run schedule where same-scenario runs are never adjacent.
 
     Each task produces two runs (with/without). The schedule interleaves them
-    so that Anthropic's prompt cache (~5 min TTL) expires between same-scenario
-    runs, eliminating cache-warming bias.
+    so that Anthropic's prompt cache (~1 hour TTL for eligible users) has less
+    opportunity for cross-scenario cache contamination.
     """
     runs = []
     for category, prompt in tasks:
@@ -470,10 +560,11 @@ def print_summary(results):
     print(
         f"  {'Task':<16} {'W/O tokens':>12} {'W/ tokens':>12} {'Δ tok':>8} "
         f"{'W/O cost':>10} {'W/ cost':>10} {'Δ cost':>8} "
-        f"{'W/O tools':>10} {'W/ tools':>10} {'Δ time':>10}",
+        f"{'W/O tools':>10} {'W/ tools':>10} {'Δ time':>10} "
+        f"{'Cache W/O':>10} {'Cache W/':>10}",
         file=sys.stderr,
     )
-    print("  " + "-" * 120, file=sys.stderr)
+    print("  " + "-" * 140, file=sys.stderr)
     for r in valid:
         w = r["without"]
         p = r["with_pruner"]
@@ -481,13 +572,18 @@ def print_summary(results):
         if w["wall_time_s"] and p["wall_time_s"]:
             td = (p["wall_time_s"] - w["wall_time_s"]) / w["wall_time_s"] * 100
             time_delta = f"{td:+.0f}%"
+        cache_wo = w.get("first_turn_cache_rate")
+        cache_w = p.get("first_turn_cache_rate")
+        cache_wo_str = f"{cache_wo:.0%}" if cache_wo is not None else "N/A"
+        cache_w_str = f"{cache_w:.0%}" if cache_w is not None else "N/A"
         print(
             f"  {r['category']:<16} {w['total_tokens']:>12,} {p['total_tokens']:>12,} "
             f"{r['token_delta_pct']:>+7.0f}% "
             f"${w['cost_usd']:>9.4f} ${p['cost_usd']:>9.4f} "
             f"{r['cost_delta_pct']:>+7.0f}% "
             f"{w['tool_calls']:>10} {p['tool_calls']:>10} "
-            f"{time_delta:>10}",
+            f"{time_delta:>10} "
+            f"{cache_wo_str:>10} {cache_w_str:>10}",
             file=sys.stderr,
         )
 
@@ -545,6 +641,16 @@ def main():
 
     # Summary to stderr
     print_summary(results)
+
+    # Cache symmetry validation
+    if args.validate_cache:
+        cache_warnings = validate_cache_symmetry(results)
+        if cache_warnings:
+            print(f"\n  CACHE WARNINGS:", file=sys.stderr)
+            for w in cache_warnings:
+                print(f"    {w}", file=sys.stderr)
+        else:
+            print(f"\n  Cache symmetry OK (all pairs within 10%)", file=sys.stderr)
 
 
 if __name__ == "__main__":
