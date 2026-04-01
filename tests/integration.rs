@@ -1714,6 +1714,101 @@ mod cpp_project {
     }
 }
 
+// C# project fixture
+// ============================================================================
+
+mod csharp_project {
+    use super::*;
+
+    #[test]
+    fn index_succeeds() {
+        let dir = setup_fixture("csharp_project");
+        let path = dir.path().to_str().unwrap().to_string();
+        pruner().args(["index", &path]).assert().success();
+    }
+
+    #[test]
+    fn finds_csharp_classes() {
+        let dir = setup_fixture("csharp_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "AuthHandler"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("class"));
+    }
+
+    #[test]
+    fn finds_csharp_methods() {
+        let dir = setup_fixture("csharp_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["show-symbol", &path, "Authenticate"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("method"))
+            .stdout(predicate::str::contains("AuthHandler.cs"));
+    }
+
+    #[test]
+    fn query_finds_auth_symbols() {
+        let dir = setup_fixture("csharp_project");
+        let path = index_fixture(&dir);
+
+        pruner()
+            .args(["query", &path, "authenticate user"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Matching symbols:"));
+    }
+
+    #[test]
+    fn context_includes_snippets() {
+        let dir = setup_fixture("csharp_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "authenticate");
+        let snippets = json["snippets"].as_array().unwrap();
+
+        assert!(!snippets.is_empty(), "should include C# code snippets");
+    }
+
+    #[test]
+    fn detects_csharp_test_files() {
+        let dir = setup_fixture("csharp_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json(&path, "authenticate");
+        let tests = json["relevant_tests"].as_array().unwrap();
+
+        assert!(
+            tests.iter().any(|t| {
+                t["path"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("AuthHandlerTests.cs")
+            }),
+            "should detect C# test file"
+        );
+    }
+
+    #[test]
+    fn context_has_execution_paths() {
+        let dir = setup_fixture("csharp_project");
+        let path = index_fixture(&dir);
+
+        let json = context_json_full(&path, "authenticate");
+        let paths = json["execution_paths"].as_array().unwrap();
+
+        assert!(
+            !paths.is_empty(),
+            "should have execution paths from Authenticate"
+        );
+    }
+}
+
 #[cfg(test)]
 mod upgrade {
     use assert_cmd::Command;
