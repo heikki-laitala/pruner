@@ -14,6 +14,7 @@ Usage:
     --task TASK          Run only this task
     --mode hook|skill    Pruner delivery: hook (prompt-submit) or skill (tool call)
     --only with|without  Run only one side
+    --baseline-branch REF  Compare pruner from REF vs current worktree
     --save-raw           Save raw stream-json output to /tmp/pruner-bench/ab-raw/
 
 Requires:
@@ -37,6 +38,10 @@ WORK_DIR = Path("/tmp/pruner-bench/ab-workspace")
 RAW_DIR = Path("/tmp/pruner-bench/ab-raw")
 CLONE_WITH = WORK_DIR / "with-pruner"
 CLONE_WITHOUT = WORK_DIR / "without-pruner"
+
+CLONE_BASELINE = WORK_DIR / "baseline-pruner"
+CLONE_FEATURE = WORK_DIR / "feature-pruner"
+BASELINE_BIN_DIR = WORK_DIR / "baseline-bin"
 
 MODEL = "opus"
 MAX_TURNS = 15
@@ -73,6 +78,66 @@ TASKS = {
 }
 
 
+def build_pruner_from_ref(ref, output_dir):
+    """Build pruner from a git ref using git worktree.
+
+    Creates a temporary worktree at the given ref, runs cargo build --release,
+    copies the binary to output_dir/pruner, and cleans up the worktree.
+
+    Returns Path to the built binary.
+    """
+    worktree_dir = WORK_DIR / "worktree-baseline"
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Clean up any existing worktree
+    if worktree_dir.exists():
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(worktree_dir)],
+            cwd=PRUNER_DIR, capture_output=True,
+        )
+        # If worktree remove failed (e.g., not a worktree), just delete
+        if worktree_dir.exists():
+            shutil.rmtree(worktree_dir)
+
+    # Also prune stale worktree entries
+    subprocess.run(
+        ["git", "worktree", "prune"],
+        cwd=PRUNER_DIR, capture_output=True,
+    )
+
+    try:
+        # Create worktree at the given ref
+        print(f"  Creating worktree for {ref} ...", file=sys.stderr)
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_dir), ref],
+            cwd=PRUNER_DIR, capture_output=True, check=True,
+        )
+
+        # Build release binary in the worktree
+        print(f"  Building pruner from {ref} ...", file=sys.stderr)
+        subprocess.run(
+            ["cargo", "build", "--release"],
+            cwd=worktree_dir, check=True,
+        )
+
+        # Copy binary to output directory
+        built_binary = worktree_dir / "target" / "release" / "pruner"
+        dest = output_dir / "pruner"
+        shutil.copy2(built_binary, dest)
+        print(f"  Baseline binary ready: {dest}", file=sys.stderr)
+        return dest
+
+    finally:
+        # Always clean up the worktree
+        if worktree_dir.exists():
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=PRUNER_DIR, capture_output=True,
+            )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="A/B test pruner with real Claude Code sessions")
     parser.add_argument("repo", nargs="?", default="/tmp/pruner-bench/openclaw",
@@ -87,6 +152,8 @@ def parse_args():
                         help="Save raw stream-json output for analysis")
     parser.add_argument("--validate-cache", action="store_true",
                         help="Warn if cache hit rates differ >10%% between paired runs")
+    parser.add_argument("--baseline-branch", metavar="REF",
+                        help="Compare pruner from REF (baseline) vs current worktree (feature)")
     return parser.parse_args()
 
 
@@ -111,77 +178,7 @@ def setup_clones(repo, mode="hook"):
 
     print(f"  Pruner mode: {mode}", file=sys.stderr)
 
-    # Clean previous pruner setup from the "with" clone
-    for p in [CLONE_WITH / ".claude" / "skills" / "pruner",
-              CLONE_WITH / ".claude" / "hooks"]:
-        if p.exists():
-            shutil.rmtree(p)
-    with_settings_file = CLONE_WITH / ".claude" / "settings.json"
-    if with_settings_file.exists():
-        s = json.loads(with_settings_file.read_text())
-        s.pop("hooks", None)
-        with_settings_file.write_text(json.dumps(s, indent=2))
-
-    # Remove old pruner instructions from CLAUDE.md
-    claude_md = CLONE_WITH / "CLAUDE.md"
-    if claude_md.exists():
-        text = claude_md.read_text()
-        marker = "## Pruner"
-        idx = text.find(marker)
-        if idx >= 0:
-            claude_md.write_text(text[:idx].rstrip() + "\n")
-
-    if mode == "hook":
-        # Install hook
-        hook_dir = CLONE_WITH / ".claude" / "hooks"
-        hook_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(HOOK_SRC, hook_dir / "pruner-context.sh")
-        (hook_dir / "pruner-context.sh").chmod(0o755)
-
-        # Install hook settings
-        settings = {}
-        if with_settings_file.exists():
-            settings = json.loads(with_settings_file.read_text())
-        settings["hooks"] = {
-            "UserPromptSubmit": [
-                {
-                    "matcher": "",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": str(hook_dir / "pruner-context.sh"),
-                            "timeout": 60,
-                        }
-                    ],
-                }
-            ]
-        }
-        with_settings_file.write_text(json.dumps(settings, indent=2))
-
-        # Install hook-mode skill
-        skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(SKILL_HOOK_SRC, skill_dir / "SKILL.md")
-
-    elif mode == "skill":
-        # Install skill-mode skill (Claude calls pruner as a tool)
-        skill_dir = CLONE_WITH / ".claude" / "skills" / "pruner"
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(SKILL_SKILL_SRC, skill_dir / "SKILL.md")
-
-    # Append pruner instructions to CLAUDE.md
-    template_text = CLAUDE_TEMPLATE.read_text()
-    current = claude_md.read_text() if claude_md.exists() else ""
-    if "pruner context" not in current:
-        with open(claude_md, "a") as f:
-            f.write("\n" + template_text)
-
-    # Index the with-pruner clone
-    print("  Indexing with-pruner clone ...", file=sys.stderr)
-    subprocess.run(
-        [str(PRUNER_BIN), "index", str(CLONE_WITH)],
-        capture_output=True, check=True,
-    )
+    install_pruner_in_clone(CLONE_WITH, PRUNER_BIN, mode)
 
     # Remove any pruner artifacts from the "without" clone
     for p in [CLONE_WITHOUT / ".claude" / "skills" / "pruner",
@@ -196,6 +193,129 @@ def setup_clones(repo, mode="hook"):
         without_settings.write_text(json.dumps(s, indent=2))
 
     print("  Setup complete.", file=sys.stderr)
+
+
+def install_pruner_in_clone(clone_path, pruner_bin, mode="hook"):
+    """Install pruner (hook or skill mode) and index in the given clone.
+
+    Cleans previous pruner setup, installs the specified mode, appends
+    CLAUDE.md instructions, and runs pruner index.
+    """
+    # Clean previous pruner setup
+    for p in [clone_path / ".claude" / "skills" / "pruner",
+              clone_path / ".claude" / "hooks"]:
+        if p.exists():
+            shutil.rmtree(p)
+    settings_file = clone_path / ".claude" / "settings.json"
+    if settings_file.exists():
+        s = json.loads(settings_file.read_text())
+        s.pop("hooks", None)
+        settings_file.write_text(json.dumps(s, indent=2))
+
+    # Remove old pruner instructions from CLAUDE.md
+    claude_md = clone_path / "CLAUDE.md"
+    if claude_md.exists():
+        text = claude_md.read_text()
+        marker = "## Pruner"
+        idx = text.find(marker)
+        if idx >= 0:
+            claude_md.write_text(text[:idx].rstrip() + "\n")
+
+    if mode == "hook":
+        # Install hook
+        hook_dir = clone_path / ".claude" / "hooks"
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(HOOK_SRC, hook_dir / "pruner-context.sh")
+        (hook_dir / "pruner-context.sh").chmod(0o755)
+
+        # Install hook settings
+        settings = {}
+        if settings_file.exists():
+            settings = json.loads(settings_file.read_text())
+        settings["hooks"] = {
+            "UserPromptSubmit": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": str(hook_dir / "pruner-context.sh"),
+                            "timeout": 60,
+                        }
+                    ],
+                }
+            ]
+        }
+        settings_file.write_text(json.dumps(settings, indent=2))
+
+        # Install hook-mode skill
+        skill_dir = clone_path / ".claude" / "skills" / "pruner"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SKILL_HOOK_SRC, skill_dir / "SKILL.md")
+
+    elif mode == "skill":
+        # Install skill-mode skill (Claude calls pruner as a tool)
+        skill_dir = clone_path / ".claude" / "skills" / "pruner"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SKILL_SKILL_SRC, skill_dir / "SKILL.md")
+
+    # Append pruner instructions to CLAUDE.md
+    template_text = CLAUDE_TEMPLATE.read_text()
+    current = claude_md.read_text() if claude_md.exists() else ""
+    if "pruner context" not in current:
+        with open(claude_md, "a") as f:
+            f.write("\n" + template_text)
+
+    # Index the clone
+    label = Path(clone_path).name
+    print(f"  Indexing {label} clone ...", file=sys.stderr)
+    subprocess.run(
+        [str(pruner_bin), "index", str(clone_path)],
+        capture_output=True, check=True,
+    )
+
+
+def setup_clones_branch_mode(repo, baseline_ref, mode="hook"):
+    """Set up two clones for branch comparison: both with pruner, different binaries.
+
+    Builds pruner from baseline_ref for the control side.
+    Uses PRUNER_BIN (current worktree) for the feature side.
+    """
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Build baseline binary from the given ref
+    baseline_bin = build_pruner_from_ref(baseline_ref, BASELINE_BIN_DIR)
+
+    for clone_path, label in [(CLONE_BASELINE, "baseline-pruner"),
+                               (CLONE_FEATURE, "feature-pruner")]:
+        if clone_path.exists():
+            print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
+        else:
+            print(f"  Copying {repo} -> {clone_path} ...", file=sys.stderr)
+            shutil.copytree(repo, clone_path, symlinks=True,
+                            ignore=shutil.ignore_patterns('.pruner'))
+        # Reset to pinned commit for reproducibility
+        subprocess.run(["git", "checkout", PINNED_COMMIT], cwd=clone_path,
+                        capture_output=True, check=True)
+        subprocess.run(["git", "checkout", "."], cwd=clone_path,
+                        capture_output=True, check=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=clone_path,
+                        capture_output=True, check=True)
+
+    print(f"  Pruner mode: {mode}", file=sys.stderr)
+
+    # Install pruner in both clones with their respective binaries
+    install_pruner_in_clone(CLONE_BASELINE, baseline_bin, mode)
+    install_pruner_in_clone(CLONE_FEATURE, PRUNER_BIN, mode)
+
+    # Remove any stray without-pruner artifacts
+    for clone_path in [CLONE_BASELINE, CLONE_FEATURE]:
+        pruner_dir = clone_path / ".pruner"
+        if not pruner_dir.exists():
+            # Should have been created by index, warn if missing
+            print(f"  WARN: .pruner/ missing in {clone_path.name}", file=sys.stderr)
+
+    print("  Branch mode setup complete.", file=sys.stderr)
 
 
 def parse_stream(stdout, label="", save_path=None):
@@ -288,18 +408,25 @@ def parse_stream(stdout, label="", save_path=None):
     }
 
 
-def ensure_pruner_on_path():
-    """Create a bin directory with a 'pruner' symlink to the release binary.
+def ensure_pruner_on_path(binary_path=None, label="default"):
+    """Create a bin directory with a 'pruner' symlink to the given binary.
 
-    Returns the directory path.  This ensures the hook script finds our
-    freshly-built binary first, regardless of what is installed system-wide.
+    Args:
+        binary_path: Path to pruner binary. Defaults to PRUNER_BIN.
+        label: Subdirectory label, allowing multiple bin dirs to coexist
+               (e.g., "baseline" and "feature" for branch comparison).
+
+    Returns the directory path.  This ensures the hook script finds the
+    target binary first, regardless of what is installed system-wide.
     """
-    bin_dir = WORK_DIR / "bin"
+    if binary_path is None:
+        binary_path = PRUNER_BIN
+    bin_dir = WORK_DIR / "bin" / label
     bin_dir.mkdir(parents=True, exist_ok=True)
     link = bin_dir / "pruner"
     if link.exists() or link.is_symlink():
         link.unlink()
-    link.symlink_to(PRUNER_BIN.resolve())
+    link.symlink_to(Path(binary_path).resolve())
     return bin_dir
 
 
@@ -330,39 +457,55 @@ def validate_cache_symmetry(results, threshold=0.10):
 
     Returns a list of warning strings for pairs where the absolute difference
     in first_turn_cache_rate exceeds the threshold.
+
+    Automatically detects mode from result keys (without/with_pruner or
+    baseline/feature).
     """
     warnings = []
     for entry in results:
-        without = entry.get("without")
-        with_p = entry.get("with_pruner")
-        if not without or not with_p:
+        # Detect which keys are present
+        if entry.get("baseline") is not None or entry.get("feature") is not None:
+            ctrl = entry.get("baseline")
+            treat = entry.get("feature")
+            ctrl_label, treat_label = "baseline", "feature"
+        else:
+            ctrl = entry.get("without")
+            treat = entry.get("with_pruner")
+            ctrl_label, treat_label = "without", "with"
+        if not ctrl or not treat:
             continue
-        rate_wo = without.get("first_turn_cache_rate")
-        rate_w = with_p.get("first_turn_cache_rate")
-        if rate_wo is None or rate_w is None:
+        rate_ctrl = ctrl.get("first_turn_cache_rate")
+        rate_treat = treat.get("first_turn_cache_rate")
+        if rate_ctrl is None or rate_treat is None:
             continue
-        diff = abs(rate_w - rate_wo)
+        diff = abs(rate_treat - rate_ctrl)
         if diff > threshold:
             warnings.append(
                 f"{entry['category']}: cache rate diff={diff:.0%} "
-                f"(without={rate_wo:.0%}, with={rate_w:.0%})"
+                f"({ctrl_label}={rate_ctrl:.0%}, {treat_label}={rate_treat:.0%})"
             )
     return warnings
 
 
-def warmup_cache(repo_dir):
+def warmup_cache(repo_dir, bin_dir=None):
     """Run a minimal throwaway Claude prompt to prime the prompt cache.
 
     Anthropic's prompt cache (~1 hour TTL) caches the system prompt + tool
     schemas prefix. This warmup ensures both sides start with equally warm
     caches, eliminating asymmetric first-call cache advantages.
+
+    Args:
+        repo_dir: Directory to run Claude in.
+        bin_dir: Pre-built bin directory with pruner symlink. If None, uses
+                 ensure_pruner_on_path() default.
     """
     wrapper = WORK_DIR / "run_claude.sh"
     if not wrapper.exists():
         wrapper.write_text("#!/bin/bash\ncd \"$1\" && shift && exec claude \"$@\"\n")
         wrapper.chmod(0o755)
 
-    bin_dir = ensure_pruner_on_path()
+    if bin_dir is None:
+        bin_dir = ensure_pruner_on_path()
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
 
@@ -384,8 +527,13 @@ def warmup_cache(repo_dir):
         print(f"  Cache warmup [{label}] timed out (continuing)", file=sys.stderr)
 
 
-def run_claude(prompt, repo_dir, label="", save_raw=False):
-    """Run claude -p inside the repo directory and return parsed results."""
+def run_claude(prompt, repo_dir, label="", save_raw=False, bin_dir=None):
+    """Run claude -p inside the repo directory and return parsed results.
+
+    Args:
+        bin_dir: Pre-built bin directory with pruner symlink. If None, uses
+                 ensure_pruner_on_path() default.
+    """
     wrapper = WORK_DIR / "run_claude.sh"
     if not wrapper.exists():
         wrapper.write_text("#!/bin/bash\ncd \"$1\" && shift && exec claude \"$@\"\n")
@@ -403,7 +551,8 @@ def run_claude(prompt, repo_dir, label="", save_raw=False):
     ]
 
     # Prepend our release binary to PATH so the hook script uses it
-    bin_dir = ensure_pruner_on_path()
+    if bin_dir is None:
+        bin_dir = ensure_pruner_on_path()
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
 
@@ -465,15 +614,20 @@ def print_detailed_results(label, data):
         print(f"    {i}. {t['name']}: {t['input_preview'][:120]}", file=sys.stderr)
 
 
-def reset_clone(clone_path, reinstall_pruner=False, mode="hook"):
+def reset_clone(clone_path, reinstall_pruner=False, mode="hook", pruner_bin=None):
     """Reset clone to pinned commit, discarding any changes from the previous task.
 
     If reinstall_pruner is True, re-runs pruner init since git clean removes untracked files.
+
+    Args:
+        pruner_bin: Path to pruner binary for init/index. Defaults to PRUNER_BIN.
     """
+    if pruner_bin is None:
+        pruner_bin = PRUNER_BIN
     subprocess.run(["git", "checkout", "."], cwd=clone_path, capture_output=True, check=True)
     subprocess.run(["git", "clean", "-fd"], cwd=clone_path, capture_output=True, check=True)
     if reinstall_pruner:
-        init_args = [str(PRUNER_BIN), "init", str(clone_path)]
+        init_args = [str(pruner_bin), "init", str(clone_path)]
         if mode == "hook":
             init_args.append("--hook")
         subprocess.run(init_args, check=True, capture_output=True, text=True)
@@ -481,25 +635,49 @@ def reset_clone(clone_path, reinstall_pruner=False, mode="hook"):
         # Without an index, the hook's pruner context call auto-indexes the
         # entire repo, exceeding the 60s hook timeout on large repos.
         subprocess.run(
-            [str(PRUNER_BIN), "index", str(clone_path)],
+            [str(pruner_bin), "index", str(clone_path)],
             check=True, capture_output=True, text=True,
         )
 
 
-def run_single(category, prompt, side, mode="hook", save_raw=False):
-    """Run one side (with or without) of one task."""
+def run_single(category, prompt, side, mode="hook", save_raw=False,
+               branch_mode=False):
+    """Run one side of one task.
+
+    In default mode: side is "with" or "without".
+    In branch mode: side is "baseline" or "feature", both with pruner.
+    """
     print(f"\n{'='*60}", file=sys.stderr)
     print(f"  Task: {category} [{side}]", file=sys.stderr)
     print(f"{'='*60}", file=sys.stderr)
 
-    if side == "with":
+    if branch_mode:
+        if side == "baseline":
+            baseline_bin = BASELINE_BIN_DIR / "pruner"
+            bin_dir = ensure_pruner_on_path(binary_path=baseline_bin,
+                                            label="baseline")
+            reset_clone(CLONE_BASELINE, reinstall_pruner=True, mode=mode,
+                        pruner_bin=baseline_bin)
+            warmup_cache(CLONE_BASELINE, bin_dir=bin_dir)
+            result = run_claude(prompt, CLONE_BASELINE,
+                                f"{category}/baseline", save_raw,
+                                bin_dir=bin_dir)
+        else:
+            bin_dir = ensure_pruner_on_path(label="feature")
+            reset_clone(CLONE_FEATURE, reinstall_pruner=True, mode=mode)
+            warmup_cache(CLONE_FEATURE, bin_dir=bin_dir)
+            result = run_claude(prompt, CLONE_FEATURE,
+                                f"{category}/feature", save_raw,
+                                bin_dir=bin_dir)
+    elif side == "with":
         reset_clone(CLONE_WITH, reinstall_pruner=True, mode=mode)
         warmup_cache(CLONE_WITH)
         result = run_claude(prompt, CLONE_WITH, f"{category}/with", save_raw)
     else:
         reset_clone(CLONE_WITHOUT)
         warmup_cache(CLONE_WITHOUT)
-        result = run_claude(prompt, CLONE_WITHOUT, f"{category}/without", save_raw)
+        result = run_claude(prompt, CLONE_WITHOUT, f"{category}/without",
+                            save_raw)
 
     if result:
         compute_cache_hit_rate(result)
@@ -507,19 +685,25 @@ def run_single(category, prompt, side, mode="hook", save_raw=False):
     return result
 
 
-def interleaved_schedule(tasks, only=None):
+def interleaved_schedule(tasks, only=None, sides=("without", "with")):
     """Build a randomized run schedule where same-scenario runs are never adjacent.
 
-    Each task produces two runs (with/without). The schedule interleaves them
+    Each task produces two runs (one per side). The schedule interleaves them
     so that Anthropic's prompt cache (~1 hour TTL for eligible users) has less
     opportunity for cross-scenario cache contamination.
+
+    Args:
+        sides: Tuple of (control, treatment) side names.
+               Default ("without", "with") for standard mode.
+               Use ("baseline", "feature") for branch comparison mode.
     """
+    side_a, side_b = sides
     runs = []
     for category, prompt in tasks:
-        if only != "with":
-            runs.append((category, prompt, "without"))
-        if only != "without":
-            runs.append((category, prompt, "with"))
+        if only != side_b:
+            runs.append((category, prompt, side_a))
+        if only != side_a:
+            runs.append((category, prompt, side_b))
 
     # Shuffle with constraint: same category cannot be adjacent
     for _ in range(200):
@@ -538,19 +722,25 @@ def interleaved_schedule(tasks, only=None):
     return runs
 
 
-def print_summary(results):
+def print_summary(results, branch_mode=False):
     """Print comparison summary table."""
     print(f"\n{'='*60}", file=sys.stderr)
     print("  SUMMARY", file=sys.stderr)
     print(f"{'='*60}", file=sys.stderr)
 
+    # Determine result keys based on mode
+    ctrl_key = "baseline" if branch_mode else "without"
+    treat_key = "feature" if branch_mode else "with_pruner"
+    ctrl_label = "Base" if branch_mode else "W/O"
+    treat_label = "Feat" if branch_mode else "W/"
+
     valid = [r for r in results if r.get("token_delta_pct") is not None]
     if not valid:
         # Single-side results
         for r in results:
-            side = r.get("without") or r.get("with_pruner")
+            side = r.get(ctrl_key) or r.get(treat_key)
             if side:
-                label = "without" if r.get("without") else "with"
+                label = ctrl_label if r.get(ctrl_key) else treat_label
                 print(f"  {r['category']:<16} [{label}] tokens={side['total_tokens']:,} "
                       f"cost=${side['cost_usd']:.4f} tools={side['tool_calls']} "
                       f"time={side['wall_time_s']}s",
@@ -558,16 +748,16 @@ def print_summary(results):
         return
 
     print(
-        f"  {'Task':<16} {'W/O tokens':>12} {'W/ tokens':>12} {'Δ tok':>8} "
-        f"{'W/O cost':>10} {'W/ cost':>10} {'Δ cost':>8} "
-        f"{'W/O tools':>10} {'W/ tools':>10} {'Δ time':>10} "
-        f"{'Cache W/O':>10} {'Cache W/':>10}",
+        f"  {'Task':<16} {ctrl_label + ' tokens':>12} {treat_label + ' tokens':>12} {'Δ tok':>8} "
+        f"{ctrl_label + ' cost':>10} {treat_label + ' cost':>10} {'Δ cost':>8} "
+        f"{ctrl_label + ' tools':>10} {treat_label + ' tools':>10} {'Δ time':>10} "
+        f"{'Cache ' + ctrl_label:>10} {'Cache ' + treat_label:>10}",
         file=sys.stderr,
     )
     print("  " + "-" * 140, file=sys.stderr)
     for r in valid:
-        w = r["without"]
-        p = r["with_pruner"]
+        w = r[ctrl_key]
+        p = r[treat_key]
         time_delta = ""
         if w["wall_time_s"] and p["wall_time_s"]:
             td = (p["wall_time_s"] - w["wall_time_s"]) / w["wall_time_s"] * 100
@@ -590,13 +780,21 @@ def print_summary(results):
 
 def main():
     args = parse_args()
+    branch_mode = args.baseline_branch is not None
 
     assert shutil.which("claude"), "claude CLI not found"
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
     assert Path(args.repo).is_dir(), f"repo not found at {args.repo}"
 
-    print(f"Setting up test clones (mode={args.mode}) ...", file=sys.stderr)
-    setup_clones(args.repo, mode=args.mode)
+    if branch_mode:
+        print(f"Setting up branch comparison: {args.baseline_branch} vs current "
+              f"(mode={args.mode}) ...", file=sys.stderr)
+        setup_clones_branch_mode(args.repo, args.baseline_branch, mode=args.mode)
+        sides = ("baseline", "feature")
+    else:
+        print(f"Setting up test clones (mode={args.mode}) ...", file=sys.stderr)
+        setup_clones(args.repo, mode=args.mode)
+        sides = ("without", "with")
 
     # Select tasks
     if args.task:
@@ -605,34 +803,41 @@ def main():
         tasks = list(TASKS.items())
 
     # Build interleaved schedule: randomized order, same scenario never adjacent
-    schedule = interleaved_schedule(tasks, only=args.only)
+    schedule = interleaved_schedule(tasks, only=args.only, sides=sides)
     print(f"\nRun schedule ({len(schedule)} runs):", file=sys.stderr)
     for i, (cat, _, side) in enumerate(schedule):
         print(f"  {i+1}. {cat} [{side}]", file=sys.stderr)
 
     # Run all experiments
-    run_results = {}  # category -> {"without": ..., "with": ...}
+    run_results = {}
     for category, prompt, side in schedule:
-        result = run_single(category, prompt, side, mode=args.mode, save_raw=args.save_raw)
+        result = run_single(category, prompt, side, mode=args.mode,
+                            save_raw=args.save_raw, branch_mode=branch_mode)
         run_results.setdefault(category, {})[side] = result
 
     # Assemble results
+    ctrl_key = "baseline" if branch_mode else "without"
+    treat_key = "feature" if branch_mode else "with"
+    result_ctrl_key = ctrl_key
+    result_treat_key = "feature" if branch_mode else "with_pruner"
+
     results = []
     for category, _ in tasks:
         data = run_results.get(category, {})
-        without = data.get("without")
-        with_p = data.get("with")
-        entry = {"category": category, "without": without, "with_pruner": with_p}
-        if without and with_p:
+        ctrl = data.get(ctrl_key)
+        treat = data.get(treat_key)
+        entry = {"category": category,
+                 result_ctrl_key: ctrl, result_treat_key: treat}
+        if ctrl and treat:
             entry["token_delta_pct"] = round(
-                ((with_p["total_tokens"] - without["total_tokens"])
-                 / without["total_tokens"] * 100)
-                if without["total_tokens"] else 0, 1
+                ((treat["total_tokens"] - ctrl["total_tokens"])
+                 / ctrl["total_tokens"] * 100)
+                if ctrl["total_tokens"] else 0, 1
             )
             entry["cost_delta_pct"] = round(
-                ((with_p["cost_usd"] - without["cost_usd"])
-                 / without["cost_usd"] * 100)
-                if without["cost_usd"] else 0, 1
+                ((treat["cost_usd"] - ctrl["cost_usd"])
+                 / ctrl["cost_usd"] * 100)
+                if ctrl["cost_usd"] else 0, 1
             )
         results.append(entry)
 
@@ -640,7 +845,7 @@ def main():
     print(json.dumps(results, indent=2))
 
     # Summary to stderr
-    print_summary(results)
+    print_summary(results, branch_mode=branch_mode)
 
     # Cache symmetry validation
     if args.validate_cache:
