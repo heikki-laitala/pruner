@@ -886,9 +886,9 @@ fn extract_java_import(node: &tree_sitter::Node, src: &[u8], result: &mut ParseR
     }
 }
 
-/// Normalize a Java type name to its simple base name for call resolution.
+/// Normalize a type name to its simple base name for call resolution.
 /// e.g. `Box<String>` -> `Box`, `com.foo.User` -> `User`, `List<Map<K,V>>` -> `List`
-fn normalize_java_type_name(raw: &str) -> String {
+fn normalize_type_name(raw: &str) -> String {
     let without_generics = raw.split('<').next().unwrap_or(raw);
     let simple = without_generics
         .rsplit('.')
@@ -911,7 +911,7 @@ fn extract_java_calls(
                 .map(|n| node_text(n, src).to_string()),
             "object_creation_expression" => child
                 .child_by_field_name("type")
-                .map(|n| normalize_java_type_name(node_text(n, src))),
+                .map(|n| normalize_type_name(node_text(n, src))),
             _ => None,
         };
         if let Some(name) = callee {
@@ -1055,6 +1055,22 @@ fn extract_csharp_node(
                     extract_csharp_calls(&child, src, result, idx);
                 }
             }
+            "property_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let prop_type = child
+                        .child_by_field_name("type")
+                        .map(|n| node_text(n, src))
+                        .unwrap_or("?");
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "property".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: effective_parent,
+                        signature: Some(format!("{prop_type} {}", node_text(name_node, src))),
+                    });
+                }
+            }
             "using_directive" => {
                 extract_csharp_using(&child, src, result);
             }
@@ -1066,18 +1082,23 @@ fn extract_csharp_node(
 }
 
 fn extract_csharp_using(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    // For alias directives (`using Alias = Target;`), collect all name-like children.
+    // The last qualified_name/identifier is the actual target; earlier ones are the alias.
     let mut cursor = node.walk();
+    let mut last_name: Option<String> = None;
     for child in node.children(&mut cursor) {
         match child.kind() {
             "qualified_name" | "identifier" | "alias_qualified_name" => {
-                result.imports.push(Import {
-                    module: node_text(child, src).to_string(),
-                    names: None,
-                });
-                return;
+                last_name = Some(node_text(child, src).to_string());
             }
             _ => {}
         }
+    }
+    if let Some(module) = last_name {
+        result.imports.push(Import {
+            module,
+            names: None,
+        });
     }
 }
 
@@ -1091,42 +1112,38 @@ fn extract_csharp_calls(
     for child in node.children(&mut cursor) {
         let callee = match child.kind() {
             "invocation_expression" => {
-                child.child_by_field_name("function").and_then(|fn_node| {
-                    match fn_node.kind() {
+                child
+                    .child_by_field_name("function")
+                    .and_then(|fn_node| match fn_node.kind() {
                         "identifier" => Some(node_text(fn_node, src).to_string()),
                         "member_access_expression" => fn_node
                             .child_by_field_name("name")
-                            .map(|n| node_text(n, src).to_string()),
+                            .map(|n| normalize_type_name(node_text(n, src))),
                         "generic_name" => fn_node
                             .child_by_field_name("name")
                             .map(|n| node_text(n, src).to_string()),
                         _ => None,
-                    }
-                })
+                    })
             }
             "object_creation_expression" => {
-                child.child_by_field_name("type").map(|type_node| {
-                    match type_node.kind() {
+                child
+                    .child_by_field_name("type")
+                    .map(|type_node| match type_node.kind() {
                         "generic_name" => type_node
                             .child_by_field_name("name")
                             .map(|n| node_text(n, src).to_string())
-                            .unwrap_or_else(|| {
-                                normalize_java_type_name(node_text(type_node, src))
-                            }),
-                        _ => normalize_java_type_name(node_text(type_node, src)),
-                    }
-                })
+                            .unwrap_or_else(|| normalize_type_name(node_text(type_node, src))),
+                        _ => normalize_type_name(node_text(type_node, src)),
+                    })
             }
             _ => None,
         };
-        if let Some(name) = callee {
-            if !name.is_empty() {
-                result.calls.push(Call {
-                    caller_index,
-                    callee_name: name,
-                    line: child.start_position().row + 1,
-                });
-            }
+        if let Some(name) = callee.filter(|n| !n.is_empty()) {
+            result.calls.push(Call {
+                caller_index,
+                callee_name: name,
+                line: child.start_position().row + 1,
+            });
         }
         extract_csharp_calls(&child, src, result, caller_index);
     }
@@ -2417,12 +2434,12 @@ class Foo {
     }
 
     #[test]
-    fn test_normalize_java_type_name() {
-        assert_eq!(normalize_java_type_name("User"), "User");
-        assert_eq!(normalize_java_type_name("Box<String>"), "Box");
-        assert_eq!(normalize_java_type_name("List<Map<K,V>>"), "List");
-        assert_eq!(normalize_java_type_name("com.foo.User"), "User");
-        assert_eq!(normalize_java_type_name("com.foo.Box<String>"), "Box");
+    fn test_normalize_type_name() {
+        assert_eq!(normalize_type_name("User"), "User");
+        assert_eq!(normalize_type_name("Box<String>"), "Box");
+        assert_eq!(normalize_type_name("List<Map<K,V>>"), "List");
+        assert_eq!(normalize_type_name("com.foo.User"), "User");
+        assert_eq!(normalize_type_name("com.foo.Box<String>"), "Box");
     }
 
     // -- C tests --
@@ -2888,10 +2905,7 @@ using MyApp.Models;
         let result = parse_source(src, Language::Csharp)?;
         assert_eq!(result.imports.len(), 3);
         assert!(result.imports.iter().any(|i| i.module == "System"));
-        assert!(result
-            .imports
-            .iter()
-            .any(|i| i.module.contains("Generic")));
+        assert!(result.imports.iter().any(|i| i.module.contains("Generic")));
         assert!(result.imports.iter().any(|i| i.module.contains("Models")));
         Ok(())
     }
@@ -2906,10 +2920,7 @@ public interface IAuthService
 }
 "#;
         let result = parse_source(src, Language::Csharp)?;
-        let iface = result
-            .symbols
-            .iter()
-            .find(|s| s.name == "IAuthService");
+        let iface = result.symbols.iter().find(|s| s.name == "IAuthService");
         assert!(iface.is_some(), "should find interface");
         assert_eq!(iface.unwrap().kind, "interface");
 
@@ -2979,6 +2990,80 @@ public class AuthService
                 .contains("UserRepository"),
             "signature should contain param type"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_alias_using() -> anyhow::Result<()> {
+        let src = r#"
+using System;
+using Auth = MyApp.Services.AuthService;
+using MyApp.Models;
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        assert_eq!(result.imports.len(), 3);
+        assert!(result.imports.iter().any(|i| i.module == "System"));
+        // Alias using should record the target, not the alias name
+        assert!(
+            result
+                .imports
+                .iter()
+                .any(|i| i.module.contains("AuthService")),
+            "should import target, not alias"
+        );
+        assert!(
+            !result.imports.iter().any(|i| i.module == "Auth"),
+            "should not import alias name"
+        );
+        assert!(result.imports.iter().any(|i| i.module.contains("Models")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_generic_member_call() -> anyhow::Result<()> {
+        let src = r#"
+class Foo
+{
+    void Bar()
+    {
+        var x = list.FirstOrDefault<string>();
+        var y = repo.Get<User>();
+    }
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        // Generic type args should be stripped from member call names
+        let call_names: Vec<&str> = result
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert!(
+            !call_names.iter().any(|n| n.contains('<')),
+            "call names should not contain type arguments, got: {:?}",
+            call_names
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_properties() -> anyhow::Result<()> {
+        let src = r#"
+class User
+{
+    public string Name { get; set; }
+    public int Age { get; }
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        let props: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == "property")
+            .collect();
+        assert_eq!(props.len(), 2, "should find 2 properties");
+        assert!(props.iter().any(|p| p.name == "Name"));
+        assert!(props.iter().any(|p| p.name == "Age"));
         Ok(())
     }
 }
