@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ab_test import (
     interleaved_schedule, parse_stream, ensure_pruner_on_path,
     compute_cache_hit_rate, validate_cache_symmetry,
-    TASKS, PRUNER_BIN, WORK_DIR,
+    build_pruner_from_ref,
+    TASKS, PRUNER_BIN, PRUNER_DIR, WORK_DIR,
 )
 from ab_test_copilot import (
     interleaved_schedule as copilot_interleaved_schedule,
@@ -345,6 +346,104 @@ class TestEnsurePrunerOnPath:
         assert result.returncode == 0
         found = Path(result.stdout.strip()).resolve()
         assert found == PRUNER_BIN.resolve()
+
+
+class TestBuildPrunerFromRef:
+    def test_builds_binary_to_output_dir(self):
+        """Build from HEAD (current commit) and verify binary is copied."""
+        if not PRUNER_BIN.exists():
+            return  # skip if not built
+        with tempfile.TemporaryDirectory() as output_dir:
+            output = Path(output_dir)
+            binary = build_pruner_from_ref("HEAD", output)
+            assert binary.exists()
+            assert binary == output / "pruner"
+            assert os.access(binary, os.X_OK)
+
+    def test_worktree_cleaned_up(self):
+        """Worktree directory should not exist after build completes."""
+        if not PRUNER_BIN.exists():
+            return
+        with tempfile.TemporaryDirectory() as output_dir:
+            build_pruner_from_ref("HEAD", Path(output_dir))
+            worktree_dir = WORK_DIR / "worktree-baseline"
+            assert not worktree_dir.exists()
+
+    def test_invalid_ref_raises(self):
+        """Non-existent ref should raise subprocess error."""
+        import subprocess as sp
+        with tempfile.TemporaryDirectory() as output_dir:
+            try:
+                build_pruner_from_ref("nonexistent-ref-abc123", Path(output_dir))
+                assert False, "Should have raised"
+            except sp.CalledProcessError:
+                pass
+
+
+class TestEnsurePrunerOnPathParameterized:
+    def test_default_backward_compatible(self):
+        if not PRUNER_BIN.exists():
+            return
+        bin_dir = ensure_pruner_on_path()
+        link = bin_dir / "pruner"
+        assert link.resolve() == PRUNER_BIN.resolve()
+
+    def test_custom_binary_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dummy = Path(tmp) / "my-pruner"
+            dummy.write_text("#!/bin/sh\necho fake\n")
+            dummy.chmod(0o755)
+            bin_dir = ensure_pruner_on_path(binary_path=dummy, label="custom")
+            link = bin_dir / "pruner"
+            assert link.is_symlink()
+            assert link.resolve() == dummy.resolve()
+
+    def test_separate_labels_coexist(self):
+        if not PRUNER_BIN.exists():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            dummy = Path(tmp) / "alt-pruner"
+            dummy.write_text("#!/bin/sh\necho alt\n")
+            dummy.chmod(0o755)
+            dir_a = ensure_pruner_on_path(label="side-a")
+            dir_b = ensure_pruner_on_path(binary_path=dummy, label="side-b")
+            assert dir_a != dir_b
+            assert (dir_a / "pruner").resolve() == PRUNER_BIN.resolve()
+            assert (dir_b / "pruner").resolve() == dummy.resolve()
+
+
+class TestInterleavedScheduleBranchMode:
+    def test_baseline_feature_sides(self):
+        tasks = list(TASKS.items())
+        schedule = interleaved_schedule(tasks, sides=("baseline", "feature"))
+        assert len(schedule) == len(tasks) * 2
+        for cat in {t[0] for t in tasks}:
+            sides = sorted(r[2] for r in schedule if r[0] == cat)
+            assert sides == ["baseline", "feature"], f"{cat} missing a side"
+
+    def test_only_baseline(self):
+        tasks = list(TASKS.items())
+        schedule = interleaved_schedule(tasks, only="baseline",
+                                        sides=("baseline", "feature"))
+        assert all(r[2] == "baseline" for r in schedule)
+        assert len(schedule) == len(tasks)
+
+    def test_only_feature(self):
+        tasks = list(TASKS.items())
+        schedule = interleaved_schedule(tasks, only="feature",
+                                        sides=("baseline", "feature"))
+        assert all(r[2] == "feature" for r in schedule)
+        assert len(schedule) == len(tasks)
+
+    def test_no_adjacent_same_category(self):
+        tasks = list(TASKS.items())
+        for seed in range(50):
+            random.seed(seed)
+            schedule = interleaved_schedule(tasks, sides=("baseline", "feature"))
+            for i in range(1, len(schedule)):
+                assert schedule[i][0] != schedule[i - 1][0], (
+                    f"seed={seed}: adjacent same category at {i}: {schedule[i][0]}"
+                )
 
 
 class TestCopilotInterleavedSchedule:
