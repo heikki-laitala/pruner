@@ -58,6 +58,7 @@ pub fn parse_source(source: &str, language: Language) -> Result<ParseResult> {
         Language::Java => extract_java(root, src),
         Language::C => extract_c(root, src),
         Language::Cpp => extract_cpp(root, src),
+        Language::Csharp => extract_csharp(root, src),
     }
 }
 
@@ -72,6 +73,7 @@ fn ts_language_for(language: Language) -> tree_sitter::Language {
         Language::Java => tree_sitter_java::LANGUAGE.into(),
         Language::C => tree_sitter_c::LANGUAGE.into(),
         Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+        Language::Csharp => tree_sitter_c_sharp::LANGUAGE.into(),
     }
 }
 
@@ -940,6 +942,213 @@ fn build_java_method_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
 }
 
 fn build_java_constructor_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, src))
+        .unwrap_or("?");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, src))
+        .unwrap_or("()");
+    format!("{name}{params}")
+}
+
+// -- C# extraction --
+
+fn extract_csharp(root: tree_sitter::Node, src: &[u8]) -> Result<ParseResult> {
+    let mut result = ParseResult::default();
+    extract_csharp_node(root, src, &mut result, None);
+    Ok(result)
+}
+
+fn extract_csharp_node(
+    node: tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    parent_index: Option<usize>,
+) {
+    // Track file-scoped namespace: once seen at this level, all subsequent siblings use it as parent.
+    let mut active_ns: Option<usize> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let effective_parent = active_ns.or(parent_index);
+        match child.kind() {
+            "file_scoped_namespace_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "namespace".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index,
+                        signature: None,
+                    });
+                    active_ns = Some(idx);
+                }
+            }
+            "namespace_declaration" => {
+                let ns_parent = if let Some(name_node) = child.child_by_field_name("name") {
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "namespace".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: effective_parent,
+                        signature: None,
+                    });
+                    Some(idx)
+                } else {
+                    effective_parent
+                };
+                if let Some(body) = child.child_by_field_name("body") {
+                    extract_csharp_node(body, src, result, ns_parent);
+                }
+            }
+            kind @ ("class_declaration"
+            | "struct_declaration"
+            | "interface_declaration"
+            | "enum_declaration"
+            | "record_declaration") => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sym_kind = kind.strip_suffix("_declaration").unwrap_or(kind);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: sym_kind.to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: effective_parent,
+                        signature: None,
+                    });
+                    extract_csharp_node(child, src, result, Some(idx));
+                }
+            }
+            "method_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sig = build_csharp_method_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "method".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: effective_parent,
+                        signature: Some(sig),
+                    });
+                    extract_csharp_calls(&child, src, result, idx);
+                }
+            }
+            "constructor_declaration" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let sig = build_csharp_constructor_signature(&child, src);
+                    let idx = result.symbols.len();
+                    result.symbols.push(Symbol {
+                        name: node_text(name_node, src).to_string(),
+                        kind: "constructor".to_string(),
+                        line_start: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
+                        parent_index: effective_parent,
+                        signature: Some(sig),
+                    });
+                    extract_csharp_calls(&child, src, result, idx);
+                }
+            }
+            "using_directive" => {
+                extract_csharp_using(&child, src, result);
+            }
+            _ => {
+                extract_csharp_node(child, src, result, effective_parent);
+            }
+        }
+    }
+}
+
+fn extract_csharp_using(node: &tree_sitter::Node, src: &[u8], result: &mut ParseResult) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "qualified_name" | "identifier" | "alias_qualified_name" => {
+                result.imports.push(Import {
+                    module: node_text(child, src).to_string(),
+                    names: None,
+                });
+                return;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_csharp_calls(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+    caller_index: usize,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let callee = match child.kind() {
+            "invocation_expression" => {
+                child.child_by_field_name("function").and_then(|fn_node| {
+                    match fn_node.kind() {
+                        "identifier" => Some(node_text(fn_node, src).to_string()),
+                        "member_access_expression" => fn_node
+                            .child_by_field_name("name")
+                            .map(|n| node_text(n, src).to_string()),
+                        "generic_name" => fn_node
+                            .child_by_field_name("name")
+                            .map(|n| node_text(n, src).to_string()),
+                        _ => None,
+                    }
+                })
+            }
+            "object_creation_expression" => {
+                child.child_by_field_name("type").map(|type_node| {
+                    match type_node.kind() {
+                        "generic_name" => type_node
+                            .child_by_field_name("name")
+                            .map(|n| node_text(n, src).to_string())
+                            .unwrap_or_else(|| {
+                                normalize_java_type_name(node_text(type_node, src))
+                            }),
+                        _ => normalize_java_type_name(node_text(type_node, src)),
+                    }
+                })
+            }
+            _ => None,
+        };
+        if let Some(name) = callee {
+            if !name.is_empty() {
+                result.calls.push(Call {
+                    caller_index,
+                    callee_name: name,
+                    line: child.start_position().row + 1,
+                });
+            }
+        }
+        extract_csharp_calls(&child, src, result, caller_index);
+    }
+}
+
+fn build_csharp_method_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
+    let ret_type = node
+        .child_by_field_name("type")
+        .map(|n| node_text(n, src))
+        .unwrap_or("void");
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| node_text(n, src))
+        .unwrap_or("?");
+    let params = node
+        .child_by_field_name("parameters")
+        .map(|n| node_text(n, src))
+        .unwrap_or("()");
+    format!("{ret_type} {name}{params}")
+}
+
+fn build_csharp_constructor_signature(node: &tree_sitter::Node, src: &[u8]) -> String {
     let name = node
         .child_by_field_name("name")
         .map(|n| node_text(n, src))
@@ -2563,6 +2772,212 @@ void process() {
             result.calls.iter().any(|c| c.callee_name == "static_fn"),
             "should capture Type::static_fn, got: {:?}",
             result.calls
+        );
+        Ok(())
+    }
+
+    // -- C# tests --
+
+    #[test]
+    fn test_parse_csharp_class_and_methods() -> anyhow::Result<()> {
+        let src = r#"
+using System;
+
+namespace Example
+{
+    public class AuthService
+    {
+        public string Authenticate(string username, string password)
+        {
+            return Validate(username, password);
+        }
+
+        private bool Validate(string username, string password)
+        {
+            return true;
+        }
+    }
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        let class = result.symbols.iter().find(|s| s.name == "AuthService");
+        assert!(class.is_some(), "should find AuthService class");
+        assert_eq!(class.unwrap().kind, "class");
+
+        let methods: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 2);
+        assert!(methods.iter().any(|m| m.name == "Authenticate"));
+
+        let class_idx = result
+            .symbols
+            .iter()
+            .position(|s| s.name == "AuthService")
+            .unwrap();
+        for m in &methods {
+            assert_eq!(m.parent_index, Some(class_idx));
+        }
+        assert!(result.calls.iter().any(|c| c.callee_name == "Validate"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_namespace() -> anyhow::Result<()> {
+        let src = r#"
+namespace MyApp.Auth
+{
+    public class TokenService
+    {
+        public string Generate() { return "tok"; }
+    }
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        let ns = result.symbols.iter().find(|s| s.kind == "namespace");
+        assert!(ns.is_some(), "should find namespace");
+        assert_eq!(ns.unwrap().name, "MyApp.Auth");
+
+        let class = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "TokenService")
+            .unwrap();
+        let ns_idx = result
+            .symbols
+            .iter()
+            .position(|s| s.kind == "namespace")
+            .unwrap();
+        assert_eq!(
+            class.parent_index,
+            Some(ns_idx),
+            "class should be child of namespace"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_file_scoped_namespace() -> anyhow::Result<()> {
+        let src = "namespace MyApp.Models;\n\npublic class User\n{\n    public string GetName() { return \"\"; }\n}\n";
+        let result = parse_source(src, Language::Csharp)?;
+        let ns = result.symbols.iter().find(|s| s.kind == "namespace");
+        assert!(ns.is_some(), "should find file-scoped namespace");
+        let class = result.symbols.iter().find(|s| s.name == "User").unwrap();
+        let ns_idx = result
+            .symbols
+            .iter()
+            .position(|s| s.kind == "namespace")
+            .unwrap();
+        assert_eq!(
+            class.parent_index,
+            Some(ns_idx),
+            "class should be child of file-scoped namespace"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_imports() -> anyhow::Result<()> {
+        let src = r#"
+using System;
+using System.Collections.Generic;
+using MyApp.Models;
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        assert_eq!(result.imports.len(), 3);
+        assert!(result.imports.iter().any(|i| i.module == "System"));
+        assert!(result
+            .imports
+            .iter()
+            .any(|i| i.module.contains("Generic")));
+        assert!(result.imports.iter().any(|i| i.module.contains("Models")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_interface() -> anyhow::Result<()> {
+        let src = r#"
+public interface IAuthService
+{
+    string Authenticate(string username, string password);
+    bool IsValid(string token);
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        let iface = result
+            .symbols
+            .iter()
+            .find(|s| s.name == "IAuthService");
+        assert!(iface.is_some(), "should find interface");
+        assert_eq!(iface.unwrap().kind, "interface");
+
+        let methods: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == "method")
+            .collect();
+        assert_eq!(methods.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_calls() -> anyhow::Result<()> {
+        let src = r#"
+class Foo
+{
+    void Bar()
+    {
+        Baz();
+        obj.Method();
+        var x = new User();
+    }
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "Baz"),
+            "should find plain call: {:?}",
+            result.calls
+        );
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "Method"),
+            "should find qualified call: {:?}",
+            result.calls
+        );
+        assert!(
+            result.calls.iter().any(|c| c.callee_name == "User"),
+            "should find constructor call: {:?}",
+            result.calls
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_csharp_constructor() -> anyhow::Result<()> {
+        let src = r#"
+public class AuthService
+{
+    private readonly UserRepository _repo;
+
+    public AuthService(UserRepository repo)
+    {
+        _repo = repo;
+    }
+}
+"#;
+        let result = parse_source(src, Language::Csharp)?;
+        let ctor = result.symbols.iter().find(|s| s.kind == "constructor");
+        assert!(ctor.is_some(), "should find constructor");
+        assert_eq!(ctor.unwrap().name, "AuthService");
+        assert!(
+            ctor.unwrap()
+                .signature
+                .as_ref()
+                .unwrap()
+                .contains("UserRepository"),
+            "signature should contain param type"
         );
         Ok(())
     }

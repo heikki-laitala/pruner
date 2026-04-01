@@ -17,6 +17,7 @@ pub enum Language {
     Java,
     C,
     Cpp,
+    Csharp,
 }
 
 /// Detect language from file extension. Returns None for unsupported extensions.
@@ -32,6 +33,7 @@ pub fn detect_language(path: &Path) -> Option<Language> {
         "java" => Some(Language::Java),
         "c" | "h" => Some(Language::C),
         "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hxx" | "hh" | "h++" => Some(Language::Cpp),
+        "cs" => Some(Language::Csharp),
         _ => None,
     }
 }
