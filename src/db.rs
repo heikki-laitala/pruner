@@ -6,6 +6,13 @@ use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Escape SQL LIKE metacharacters (`%`, `_`) so they match literally.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 pub struct IndexDb {
     conn: Connection,
 }
@@ -356,9 +363,10 @@ impl IndexDb {
     /// Count how many files contain a keyword in their path.
     /// Used for keyword specificity scoring — a keyword matching 30%+ of files is noise.
     pub fn count_files_matching(&self, keyword: &str) -> Result<i64> {
-        let pattern = format!("%{keyword}%");
+        let escaped = escape_like(keyword);
+        let pattern = format!("%{escaped}%");
         Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM files WHERE path LIKE ?1",
+            "SELECT COUNT(*) FROM files WHERE path LIKE ?1 ESCAPE '\\'",
             params![pattern],
             |r| r.get(0),
         )?)
@@ -366,9 +374,10 @@ impl IndexDb {
 
     /// Count how many symbols contain a keyword in their name.
     pub fn count_symbols_matching(&self, keyword: &str) -> Result<i64> {
-        let pattern = format!("%{keyword}%");
+        let escaped = escape_like(keyword);
+        let pattern = format!("%{escaped}%");
         Ok(self.conn.query_row(
-            "SELECT COUNT(*) FROM symbols WHERE name LIKE ?1",
+            "SELECT COUNT(*) FROM symbols WHERE name LIKE ?1 ESCAPE '\\'",
             params![pattern],
             |r| r.get(0),
         )?)
