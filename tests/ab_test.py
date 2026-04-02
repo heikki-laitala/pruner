@@ -1069,9 +1069,10 @@ def main():
     # Select tasks
     task_dict = MULTI_TURN_TASKS if args.multi_turn else TASKS
     if args.task:
-        assert args.task in task_dict, (
-            f"Unknown task '{args.task}'. Available: {', '.join(task_dict.keys())}"
-        )
+        if args.task not in task_dict:
+            print(f"ERROR: Unknown task '{args.task}'. "
+                  f"Available: {', '.join(task_dict.keys())}", file=sys.stderr)
+            sys.exit(1)
         tasks = [(args.task, task_dict[args.task])]
     else:
         tasks = list(task_dict.items())
