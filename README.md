@@ -257,9 +257,9 @@ pruner stats .
 
 ## A/B test results (Claude Code)
 
-All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run N=3 times per side (with/without pruner). Runs are interleaved in randomized order (no same-scenario runs adjacent) to reduce Anthropic prompt-cache warming bias ([cache analysis](#prompt-cache-bias-analysis) shows reported numbers are mostly conservative). It takes around 10 seconds to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
+All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run N=3 times per side (with/without pruner). Runs are interleaved in randomized order (no same-scenario runs adjacent) to reduce Anthropic prompt-cache warming bias ([cache analysis](#prompt-cache-note) shows reported numbers are mostly conservative). It takes around 10 seconds to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
 
-**Test environment:** Claude Code v2.1.81, pruner v0.2.4. Hook-mode results last run 2026-04-02 (3 rounds). Skill-mode results last run 2026-03-20 (N=1). Raw results: [`tests/ab-tests/results.json`](tests/ab-tests/results.json), [`tests/ab-tests/results_multi_repo.json`](tests/ab-tests/results_multi_repo.json).
+**Test environment:** Claude Code v2.1.81, pruner v0.2.4. Hook-mode results last run 2026-04-02 (3 rounds). Raw results: [`tests/ab-tests/results.json`](tests/ab-tests/results.json).
 
 ### Results (prompt-submit hook — recommended)
 
@@ -276,7 +276,7 @@ The recommended setup for Claude Code. Pruner runs as a `UserPromptSubmit` hook 
 
 ### Results (skill mode — for Codex, Copilot, etc.)
 
-Skill mode where Claude calls `pruner context` as a tool. Works with any AI agent, not just Claude Code.
+Skill mode where Claude calls `pruner context` as a tool. Works with any AI agent, not just Claude Code. N=1 per task, pruner v0.2.2 (pre-query-precision-fixes) — these results are older and less reliable than the hook-mode results above.
 
 | Task | Prompt | Without | With | Δ cost | Δ tools | Δ time |
 |------|--------|--------:|-----:|-------:|--------:|-------:|
@@ -380,7 +380,7 @@ python3 tests/ab_test_copilot.py --mode hook --task implement --runs 3 --save-ra
 make bench
 ```
 
-The A/B test runs all scenarios in **interleaved randomized order** — each (task, side) pair is shuffled so that no two runs of the same task are adjacent. This reduces prompt-cache warming bias (Anthropic caches prompt prefixes for up to 1 hour; interleaving prevents same-scenario runs from sharing cache). See [cache bias analysis](#prompt-cache-bias-analysis) for measured impact. Results are output as JSON to stdout and a summary table to stderr.
+The A/B test runs all scenarios in **interleaved randomized order** — each (task, side) pair is shuffled so that no two runs of the same task are adjacent. This reduces prompt-cache warming bias (Anthropic caches prompt prefixes for up to 1 hour; interleaving prevents same-scenario runs from sharing cache). See [cache bias analysis](#prompt-cache-note) for measured impact. Results are output as JSON to stdout and a summary table to stderr.
 
 ## Architecture
 
