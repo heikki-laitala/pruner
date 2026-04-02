@@ -6,6 +6,8 @@ AI coding agents (Claude Code, Codex, Copilot) spend most of their time explorin
 
 Pruner eliminates this. It pre-indexes your entire repository using plain structural code analysis — call graphs, symbols, imports, execution paths — and gives the agent exactly the context it needs in one shot. **No LLM, no embeddings, no API keys, no network calls.** Just fast, deterministic tree-sitter parsing that runs locally in seconds. The agent skips exploration and goes straight to work.
 
+**Best for one-shot tasks** (`claude -p "task"`). In interactive multi-turn sessions, pruner injects context on every prompt — helpful on the first turn but wasteful on follow-ups when Claude already has the context. Turn-aware improvements are planned. See [when to use pruner](#when-to-use-pruner) for details.
+
 **Measured on real Claude Code sessions** ([full results](#ab-test-results-claude-code), openclaw, 9.8K files, N=3 per task):
 
 | Task type | Cost saved | Time saved | Tool calls saved |
@@ -80,7 +82,7 @@ Two approaches: **global** (install once, works in every repo) or **per-project*
 Install once — pruner works automatically in every git repository:
 
 ```bash
-pruner init --global --hook   # Claude Code hook mode (best performance)
+pruner init --global --hook   # Claude Code hook mode (best for one-shot tasks)
 pruner init --global          # Claude Code skill mode
 pruner init --copilot-skill --copilot-global  # Copilot CLI skill mode
 ```
@@ -116,8 +118,8 @@ Two modes available:
 
 | Mode | How it works | Setup |
 |------|-------------|-------|
-| **Hook** (recommended) | Context injected automatically via `UserPromptSubmit` hook — zero tool calls | `pruner init --global --hook` |
-| **Skill** | Claude calls `pruner context` as a tool when it needs context | `pruner init --global` |
+| **Hook** (recommended for `claude -p`) | Context injected automatically via `UserPromptSubmit` hook — zero tool calls. Best for one-shot tasks; fires on every prompt in interactive sessions | `pruner init --global --hook` |
+| **Skill** | Claude calls `pruner context` as a tool when it decides it needs context | `pruner init --global` |
 
 **What gets installed (global):**
 
