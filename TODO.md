@@ -38,7 +38,7 @@ Claude Code auto-injects: IDE selection (selected lines), open file path, LSP di
 - Read CLAUDE.md if present, extract directory/subsystem hints to boost scoring
 - Skip snippets for files already covered by IDE selection
 
-### 5. Turn-aware token budget
+### 5. Query-aware context budget
 
 Claude Code's auto-compaction triggers at ~167K tokens (for 200K Opus context). Pruner's hook output is NOT in the compactable tools list — it persists as a `user-prompt-submit-hook` message until full compaction. This means pruner's 10-15K tokens sit in the context permanently, unlike Grep/Glob/Read results which get micro-compacted.
 
@@ -50,14 +50,16 @@ Claude Code's auto-compaction triggers at ~167K tokens (for 200K Opus context). 
 - Each turn's pruner output is additive — 5 turns × 10K tokens = 50K tokens of pruner output alone
 - At that rate, pruner output alone triggers compaction ~3 turns earlier
 
-**Implementation:**
+**A simple turn counter is too naive.** Real sessions don't follow a linear topic. A user may implement feature A (turns 1-5), then switch to feature B (turn 6), then compaction wipes earlier context. A turn counter would say "minimal mode" at turn 6 but the query targets a completely new subsystem that needs full context.
 
-- Accept `--session-turn <n>` flag (hook script can detect turn count)
-- Turn 1: focused mode (full snippets, execution paths, ~10-15K tokens)
-- Turn 2-3: brief mode (pointers only, no snippets, ~3K tokens)
-- Turn 4+: minimal mode (only if query targets a new subsystem not covered in prior turns, ~1K tokens)
-- If query is similar to a recent query (within 2 min): emit nothing and let prior context suffice
-- Consider: hash output and skip injection if identical to previous turn
+**Implementation — query similarity, not turn count:**
+
+- Store the previous query's keywords and target subsystems in `.pruner/last-query.json`
+- On each hook invocation, compare current query keywords/subsystems against the previous
+- **New topic** (low overlap with previous query): focused mode (~10-15K tokens)
+- **Same topic** (high overlap): brief mode or skip entirely (~0-3K tokens)
+- **Identical output** (hash matches previous): emit nothing — let prior context suffice
+- This handles task switches, compaction recovery, and topic continuity without needing to know the turn count or conversation state
 
 ### 6. Deferred context mode (two-phase output)
 
