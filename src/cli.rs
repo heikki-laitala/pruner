@@ -94,6 +94,9 @@ enum Commands {
         /// Verbose output
         #[arg(short, long)]
         verbose: bool,
+        /// In meta-repo mode, skip indexing root directory files (only index sub-repos)
+        #[arg(long)]
+        no_root: bool,
     },
     /// Query the index
     Query {
@@ -167,6 +170,9 @@ enum Commands {
         /// Install Copilot CLI skill globally (~/.copilot/)
         #[arg(long)]
         copilot_global: bool,
+        /// In meta-repo mode, skip indexing root directory files (only index sub-repos)
+        #[arg(long)]
+        no_root: bool,
     },
     /// Remove pruner integrations (hooks, skills, config) and optionally the binary.
     /// Global uninstall scans ~/ for leftover project-level traces.
@@ -220,6 +226,7 @@ pub fn run() -> Result<()> {
             copilot_skill,
             copilot_hook,
             copilot_global,
+            no_root,
         } => cmd_init(
             &repo,
             hook,
@@ -227,8 +234,13 @@ pub fn run() -> Result<()> {
             copilot_skill,
             copilot_hook,
             copilot_global,
+            no_root,
         ),
-        Commands::Index { repo, verbose } => cmd_index(&repo, verbose),
+        Commands::Index {
+            repo,
+            verbose,
+            no_root,
+        } => cmd_index(&repo, verbose, no_root),
         Commands::Query {
             repo,
             ask,
@@ -314,7 +326,7 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
         ensure_index_dir(repo)?;
         let db = IndexDb::open(&path)?;
         let repo_path = repo.canonicalize()?;
-        let stats = indexer::index_repo(&repo_path, &db, verbose)?;
+        let stats = indexer::index_repo(&repo_path, &db, verbose, &[])?;
         if stats.parsed == 0 {
             // No parseable source code — remove the empty index to avoid clutter
             drop(db);
@@ -343,7 +355,7 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
     }
 
     // Try incremental update
-    if let Some(stats) = indexer::index_repo_incremental(&repo_path, &db, verbose)? {
+    if let Some(stats) = indexer::index_repo_incremental(&repo_path, &db, verbose, &[])? {
         eprintln!(
             "Incremental update: {} new/modified, {} unchanged, {} deleted ({} skipped)",
             stats.files, stats.unchanged, stats.deleted, stats.skipped
@@ -438,6 +450,7 @@ fn cmd_init(
     copilot_skill: bool,
     copilot_hook: bool,
     copilot_global: bool,
+    no_root: bool,
 ) -> Result<()> {
     if copilot_hook && copilot_global {
         anyhow::bail!(
@@ -613,7 +626,7 @@ fn cmd_init(
 
     if (!global && install_claude) || ((copilot_skill || copilot_hook) && !copilot_global) {
         println!("\nIndexing {}...", repo.display());
-        cmd_index(repo, false)?;
+        cmd_index(repo, false, no_root)?;
     }
 
     // Best-effort upgrade check (don't fail init if network is unavailable)
@@ -790,25 +803,49 @@ pub(crate) fn has_pruner_section(path: &Path) -> bool {
     content.contains("## Pruner")
 }
 
-fn cmd_index(repo: &Path, verbose: bool) -> Result<()> {
-    // Detect meta-repo: child directories with their own .git or index.
-    // Only activate when the parent has no existing index (avoids submodule false positives).
-    let db_file = db_path(repo);
-    if !db_file.exists() {
+fn cmd_index(repo: &Path, verbose: bool, no_root: bool) -> Result<()> {
+    // Detect meta-repo: parent directory (no .git of its own) containing child git repos.
+    // Repos with their own .git are always treated as single repos (avoids submodule false positives).
+    if !repo.join(".git").exists() {
         let subrepos = discover_subrepos(repo);
         if !subrepos.is_empty() {
-            eprintln!(
-                "Meta-repo detected: {} sub-repos found, indexing each separately",
-                subrepos.len()
-            );
+            eprintln!("Meta-repo detected: {} sub-repos found", subrepos.len());
             for subrepo in &subrepos {
                 cmd_index_single(subrepo, verbose)?;
+            }
+            if !no_root {
+                // Index root-level files, excluding sub-repo directories
+                let exclude = subrepo_exclude_dirs(&subrepos);
+                cmd_index_root(repo, verbose, &exclude)?;
             }
             return Ok(());
         }
     }
 
     cmd_index_single(repo, verbose)
+}
+
+/// Index root-level files of a meta-repo, excluding sub-repo directories.
+fn cmd_index_root(repo: &Path, verbose: bool, exclude_dirs: &[PathBuf]) -> Result<()> {
+    ensure_index_dir(repo)?;
+    let path = db_path(repo);
+    let db = IndexDb::open(&path)?;
+    let repo_path = repo.canonicalize()?;
+
+    eprintln!("Indexing root {}...", repo_path.display());
+    let stats = indexer::index_repo(&repo_path, &db, verbose, exclude_dirs)?;
+    if stats.parsed == 0 {
+        // No parseable source code in root — remove the empty index
+        drop(db);
+        let _ = fs::remove_dir_all(repo.join(INDEX_DIR));
+        eprintln!("No supported source files in root directory, skipping root index");
+        return Ok(());
+    }
+    println!(
+        "Root: indexed {} files, {} symbols, {} imports, {} calls, {} edges ({} skipped)",
+        stats.files, stats.symbols, stats.imports, stats.calls, stats.edges, stats.skipped
+    );
+    Ok(())
 }
 
 fn cmd_index_single(repo: &Path, verbose: bool) -> Result<()> {
@@ -818,7 +855,7 @@ fn cmd_index_single(repo: &Path, verbose: bool) -> Result<()> {
     let repo_path = repo.canonicalize()?;
 
     eprintln!("Indexing {}...", repo_path.display());
-    let stats = indexer::index_repo(&repo_path, &db, verbose)?;
+    let stats = indexer::index_repo(&repo_path, &db, verbose, &[])?;
     if let Some(head) = git_head(repo) {
         db.set_metadata(META_GIT_HEAD, &head)?;
     }
@@ -857,6 +894,26 @@ fn cmd_query(repo: &Path, ask: &str, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+/// Display name for a repo in multi-repo context.
+/// Returns "(root)" for the parent directory, otherwise the directory name.
+fn multi_repo_name(repo: &Path, parent: &Path) -> String {
+    if repo == parent {
+        "(root)".to_string()
+    } else {
+        repo.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// Canonicalize sub-repo paths for use as exclusion dirs during root indexing.
+fn subrepo_exclude_dirs(subrepos: &[PathBuf]) -> Vec<PathBuf> {
+    subrepos
+        .iter()
+        .filter_map(|s| s.canonicalize().ok())
+        .collect()
+}
+
 /// Discover child directories that are git repos or already have a pruner index.
 fn discover_subrepos(parent: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(parent) else {
@@ -883,10 +940,9 @@ fn cmd_context(
     mode: ContextMode,
     output: Option<&Path>,
 ) -> Result<()> {
-    // Check for meta-repo pattern: child directories with their own .git or index.
-    // Only activate when the parent has no index of its own (avoids submodule false positives).
-    let db_file = db_path(repo);
-    if !db_file.exists() {
+    // Check for meta-repo pattern: parent directory (no .git) with child git repos.
+    // Repos with their own .git are treated as single repos (avoids submodule false positives).
+    if !repo.join(".git").exists() {
         let subrepos = discover_subrepos(repo);
         if !subrepos.is_empty() {
             // Auto-index any sub-repos that don't have an index yet
@@ -895,7 +951,17 @@ fn cmd_context(
                     cmd_index_single(subrepo, false)?;
                 }
             }
-            return cmd_context_multi(repo, &subrepos, ask, fmt, max_snippet_lines, mode, output);
+            // Auto-index root if it has no index yet
+            if !db_path(repo).exists() {
+                let exclude = subrepo_exclude_dirs(&subrepos);
+                cmd_index_root(repo, false, &exclude)?;
+            }
+            // Include root in multi-repo context if it has an index
+            let mut all_repos = subrepos;
+            if db_path(repo).exists() {
+                all_repos.insert(0, repo.to_path_buf());
+            }
+            return cmd_context_multi(repo, &all_repos, ask, fmt, max_snippet_lines, mode, output);
         }
     }
 
@@ -1045,10 +1111,7 @@ fn cmd_context_multi(
 
     let mut skipped_names: Vec<String> = Vec::new();
     scored.retain(|(subrepo, _, score)| {
-        let name = subrepo
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let name = multi_repo_name(subrepo, parent);
         if *score < threshold {
             eprintln!("  Skipping {name} (score {score} < threshold {threshold})");
             skipped_names.push(name);
@@ -1069,11 +1132,7 @@ fn cmd_context_multi(
     // Inject multi-repo awareness header for the LLM
     let included_names: Vec<String> = scored
         .iter()
-        .map(|(s, _, _)| {
-            s.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        })
+        .map(|(s, _, _)| multi_repo_name(s, parent))
         .collect();
 
     if fmt != "json" {
@@ -1099,11 +1158,7 @@ fn cmd_context_multi(
 
         let ctx = context::generate_context(result, &repo_path, max_snippet_lines, resolved)?;
 
-        let repo_name = subrepo
-            .strip_prefix(parent)
-            .unwrap_or(subrepo)
-            .display()
-            .to_string();
+        let repo_name = multi_repo_name(subrepo, parent);
 
         match fmt {
             "json" => {

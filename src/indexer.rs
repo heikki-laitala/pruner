@@ -50,11 +50,17 @@ fn file_mtime(path: &Path) -> i64 {
 }
 
 /// Full re-index: clears the database and indexes everything.
-pub fn index_repo(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<IndexStats> {
+/// `exclude_dirs` contains canonical paths of directories to skip (e.g. sub-repo dirs).
+pub fn index_repo(
+    repo_path: &Path,
+    db: &IndexDb,
+    verbose: bool,
+    exclude_dirs: &[PathBuf],
+) -> Result<IndexStats> {
     db.set_synchronous_normal()?;
     db.begin_transaction()?;
     db.clear()?;
-    match index_files(repo_path, db, verbose) {
+    match index_files(repo_path, db, verbose, exclude_dirs) {
         Ok(stats) => {
             db.commit_transaction()?;
             Ok(stats)
@@ -78,6 +84,7 @@ pub fn index_repo_incremental(
     repo_path: &Path,
     db: &IndexDb,
     verbose: bool,
+    exclude_dirs: &[PathBuf],
 ) -> Result<Option<IndexStats>> {
     let existing = db.all_file_mtimes()?;
     let mut seen_paths = HashSet::new();
@@ -87,7 +94,7 @@ pub fn index_repo_incremental(
     let mut has_changes = false;
 
     // Walk repo to find new/modified/deleted files
-    for entry in walk_repo(repo_path) {
+    for entry in walk_repo(repo_path, exclude_dirs) {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
@@ -148,6 +155,7 @@ pub fn index_repo_incremental(
         &changed_paths,
         &modified_file_ids,
         &deleted_file_ids,
+        exclude_dirs,
     ) {
         Ok(mut stats) => {
             stats.unchanged = total_seen - stats.files;
@@ -169,6 +177,7 @@ fn index_incremental_inner(
     changed_paths: &HashSet<String>,
     modified_file_ids: &[i64],
     deleted_file_ids: &[i64],
+    exclude_dirs: &[PathBuf],
 ) -> Result<IndexStats> {
     let mut stats = IndexStats::default();
 
@@ -197,7 +206,7 @@ fn index_incremental_inner(
     stats.deleted = deleted_file_ids.len();
 
     // Step 4: Parse changed files in parallel
-    let to_parse: Vec<PathBuf> = walk_repo(repo_path)
+    let to_parse: Vec<PathBuf> = walk_repo(repo_path, exclude_dirs)
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_some_and(|ft| ft.is_file()))
         .filter(|e| !languages::is_ignored_file(e.path()))
@@ -402,16 +411,27 @@ fn index_incremental_inner(
 }
 
 /// Walk the repo, respecting .gitignore and filtering pruner's own ignored directories.
-fn walk_repo(repo_path: &Path) -> impl Iterator<Item = Result<ignore::DirEntry, ignore::Error>> {
+/// When `exclude_dirs` is non-empty, any directory whose canonical path matches is skipped
+/// (used to exclude sub-repo directories when indexing a meta-repo root).
+fn walk_repo(
+    repo_path: &Path,
+    exclude_dirs: &[PathBuf],
+) -> impl Iterator<Item = Result<ignore::DirEntry, ignore::Error>> {
+    let exclude_set: HashSet<PathBuf> = exclude_dirs.iter().cloned().collect();
     ignore::WalkBuilder::new(repo_path)
         .hidden(false) // don't skip dotfiles (e.g. .env, .eslintrc)
         .git_ignore(true) // respect .gitignore
         .git_global(true) // respect global gitignore
         .git_exclude(true) // respect .git/info/exclude
-        .filter_entry(|e| {
+        .filter_entry(move |e| {
             if e.file_type().is_some_and(|ft| ft.is_dir()) {
                 let name = e.file_name().to_string_lossy();
-                return !languages::is_ignored_dir(&name);
+                if languages::is_ignored_dir(&name) {
+                    return false;
+                }
+                if !exclude_set.is_empty() && exclude_set.contains(e.path()) {
+                    return false;
+                }
             }
             true
         })
@@ -431,7 +451,12 @@ struct ParsedFile {
 }
 
 /// Full index: walk all files, parse in parallel, insert into DB, build all edges.
-fn index_files(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<IndexStats> {
+fn index_files(
+    repo_path: &Path,
+    db: &IndexDb,
+    verbose: bool,
+    exclude_dirs: &[PathBuf],
+) -> Result<IndexStats> {
     let mut stats = IndexStats::default();
 
     // symbol_name -> Vec<(symbol_db_id, file_db_id)> for call resolution
@@ -442,7 +467,7 @@ fn index_files(repo_path: &Path, db: &IndexDb, verbose: bool) -> Result<IndexSta
     // Phase 1: Walk and collect file paths to process
     let mut to_parse: Vec<PathBuf> = Vec::new();
 
-    for entry in walk_repo(repo_path) {
+    for entry in walk_repo(repo_path, exclude_dirs) {
         let entry = entry?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
@@ -762,7 +787,7 @@ mod tests {
     #[test]
     fn test_index_repo_basic() -> Result<()> {
         let (dir, db) = setup_test_repo();
-        let stats = index_repo(dir.path(), &db, false)?;
+        let stats = index_repo(dir.path(), &db, false, &[])?;
 
         assert_eq!(stats.files, 2);
         assert!(stats.symbols >= 3); // hello, greet, test_hello
@@ -773,7 +798,7 @@ mod tests {
     #[test]
     fn test_index_creates_test_edges() -> Result<()> {
         let (dir, db) = setup_test_repo();
-        index_repo(dir.path(), &db, false)?;
+        index_repo(dir.path(), &db, false, &[])?;
 
         let main_file = db.get_file_by_path("main.py")?.unwrap();
         let test_edges = db.edges_to_file(main_file.id, "tests")?;
@@ -794,7 +819,7 @@ mod tests {
         fs::create_dir(&nm)?;
         fs::write(nm.join("lib.js"), "function x() {}")?;
 
-        let stats = index_repo(dir.path(), &db, false)?;
+        let stats = index_repo(dir.path(), &db, false, &[])?;
         assert_eq!(stats.files, 1); // only app.py
         Ok(())
     }
@@ -805,7 +830,7 @@ mod tests {
         let db = IndexDb::open_memory()?;
         fs::write(dir.path().join("app.py"), "def run(): pass\n")?;
 
-        let stats = index_repo(dir.path(), &db, true)?;
+        let stats = index_repo(dir.path(), &db, true, &[])?;
         assert_eq!(stats.files, 1);
         Ok(())
     }
@@ -813,10 +838,10 @@ mod tests {
     #[test]
     fn test_incremental_no_changes() -> Result<()> {
         let (dir, db) = setup_test_repo();
-        index_repo(dir.path(), &db, false)?;
+        index_repo(dir.path(), &db, false, &[])?;
 
         // Second call with no changes should return None
-        let result = index_repo_incremental(dir.path(), &db, false)?;
+        let result = index_repo_incremental(dir.path(), &db, false, &[])?;
         assert!(result.is_none());
         Ok(())
     }
@@ -824,7 +849,7 @@ mod tests {
     #[test]
     fn test_incremental_new_file() -> Result<()> {
         let (dir, db) = setup_test_repo();
-        index_repo(dir.path(), &db, false)?;
+        index_repo(dir.path(), &db, false, &[])?;
         let initial_count = db.file_count()?;
 
         // Add a new file
@@ -833,7 +858,7 @@ mod tests {
             "def new_func():\n    pass\n",
         )?;
 
-        let result = index_repo_incremental(dir.path(), &db, false)?;
+        let result = index_repo_incremental(dir.path(), &db, false, &[])?;
         assert!(result.is_some());
         let stats = result.unwrap();
         assert!(stats.files >= 1); // at least the new file was indexed
@@ -845,13 +870,13 @@ mod tests {
     #[test]
     fn test_incremental_deleted_file() -> Result<()> {
         let (dir, db) = setup_test_repo();
-        index_repo(dir.path(), &db, false)?;
+        index_repo(dir.path(), &db, false, &[])?;
         let initial_count = db.file_count()?;
 
         // Delete a file
         fs::remove_file(dir.path().join("main.py"))?;
 
-        let result = index_repo_incremental(dir.path(), &db, false)?;
+        let result = index_repo_incremental(dir.path(), &db, false, &[])?;
         assert!(result.is_some());
         let stats = result.unwrap();
         assert!(stats.deleted >= 1);
@@ -863,7 +888,7 @@ mod tests {
     #[test]
     fn test_incremental_modified_file() -> Result<()> {
         let (dir, db) = setup_test_repo();
-        index_repo(dir.path(), &db, false)?;
+        index_repo(dir.path(), &db, false, &[])?;
 
         // Modify a file (need to change mtime)
         std::thread::sleep(std::time::Duration::from_millis(1100));
@@ -872,7 +897,7 @@ mod tests {
             "def hello():\n    greet()\n\ndef greet():\n    print('hi')\n\ndef new_func():\n    pass\n",
         )?;
 
-        let result = index_repo_incremental(dir.path(), &db, false)?;
+        let result = index_repo_incremental(dir.path(), &db, false, &[])?;
         assert!(result.is_some());
         let stats = result.unwrap();
         assert!(stats.files >= 1); // modified file re-indexed
@@ -888,7 +913,7 @@ mod tests {
         fs::write(dir.path().join("image.png"), &[0x89, 0x50, 0x4e, 0x47])?;
         fs::write(dir.path().join("lib.so"), &[0x7f, 0x45, 0x4c, 0x46])?;
 
-        let stats = index_repo(dir.path(), &db, false)?;
+        let stats = index_repo(dir.path(), &db, false, &[])?;
         assert_eq!(stats.files, 1); // only app.py
         assert!(stats.skipped >= 2); // png + so
         Ok(())
@@ -902,7 +927,7 @@ mod tests {
         // .rb is unsupported — file gets indexed but no symbols parsed
         fs::write(dir.path().join("main.rb"), "def hello; end\n")?;
 
-        let stats = index_repo(dir.path(), &db, false)?;
+        let stats = index_repo(dir.path(), &db, false, &[])?;
         assert_eq!(stats.files, 1);
         assert_eq!(stats.parsed, 0); // no tree-sitter support
         assert_eq!(stats.symbols, 0);
@@ -934,12 +959,12 @@ mod tests {
         // Create an ignored file extension
         fs::write(dir.path().join("data.lock"), "locked")?;
 
-        let stats = index_repo(dir.path(), &db, false)?;
+        let stats = index_repo(dir.path(), &db, false, &[])?;
         assert_eq!(stats.files, 1);
 
         // Incremental: add ignored file — should not trigger changes
         fs::write(dir.path().join("another.lock"), "locked2")?;
-        let result = index_repo_incremental(dir.path(), &db, false)?;
+        let result = index_repo_incremental(dir.path(), &db, false, &[])?;
         assert!(result.is_none()); // no changes to code files
         Ok(())
     }
@@ -954,7 +979,7 @@ mod tests {
         // Binary content in a .py file — parser may error
         fs::write(dir.path().join("bad.py"), &[0x00, 0x01, 0x02, 0xff])?;
 
-        let stats = index_repo(dir.path(), &db, true)?;
+        let stats = index_repo(dir.path(), &db, true, &[])?;
         // At least the good file should be indexed
         assert!(stats.files >= 1);
         Ok(())
@@ -969,13 +994,13 @@ mod tests {
         fs::write(dir.path().join("a.py"), "def foo():\n    bar()\n")?;
         fs::write(dir.path().join("b.py"), "def bar():\n    pass\n")?;
 
-        index_repo(dir.path(), &db, false)?;
+        index_repo(dir.path(), &db, false, &[])?;
 
         // Add a new file to trigger incremental
         std::thread::sleep(std::time::Duration::from_millis(1100));
         fs::write(dir.path().join("c.py"), "def baz():\n    foo()\n")?;
 
-        let result = index_repo_incremental(dir.path(), &db, false)?;
+        let result = index_repo_incremental(dir.path(), &db, false, &[])?;
         assert!(result.is_some());
 
         // Calls from unchanged files should be preserved

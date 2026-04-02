@@ -188,23 +188,9 @@ For implementation tasks, pruner can analyze the call graph to suggest exactly w
 
 Add tree-sitter parsers for additional languages. Currently Python, JavaScript/TypeScript, Rust, Go, Java, C, C++, and C# have full symbol/import/call extraction.
 
-### 17. Root directory indexing for multi-repo setups
+### ~~17. Root directory indexing for multi-repo setups~~ ✅
 
-When a root directory contains multiple git repositories as subdirectories, `pruner init` indexes each subrepo but the root directory itself is not indexed. Code in the root (shared configs, scripts, top-level modules) is invisible to pruner.
-
-**Why this matters:**
-
-- Common setup: root dir with `frontend/`, `backend/`, `shared/` as separate git repos
-- Shared code, configs, and glue scripts in the root are not part of any subrepo's index
-- Cross-repo dependencies (e.g., `shared/types.ts` imported by `backend/`) have no call graph edges
-
-**Implementation:**
-
-- Add `--include-root` flag to `pruner init` and `pruner index`
-- When run inside a subrepo with `--include-root`: also index the parent directory (non-git-repo files)
-- Store root index separately from subrepo indexes
-- During `pruner context`, merge results from subrepo and root indexes
-- Rank subrepo results higher by default, but include root results for cross-cutting concerns
+Root directory is now indexed by default in meta-repo mode. Use `--no-root` flag to skip root indexing (previous behavior).
 
 ### 18. Semantic search
 
