@@ -14,8 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ab_test import (
     interleaved_schedule, parse_stream, ensure_pruner_on_path,
     compute_cache_hit_rate, validate_cache_symmetry,
-    build_pruner_from_ref,
-    TASKS, PRUNER_BIN, PRUNER_DIR, WORK_DIR,
+    build_pruner_from_ref, aggregate_multi_turn_results,
+    TASKS, MULTI_TURN_TASKS, PRUNER_BIN, PRUNER_DIR, WORK_DIR,
 )
 from ab_test_copilot import (
     interleaved_schedule as copilot_interleaved_schedule,
@@ -444,6 +444,93 @@ class TestInterleavedScheduleBranchMode:
                 assert schedule[i][0] != schedule[i - 1][0], (
                     f"seed={seed}: adjacent same category at {i}: {schedule[i][0]}"
                 )
+
+
+class TestMultiTurnTasks:
+    def test_all_tasks_are_lists_of_strings(self):
+        for name, turns in MULTI_TURN_TASKS.items():
+            assert isinstance(turns, list), f"{name} should be a list"
+            assert len(turns) >= 2, f"{name} should have at least 2 turns"
+            for i, turn in enumerate(turns):
+                assert isinstance(turn, str), f"{name} turn {i} should be a string"
+
+    def test_schedule_works_with_multi_turn(self):
+        tasks = list(MULTI_TURN_TASKS.items())
+        schedule = interleaved_schedule(tasks)
+        assert len(schedule) == len(tasks) * 2
+        for cat in {t[0] for t in tasks}:
+            sides = sorted(r[2] for r in schedule if r[0] == cat)
+            assert sides == ["with", "without"], f"{cat} missing a side"
+
+
+class TestAggregateMultiTurnResults:
+    def _make_turn_result(self, cost=0.1, tool_calls=5, input_tokens=1000,
+                          output_tokens=200, turns=2, wall_time=30.0):
+        return {
+            "cost_usd": cost,
+            "tool_calls": tool_calls,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "turns": turns,
+            "wall_time_s": wall_time,
+            "tools": [{"name": "Grep", "input_preview": "test"}] * tool_calls,
+            "per_turn": [{"turn": 1, "tools": []}],
+            "per_message_usage": [
+                {"turn": 1, "input_tokens": input_tokens, "cache_read": 0,
+                 "cache_creation": 0, "output_tokens": output_tokens},
+            ],
+            "result_preview": "done",
+        }
+
+    def test_sums_costs(self):
+        results = [self._make_turn_result(cost=0.10),
+                   self._make_turn_result(cost=0.20),
+                   self._make_turn_result(cost=0.30)]
+        agg = aggregate_multi_turn_results(results)
+        assert abs(agg["cost_usd"] - 0.60) < 0.001
+
+    def test_sums_tool_calls(self):
+        results = [self._make_turn_result(tool_calls=10),
+                   self._make_turn_result(tool_calls=5)]
+        agg = aggregate_multi_turn_results(results)
+        assert agg["tool_calls"] == 15
+
+    def test_sums_tokens(self):
+        results = [self._make_turn_result(input_tokens=1000, output_tokens=200),
+                   self._make_turn_result(input_tokens=2000, output_tokens=300)]
+        agg = aggregate_multi_turn_results(results)
+        assert agg["input_tokens"] == 3000
+        assert agg["output_tokens"] == 500
+        assert agg["total_tokens"] == 3500
+
+    def test_preserves_per_turn(self):
+        results = [self._make_turn_result(cost=0.10),
+                   self._make_turn_result(cost=0.20)]
+        agg = aggregate_multi_turn_results(results)
+        assert len(agg["per_user_turn"]) == 2
+        assert agg["per_user_turn"][0]["cost_usd"] == 0.10
+        assert agg["per_user_turn"][1]["cost_usd"] == 0.20
+
+    def test_handles_none_turn(self):
+        results = [self._make_turn_result(cost=0.10), None,
+                   self._make_turn_result(cost=0.30)]
+        agg = aggregate_multi_turn_results(results)
+        assert abs(agg["cost_usd"] - 0.40) < 0.001
+        assert agg["failed_turns"] == [1]
+        assert agg["user_turns"] == 3
+
+    def test_wall_time_is_sum(self):
+        results = [self._make_turn_result(wall_time=30.0),
+                   self._make_turn_result(wall_time=45.0),
+                   self._make_turn_result(wall_time=25.0)]
+        agg = aggregate_multi_turn_results(results)
+        assert agg["wall_time_s"] == 100.0
+
+    def test_concatenates_per_message_usage(self):
+        results = [self._make_turn_result(), self._make_turn_result()]
+        agg = aggregate_multi_turn_results(results)
+        assert len(agg["per_message_usage"]) == 2
 
 
 class TestCopilotInterleavedSchedule:
