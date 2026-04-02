@@ -188,10 +188,6 @@ For implementation tasks, pruner can analyze the call graph to suggest exactly w
 
 Add tree-sitter parsers for additional languages. Currently Python, JavaScript/TypeScript, Rust, Go, Java, C, C++, and C# have full symbol/import/call extraction.
 
-### ~~17. Root directory indexing for multi-repo setups~~ ✅
-
-Root directory is now indexed by default in meta-repo mode. Use `--no-root` flag to skip root indexing (previous behavior).
-
 ### 18. Semantic search
 
 Add optional embedding-based search for queries that don't match symbol/file names (e.g., a function that handles authentication but is named `validateRequest`).
@@ -216,6 +212,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Negative scoring: test files penalized for non-test queries, generated code detection
 - [x] Multi-turn A/B test (`--multi-turn` flag for interactive conversation scenarios)
 - [x] Query precision fixes: meta-question false positive reduction, SQL LIKE wildcard escaping, test-intent ordering before specificity filtering
+- [x] Root directory indexing for multi-repo setups (`--no-root` flag to opt out)
 
 ## Explored but rejected
 

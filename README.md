@@ -193,6 +193,13 @@ This creates a `.pruner/` directory inside the repo containing the SQLite index 
 
 **Indexing is automatic.** You don't need to run `pruner index` manually — `pruner context` auto-indexes on first run if no index exists. After that, it runs incremental updates when the index is older than 5 minutes (checks for new, modified, and deleted files). Override with `PRUNER_RECHECK_SECS=0` to force a check every time.
 
+**Multi-repo (meta-repo) support:** If the target directory has no `.git` of its own but contains child directories that do (e.g., a root with `frontend/`, `backend/`, `shared/` as separate git repos), pruner detects this as a meta-repo and indexes each sub-repo plus root-level files separately. Root files (shared configs, scripts, top-level modules) get their own index, and `pruner context` merges results from all repos ranked by relevance. Use `--no-root` to skip root-level indexing:
+
+```bash
+pruner index /path/to/meta-repo              # indexes sub-repos + root files
+pruner index /path/to/meta-repo --no-root    # indexes sub-repos only (previous behavior)
+```
+
 ### Query the index
 
 ```bash
