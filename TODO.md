@@ -10,23 +10,6 @@ A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` fl
 
 ## High priority
 
-### 3. Query precision — fix noisy output (highest ROI)
-
-Pruner's biggest failure mode: broad keywords match too many irrelevant symbols, producing noisy context that wastes tokens and can mislead the model. Observed directly on claude-code (1,900 files): query "does pruner bring value" returned `IdeAutoConnectDialog`, `pruneRemovedPluginHooks`, `goToLine` — none relevant.
-
-**Why this matters:**
-
-- Noisy output is worse than no output — it wastes tokens AND can send the model down dead ends
-- This is the root cause of the implement_large variance (+233% time outlier where Claude read every suggested file but never wrote code)
-- Tool call reductions (-61% to -87%) are trustworthy, but noise undermines the value
-
-**Implementation:**
-
-- **Dynamic stop-words**: If a keyword appears in 30%+ of files in the repo, drop it. Static stop-word list is insufficient — "value", "go", "now" aren't on the list but are noise in code repos
-- **Minimum keyword specificity score**: After stop-word filtering, require at least one keyword with specificity (appears in <5% of files) to proceed. Otherwise emit nothing
-- **Confidence threshold**: Below a score threshold, output "No relevant context found" instead of low-confidence results. Zero output is better than misleading output
-- **Multi-word phrase handling**: "claude-code" as a compound should be treated differently than "claude" + "code" separately. Detect hyphenated/quoted terms and match them as phrases
-
 ### 4. IDE/session context awareness
 
 Claude Code auto-injects: IDE selection (selected lines), open file path, LSP diagnostics, CLAUDE.md, and changed files diff. Pruner is blind to all of this, so it can't bias results toward what the user is looking at.
@@ -118,16 +101,6 @@ Claude Code's Grep sorts by modification time (most recent first), Glob also sor
 
 ## Medium priority
 
-### 9. Detect and handle non-code queries
-
-Meta-questions ("does pruner bring value?", "how should we improve this?") don't benefit from codebase context. Pruner should detect these and return nothing.
-
-**Implementation:**
-
-- Heuristic: if no keyword has specificity <10% of files, the query is probably not about the code
-- Check for question patterns about tooling, process, or meta-topics
-- Return empty output with a note: "Query does not appear to target specific code"
-
 ### 10. TypeScript/JS-specific improvements
 
 **Barrel file resolution:** `index.ts` re-export files are common. Pruner should follow re-exports to actual implementations rather than stopping at the barrel.
@@ -137,15 +110,6 @@ Meta-questions ("does pruner bring value?", "how should we improve this?") don't
 **Dynamic imports:** `import()` calls are invisible to static call graphs. At minimum note "this module is dynamically imported by X".
 
 **Compiled React output detection:** Claude-code contains React Compiler output (`_c()`, `$[0]` patterns). Detect `_c = require("react/compiler-runtime")` and deprioritize these files or note they're generated.
-
-### 11. Negative scoring signals
-
-Currently scoring is positive-only (keyword match, call graph proximity). Add penalties:
-
-- **Generated/compiled code**: React Compiler output, bundled files, minified code
-- **Test files when query isn't about testing**: If query is "how does auth work", test files add noise
-- **Vendored directories**: Large single-author dirs with no recent changes (e.g., `native-ts/yoga-layout/`)
-- **Documentation/locale/assets dirs**: Already partially handled, but weight should be stronger
 
 ### 12. Prompt cache-friendly output
 
@@ -248,6 +212,9 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Go, Java, C, C++, C# parsers
 - [x] Cache-aware A/B test setup (warmup runs, `--validate-cache` flag, cache hit rate logging)
 - [x] Feature impact measurement (`--baseline-branch <ref>` builds two pruner versions via git worktree)
+- [x] Query precision: dynamic stop-words, keyword specificity filtering, multi-word phrase handling
+- [x] Non-code query detection (meta-questions return empty results)
+- [x] Negative scoring: test files penalized for non-test queries, generated code detection
 - [x] Multi-turn A/B test (`--multi-turn` flag for interactive conversation scenarios)
 
 ## Explored but rejected
