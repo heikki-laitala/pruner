@@ -211,23 +211,23 @@ For implementation tasks, pruner can analyze the call graph to suggest exactly w
 
 Add tree-sitter parsers for additional languages. Currently Python, JavaScript/TypeScript, Rust, Go, Java, C, C++, and C# have full symbol/import/call extraction.
 
-### 17. Root repository indexing for monorepos/submodules
+### 17. Root directory indexing for multi-repo setups
 
-`pruner init` and `pruner index` only index the current directory. In projects with subrepositories (git submodules, monorepo checkouts), users often work in a subdirectory but need context from the root repository too.
+When a root directory contains multiple git repositories as subdirectories, `pruner init` indexes each subrepo but the root directory itself is not indexed. Code in the root (shared configs, scripts, top-level modules) is invisible to pruner.
 
 **Why this matters:**
 
-- Shared types, interfaces, and utilities often live in the root repo while feature code lives in subrepos
-- Call graph edges that cross the subrepo boundary are invisible to pruner today
-- Users working in `services/api/` miss context from `shared/` or `packages/common/`
+- Common setup: root dir with `frontend/`, `backend/`, `shared/` as separate git repos
+- Shared code, configs, and glue scripts in the root are not part of any subrepo's index
+- Cross-repo dependencies (e.g., `shared/types.ts` imported by `backend/`) have no call graph edges
 
 **Implementation:**
 
 - Add `--include-root` flag to `pruner init` and `pruner index`
-- Detect if cwd is inside a parent git repo (walk up to find `.git` directory)
-- If `--include-root`: index the root repo as well, storing it in a separate DB or as a tagged partition in the same DB
-- During `pruner context`, merge results from both the local and root indexes
-- Rank local results higher by default, but allow root results to fill gaps (e.g., shared type definitions called from local code)
+- When run inside a subrepo with `--include-root`: also index the parent directory (non-git-repo files)
+- Store root index separately from subrepo indexes
+- During `pruner context`, merge results from subrepo and root indexes
+- Rank subrepo results higher by default, but include root results for cross-cutting concerns
 
 ### 18. Semantic search
 
