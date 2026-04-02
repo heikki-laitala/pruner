@@ -557,6 +557,125 @@ mod multi_repo {
             "should find only 1 sub-repo, got: {stderr}"
         );
     }
+
+    #[test]
+    fn index_includes_root_by_default() {
+        // Meta-repo with a sub-repo and root-level files
+        let meta = TempDir::new().unwrap();
+
+        // Sub-repo
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
+
+        // Root-level file (not in any sub-repo)
+        std::fs::write(
+            meta.path().join("shared.py"),
+            "def shared_helper():\n    return 42\n",
+        )
+        .unwrap();
+
+        // Index from meta-repo level — should index root AND sub-repos
+        let output = pruner()
+            .args(["index", meta.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "index should succeed: {stderr}");
+
+        // Sub-repo should have its own index
+        assert!(
+            sub1.join(".pruner/index.db").exists(),
+            "webapp should be indexed"
+        );
+        // Root should ALSO have an index now
+        assert!(
+            meta.path().join(".pruner/index.db").exists(),
+            "root should be indexed by default"
+        );
+    }
+
+    #[test]
+    fn index_no_root_skips_root() {
+        // --no-root flag should preserve old behavior (skip root indexing)
+        let meta = TempDir::new().unwrap();
+
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
+
+        std::fs::write(
+            meta.path().join("shared.py"),
+            "def shared_helper():\n    return 42\n",
+        )
+        .unwrap();
+
+        let output = pruner()
+            .args(["index", "--no-root", meta.path().to_str().unwrap()])
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "index should succeed: {stderr}");
+
+        assert!(
+            sub1.join(".pruner/index.db").exists(),
+            "webapp should be indexed"
+        );
+        assert!(
+            !meta.path().join(".pruner/index.db").exists(),
+            "root should NOT be indexed with --no-root"
+        );
+    }
+
+    #[test]
+    fn context_includes_root_files() {
+        // Root-level files should appear in multi-repo context
+        let meta = TempDir::new().unwrap();
+
+        let sub1 = meta.path().join("webapp");
+        let fixture1 = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/python_webapp");
+        std::fs::create_dir_all(&sub1).unwrap();
+        copy_dir_all(&fixture1, &sub1).unwrap();
+        make_git_dir(&sub1);
+
+        // Root-level file with a distinctive function name
+        std::fs::write(
+            meta.path().join("shared_utils.py"),
+            "def compute_shared_metric():\n    return 99\n",
+        )
+        .unwrap();
+
+        // Index everything (root + sub-repos)
+        pruner()
+            .args(["index", meta.path().to_str().unwrap()])
+            .assert()
+            .success();
+
+        // Query for the root-level function
+        let output = pruner()
+            .args([
+                "context",
+                meta.path().to_str().unwrap(),
+                "compute shared metric",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // Root files should be found
+        assert!(
+            stdout.contains("shared_utils.py"),
+            "root-level file should appear in context, got: {stdout}"
+        );
+    }
 }
 
 // ============================================================================
