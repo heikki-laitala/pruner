@@ -5,17 +5,54 @@ Sets up two clones of the test repo:
   A — with pruner installed (hook or skill mode)
   B — vanilla (no pruner)
 
-Runs Claude Code (opus) on identical tasks sequentially, measures actual
-token usage, tool calls, cost, and turns.
+Runs Claude Code (opus) on identical tasks, measures actual token usage,
+tool calls, cost, and turns. Three modes: standard (with vs without pruner),
+branch comparison (baseline vs feature pruner binary), and multi-turn
+(interactive conversations with multiple user turns).
 
-Usage:
-    python3 tests/ab_test.py [options] [/path/to/repo]
+Examples:
 
-    --task TASK          Run only this task
-    --mode hook|skill    Pruner delivery: hook (prompt-submit) or skill (tool call)
-    --only with|without  Run only one side
-    --baseline-branch REF  Compare pruner from REF vs current worktree
-    --save-raw           Save raw stream-json output to /tmp/pruner-bench/ab-raw/
+    # Single-turn: all tasks, hook mode, interleaved schedule
+    python3 tests/ab_test.py --save-raw
+
+    # Single-turn: one task, both sides
+    python3 tests/ab_test.py --task narrow_fix --save-raw
+
+    # Single-turn: one side only
+    python3 tests/ab_test.py --task narrow_fix --only with --save-raw
+
+    # Single-turn: skill mode instead of hook
+    python3 tests/ab_test.py --task cross_package --mode skill --save-raw
+
+    # Single-turn: custom repo
+    python3 tests/ab_test.py /path/to/repo --task narrow_fix --save-raw
+
+    # Branch comparison: main (baseline) vs current worktree (feature)
+    python3 tests/ab_test.py --baseline-branch main --task narrow_fix --save-raw
+
+    # Multi-turn: interactive conversation scenarios (3 user turns each)
+    python3 tests/ab_test.py --multi-turn --save-raw
+
+    # Multi-turn: single scenario
+    python3 tests/ab_test.py --multi-turn --task implement_feedback_fix --save-raw
+
+    # Multi-turn + branch comparison
+    python3 tests/ab_test.py --multi-turn --baseline-branch main --task debug_clarify_resolve --save-raw
+
+    # Cache validation (warn if cache hit rates differ >10% between sides)
+    python3 tests/ab_test.py --task narrow_fix --validate-cache --save-raw
+
+    # Unit tests (no claude CLI needed)
+    uv run --with pytest pytest tests/test_ab_test.py -v
+
+Options:
+    --task TASK            Run only this task
+    --mode hook|skill      Pruner delivery: hook (prompt-submit) or skill (tool call)
+    --only SIDE            Run only one side (with/without or baseline/feature)
+    --baseline-branch REF  Compare pruner from REF vs current worktree (feature)
+    --multi-turn           Run multi-turn conversation scenarios instead of single-turn
+    --save-raw             Save raw stream-json output to /tmp/pruner-bench/ab-raw/
+    --validate-cache       Warn if cache hit rates differ >10% between paired runs
 
 Requires:
   - `claude` CLI installed and logged in
@@ -75,6 +112,33 @@ TASKS = {
         "exceeding the limit are rejected with a user-friendly reply. Add configuration "
         "options to set custom limits per channel. Include unit tests."
     ),
+}
+
+MULTI_TURN_TASKS = {
+    "implement_feedback_fix": [
+        "Add a health check endpoint that returns JSON with server version and uptime. "
+        "Find where HTTP routes are registered and add it there.",
+        "The health check should use the existing Express app instance, not create a new "
+        "HTTP server. Also return the Node.js version in the response.",
+        "Add unit tests for the health check endpoint.",
+    ],
+    "debug_clarify_resolve": [
+        "Why does authentication fail when the token has expired? "
+        "Trace the auth flow and identify where expiration is checked.",
+        "I mean the JWT validation logic specifically, not the login form. "
+        "Which file handles token verification and what library does it use?",
+        "Fix the token validation to return a clear 401 error with a message "
+        "saying the token has expired, instead of a generic 500.",
+    ],
+    "iterative_refinement": [
+        "Add a rate limiting system for incoming messages. Create a RateLimiter class "
+        "that tracks per-channel message counts with a sliding window of 30 messages "
+        "per 60 seconds.",
+        "Make the rate limits configurable per channel via a config object passed to "
+        "the constructor.",
+        "Add logging that records when a channel hits its rate limit, including the "
+        "channel ID and the current message count.",
+    ],
 }
 
 
@@ -142,7 +206,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="A/B test pruner with real Claude Code sessions")
     parser.add_argument("repo", nargs="?", default="/tmp/pruner-bench/openclaw",
                         help="Path to test repo (default: /tmp/pruner-bench/openclaw)")
-    parser.add_argument("--task", choices=list(TASKS.keys()),
+    parser.add_argument("--task",
                         help="Run only this task")
     parser.add_argument("--only", choices=["with", "without", "baseline", "feature"],
                         help="Run only one side (with/without in standard mode, "
@@ -155,6 +219,8 @@ def parse_args():
                         help="Warn if cache hit rates differ >10%% between paired runs")
     parser.add_argument("--baseline-branch", metavar="REF",
                         help="Compare pruner from REF (baseline) vs current worktree (feature)")
+    parser.add_argument("--multi-turn", action="store_true",
+                        help="Run multi-turn conversation scenarios instead of single-turn")
     return parser.parse_args()
 
 
@@ -488,6 +554,57 @@ def validate_cache_symmetry(results, threshold=0.10):
     return warnings
 
 
+def aggregate_multi_turn_results(turn_results):
+    """Aggregate a list of per-turn parse_stream results into one summary.
+
+    Returns a dict with the same top-level keys as single-turn results
+    (cost_usd, tool_calls, total_tokens, etc.) so print_summary and
+    validate_cache_symmetry work unchanged.
+    """
+    cost = 0.0
+    tool_calls = 0
+    input_tokens = 0
+    output_tokens = 0
+    turns = 0
+    wall_time = 0.0
+    tools = []
+    per_message_usage = []
+    per_user_turn = []
+    failed_turns = []
+
+    for i, result in enumerate(turn_results):
+        if result is None:
+            failed_turns.append(i)
+            per_user_turn.append(None)
+            continue
+        cost += result.get("cost_usd", 0)
+        tool_calls += result.get("tool_calls", 0)
+        input_tokens += result.get("input_tokens", 0)
+        output_tokens += result.get("output_tokens", 0)
+        turns += result.get("turns", 0)
+        wall_time += result.get("wall_time_s", 0)
+        tools.extend(result.get("tools", []))
+        per_message_usage.extend(result.get("per_message_usage", []))
+        per_user_turn.append(result)
+
+    return {
+        "cost_usd": cost,
+        "tool_calls": tool_calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "turns": turns,
+        "wall_time_s": round(wall_time, 1),
+        "user_turns": len(turn_results),
+        "tools": tools,
+        "per_turn": [],  # agentic per-turn not meaningful in aggregate
+        "per_message_usage": per_message_usage,
+        "per_user_turn": per_user_turn,
+        "failed_turns": failed_turns,
+        "result_preview": "",
+    }
+
+
 def warmup_cache(repo_dir, bin_dir=None):
     """Run a minimal throwaway Claude prompt to prime the prompt cache.
 
@@ -686,6 +803,145 @@ def run_single(category, prompt, side, mode="hook", save_raw=False,
     return result
 
 
+def clear_sessions(repo_dir):
+    """Clear Claude session files for the given repo directory.
+
+    Sessions are stored at ~/.claude/projects/{sanitized-cwd}/.
+    We remove all .jsonl files there so -c doesn't resume a stale session.
+    """
+    repo_path = Path(repo_dir).resolve()
+    # Claude sanitizes paths by replacing / with -
+    sanitized = str(repo_path).replace("/", "-").lstrip("-")
+    session_dir = Path.home() / ".claude" / "projects" / sanitized
+    if session_dir.exists():
+        for f in session_dir.glob("*.jsonl"):
+            f.unlink()
+        print(f"  Cleared sessions in {session_dir}", file=sys.stderr)
+
+
+def run_claude_turn(prompt, repo_dir, turn_index, label="", save_raw=False,
+                    bin_dir=None):
+    """Run one turn of a multi-turn conversation.
+
+    Turn 0 starts a new session (no --no-session-persistence so session persists).
+    Turn 1+ continues the session with -c (--continue).
+    """
+    wrapper = WORK_DIR / "run_claude.sh"
+    if not wrapper.exists():
+        wrapper.write_text("#!/bin/bash\ncd \"$1\" && shift && exec claude \"$@\"\n")
+        wrapper.chmod(0o755)
+
+    args = [str(wrapper), str(repo_dir)]
+    if turn_index > 0:
+        args.extend(["-c"])
+    args.extend([
+        "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--max-turns", str(MAX_TURNS),
+        "--model", MODEL,
+        "--permission-mode", "bypassPermissions",
+    ])
+    # No --no-session-persistence: session must persist for -c to work
+
+    if bin_dir is None:
+        bin_dir = ensure_pruner_on_path()
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+
+    turn_label = f"{label}/turn{turn_index}"
+    print(f"  Starting [{turn_label}] ...", file=sys.stderr)
+    start = time.time()
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=600,
+                          env=env)
+    wall_time = time.time() - start
+
+    save_path = (RAW_DIR / f"{turn_label.replace('/', '_')}.jsonl"
+                 if save_raw else None)
+    result = parse_stream(proc.stdout, turn_label, save_path)
+    if result:
+        result["wall_time_s"] = round(wall_time, 1)
+    elif proc.stdout.strip():
+        fail_path = RAW_DIR / f"{turn_label.replace('/', '_')}_FAILED.jsonl"
+        fail_path.parent.mkdir(parents=True, exist_ok=True)
+        fail_path.write_text(proc.stdout)
+        print(f"  WARN [{turn_label}]: no result, raw saved to {fail_path}",
+              file=sys.stderr)
+
+    return result
+
+
+def print_multi_turn_details(label, data):
+    """Print per-user-turn breakdown for multi-turn results."""
+    if not data or not data.get("per_user_turn"):
+        return
+
+    print(f"\n  [{label}] Multi-turn breakdown ({data['user_turns']} user turns):",
+          file=sys.stderr)
+    for i, turn in enumerate(data["per_user_turn"]):
+        if turn is None:
+            print(f"    Turn {i}: FAILED", file=sys.stderr)
+            continue
+        print(f"    Turn {i}: tools={turn['tool_calls']} "
+              f"tokens={turn['total_tokens']:,} "
+              f"cost=${turn['cost_usd']:.4f} "
+              f"time={turn['wall_time_s']}s",
+              file=sys.stderr)
+
+    if data["failed_turns"]:
+        print(f"  [{label}] Failed turns: {data['failed_turns']}", file=sys.stderr)
+
+
+def run_multi_turn_single(category, prompts, side, mode="hook", save_raw=False,
+                          branch_mode=False):
+    """Run one side of one multi-turn task (all user turns in sequence)."""
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"  Task: {category} [{side}] ({len(prompts)} turns)", file=sys.stderr)
+    print(f"{'='*60}", file=sys.stderr)
+
+    # Determine clone dir and bin_dir
+    if branch_mode:
+        if side == "baseline":
+            baseline_bin = BASELINE_BIN_DIR / "pruner"
+            bin_dir = ensure_pruner_on_path(binary_path=baseline_bin,
+                                            label="baseline")
+            clone_dir = CLONE_BASELINE
+            reset_clone(clone_dir, reinstall_pruner=True, mode=mode,
+                        pruner_bin=baseline_bin)
+        else:
+            bin_dir = ensure_pruner_on_path(label="feature")
+            clone_dir = CLONE_FEATURE
+            reset_clone(clone_dir, reinstall_pruner=True, mode=mode)
+    elif side == "with":
+        bin_dir = ensure_pruner_on_path()
+        clone_dir = CLONE_WITH
+        reset_clone(clone_dir, reinstall_pruner=True, mode=mode)
+    else:
+        bin_dir = ensure_pruner_on_path()
+        clone_dir = CLONE_WITHOUT
+        reset_clone(clone_dir)
+
+    clear_sessions(clone_dir)
+    warmup_cache(clone_dir, bin_dir=bin_dir)
+
+    # Run each user turn
+    turn_results = []
+    for i, prompt in enumerate(prompts):
+        result = run_claude_turn(prompt, clone_dir, i,
+                                 f"{category}/{side}", save_raw,
+                                 bin_dir=bin_dir)
+        turn_results.append(result)
+        if result:
+            print_detailed_results(f"{category}/{side}/turn{i}", result)
+
+    # Aggregate across turns
+    aggregate = aggregate_multi_turn_results(turn_results)
+    compute_cache_hit_rate(aggregate)
+    print_multi_turn_details(f"{category}/{side}", aggregate)
+
+    return aggregate
+
+
 def interleaved_schedule(tasks, only=None, sides=("without", "with")):
     """Build a randomized run schedule where same-scenario runs are never adjacent.
 
@@ -811,22 +1067,33 @@ def main():
         sides = ("without", "with")
 
     # Select tasks
+    task_dict = MULTI_TURN_TASKS if args.multi_turn else TASKS
     if args.task:
-        tasks = [(args.task, TASKS[args.task])]
+        assert args.task in task_dict, (
+            f"Unknown task '{args.task}'. Available: {', '.join(task_dict.keys())}"
+        )
+        tasks = [(args.task, task_dict[args.task])]
     else:
-        tasks = list(TASKS.items())
+        tasks = list(task_dict.items())
 
+    multi_turn_label = " (multi-turn)" if args.multi_turn else ""
     # Build interleaved schedule: randomized order, same scenario never adjacent
     schedule = interleaved_schedule(tasks, only=args.only, sides=sides)
-    print(f"\nRun schedule ({len(schedule)} runs):", file=sys.stderr)
+    print(f"\nRun schedule ({len(schedule)} runs){multi_turn_label}:", file=sys.stderr)
     for i, (cat, _, side) in enumerate(schedule):
         print(f"  {i+1}. {cat} [{side}]", file=sys.stderr)
 
     # Run all experiments
     run_results = {}
-    for category, prompt, side in schedule:
-        result = run_single(category, prompt, side, mode=args.mode,
-                            save_raw=args.save_raw, branch_mode=branch_mode)
+    for category, prompts_or_prompt, side in schedule:
+        if args.multi_turn:
+            result = run_multi_turn_single(
+                category, prompts_or_prompt, side, mode=args.mode,
+                save_raw=args.save_raw, branch_mode=branch_mode)
+        else:
+            result = run_single(
+                category, prompts_or_prompt, side, mode=args.mode,
+                save_raw=args.save_raw, branch_mode=branch_mode)
         run_results.setdefault(category, {})[side] = result
 
     # Assemble results
