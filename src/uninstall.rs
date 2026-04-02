@@ -919,6 +919,374 @@ mod tests {
         );
     }
 
+    // --- FoundTrace::remove() for remaining variants ---
+
+    #[test]
+    fn test_found_trace_remove_hook_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let hook = dir.path().join(".claude/hooks/pruner-context.sh");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, "#!/bin/bash\npruner context").unwrap();
+
+        let trace = FoundTrace {
+            kind: TraceKind::HookFile,
+            path: hook.clone(),
+            project: dir.path().to_path_buf(),
+        };
+        trace.remove();
+        assert!(!hook.exists(), "hook file should be removed");
+    }
+
+    #[test]
+    fn test_found_trace_remove_settings_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "command": "pruner-context.sh"
+                    }]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+        let trace = FoundTrace {
+            kind: TraceKind::SettingsHook,
+            path: path.clone(),
+            project: dir.path().to_path_buf(),
+        };
+        trace.remove();
+        // File should be removed entirely since it only had pruner hooks
+        assert!(
+            !path.exists(),
+            "settings.json should be removed when pruner-only"
+        );
+    }
+
+    #[test]
+    fn test_found_trace_remove_gitignore_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gitignore");
+        fs::write(&path, "node_modules/\n.pruner/\ntarget/\n").unwrap();
+
+        let trace = FoundTrace {
+            kind: TraceKind::GitignoreEntry,
+            path: path.clone(),
+            project: dir.path().to_path_buf(),
+        };
+        trace.remove();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(!content.contains(".pruner"));
+        assert!(content.contains("node_modules/"));
+    }
+
+    #[test]
+    fn test_found_trace_remove_copilot_skill_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join(".copilot/skills/pruner");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "skill content").unwrap();
+
+        let trace = FoundTrace {
+            kind: TraceKind::CopilotSkillDir,
+            path: skill_dir.clone(),
+            project: dir.path().to_path_buf(),
+        };
+        trace.remove();
+        assert!(!skill_dir.exists(), "copilot skill dir should be removed");
+    }
+
+    // --- Display impls ---
+
+    #[test]
+    fn test_trace_kind_display() {
+        assert_eq!(TraceKind::PrunerDir.to_string(), ".pruner/ index");
+        assert_eq!(TraceKind::ClaudeSkillDir.to_string(), "Claude skill");
+        assert_eq!(TraceKind::CopilotSkillDir.to_string(), "Copilot skill");
+        assert_eq!(TraceKind::PrunerSection.to_string(), "pruner section");
+        assert_eq!(TraceKind::SettingsHook.to_string(), "settings hook");
+        assert_eq!(TraceKind::HookFile.to_string(), "hook file");
+        assert_eq!(TraceKind::GitignoreEntry.to_string(), ".gitignore entry");
+    }
+
+    #[test]
+    fn test_found_trace_display() {
+        let trace = FoundTrace {
+            kind: TraceKind::PrunerDir,
+            path: PathBuf::from("/home/user/project/.pruner"),
+            project: PathBuf::from("/home/user/project"),
+        };
+        let display = trace.to_string();
+        assert!(display.contains(".pruner"));
+        assert!(display.contains(".pruner/ index"));
+    }
+
+    // --- remove_file / remove_dir ---
+
+    #[test]
+    fn test_remove_file_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        fs::write(&path, "data").unwrap();
+        assert!(path.exists());
+        remove_file(&path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_remove_file_nonexistent() {
+        // Should not panic
+        remove_file(Path::new("/tmp/pruner-nonexistent-file-test"));
+    }
+
+    #[test]
+    fn test_remove_dir_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("subdir");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("file.txt"), "data").unwrap();
+        assert!(sub.exists());
+        remove_dir(&sub);
+        assert!(!sub.exists());
+    }
+
+    #[test]
+    fn test_remove_dir_nonexistent() {
+        // Should not panic
+        remove_dir(Path::new("/tmp/pruner-nonexistent-dir-test"));
+    }
+
+    // --- clean_gitignore edge cases ---
+
+    #[test]
+    fn test_clean_gitignore_pruner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gitignore");
+        fs::write(&path, ".pruner/\n").unwrap();
+        clean_gitignore(&path);
+        assert!(
+            !path.exists(),
+            "gitignore should be deleted when pruner-only"
+        );
+    }
+
+    #[test]
+    fn test_clean_gitignore_no_pruner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gitignore");
+        fs::write(&path, "node_modules/\ntarget/\n").unwrap();
+        clean_gitignore(&path);
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("node_modules/"));
+        assert!(content.contains("target/"));
+    }
+
+    #[test]
+    fn test_clean_gitignore_nonexistent() {
+        // Should not panic
+        clean_gitignore(Path::new("/tmp/pruner-nonexistent-gitignore"));
+    }
+
+    // --- clean_settings_json edge cases ---
+
+    #[test]
+    fn test_clean_settings_json_pruner_only_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "command": "pruner-context.sh"
+                    }]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+        clean_settings_json(&path);
+        assert!(
+            !path.exists(),
+            "settings.json should be removed when pruner-only"
+        );
+    }
+
+    #[test]
+    fn test_clean_settings_json_no_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"other": true}"#).unwrap();
+        clean_settings_json(&path);
+        // File should be unchanged
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("other"));
+    }
+
+    #[test]
+    fn test_clean_settings_json_nonexistent() {
+        // Should not panic
+        clean_settings_json(Path::new("/tmp/pruner-nonexistent-settings"));
+    }
+
+    // --- infer_project ---
+
+    #[test]
+    fn test_infer_project_claude_dir() {
+        let path = PathBuf::from("/home/user/project/.claude/skills/pruner");
+        assert_eq!(infer_project(&path), PathBuf::from("/home/user/project"));
+    }
+
+    #[test]
+    fn test_infer_project_pruner_dir() {
+        let path = PathBuf::from("/home/user/project/.pruner");
+        assert_eq!(infer_project(&path), PathBuf::from("/home/user/project"));
+    }
+
+    #[test]
+    fn test_infer_project_github_dir() {
+        let path = PathBuf::from("/home/user/project/.github/hooks/pruner-context.sh");
+        assert_eq!(infer_project(&path), PathBuf::from("/home/user/project"));
+    }
+
+    #[test]
+    fn test_infer_project_no_marker() {
+        let path = PathBuf::from("/home/user/random/file.txt");
+        assert_eq!(infer_project(&path), PathBuf::from("/home/user/random"));
+    }
+
+    // --- uninstall orchestrators ---
+
+    #[test]
+    fn test_uninstall_claude_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("project");
+        // Set up traces
+        create_file(&repo, ".claude/hooks/pruner-context.sh");
+        create_file(&repo, ".claude/skills/pruner/SKILL.md");
+        fs::write(repo.join("CLAUDE.md"), "# Project\n\n## Pruner\n\nStuff.\n").unwrap();
+
+        uninstall_claude_project(&repo);
+
+        assert!(!repo.join(".claude/hooks/pruner-context.sh").exists());
+        assert!(!repo.join(".claude/skills/pruner").exists());
+        // CLAUDE.md should be removed (was pruner-only content after project heading)
+        // or cleaned
+    }
+
+    #[test]
+    fn test_uninstall_copilot_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("project");
+        create_file(&repo, ".copilot/skills/pruner/SKILL.md");
+        create_file(&repo, ".github/hooks/pruner-context.json");
+        create_file(&repo, ".github/hooks/pruner-context.sh");
+        create_file(&repo, ".github/hooks/pruner-context.ps1");
+
+        uninstall_copilot_project(&repo);
+
+        assert!(!repo.join(".copilot/skills/pruner").exists());
+        assert!(!repo.join(".github/hooks/pruner-context.json").exists());
+        assert!(!repo.join(".github/hooks/pruner-context.sh").exists());
+        assert!(!repo.join(".github/hooks/pruner-context.ps1").exists());
+    }
+
+    // --- has_pruner_hook_entry ---
+
+    #[test]
+    fn test_has_pruner_hook_entry_true() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "command": "pruner-context.sh" }]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(has_pruner_hook_entry(&path));
+    }
+
+    #[test]
+    fn test_has_pruner_hook_entry_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{ "command": "other-tool.sh" }]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(!has_pruner_hook_entry(&path));
+    }
+
+    #[test]
+    fn test_has_pruner_hook_entry_nonexistent() {
+        assert!(!has_pruner_hook_entry(Path::new("/tmp/nonexistent")));
+    }
+
+    #[test]
+    fn test_has_pruner_hook_entry_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, "not json").unwrap();
+        assert!(!has_pruner_hook_entry(&path));
+    }
+
+    // --- match_dir_trace / match_file_trace ---
+
+    #[test]
+    fn test_match_dir_trace_pruner() {
+        let path = Path::new("/project/.pruner");
+        assert_eq!(match_dir_trace(path, ".pruner"), Some(TraceKind::PrunerDir));
+    }
+
+    #[test]
+    fn test_match_dir_trace_claude_skill() {
+        let path = Path::new("/project/.claude/skills/pruner");
+        assert_eq!(
+            match_dir_trace(path, "pruner"),
+            Some(TraceKind::ClaudeSkillDir)
+        );
+    }
+
+    #[test]
+    fn test_match_dir_trace_not_in_skills() {
+        let path = Path::new("/project/.claude/other/pruner");
+        assert_eq!(match_dir_trace(path, "pruner"), None);
+    }
+
+    #[test]
+    fn test_match_dir_trace_unknown() {
+        let path = Path::new("/project/random");
+        assert_eq!(match_dir_trace(path, "random"), None);
+    }
+
+    #[test]
+    fn test_match_file_trace_hook_in_integration_dir() {
+        let path = Path::new("/project/.claude/hooks/pruner-context.sh");
+        assert_eq!(
+            match_file_trace(path, "pruner-context.sh"),
+            Some(TraceKind::HookFile)
+        );
+    }
+
+    #[test]
+    fn test_match_file_trace_hook_outside_integration_dir() {
+        let path = Path::new("/project/scripts/pruner-context.sh");
+        assert_eq!(match_file_trace(path, "pruner-context.sh"), None);
+    }
+
+    #[test]
+    fn test_match_file_trace_unknown_file() {
+        let path = Path::new("/project/random.txt");
+        assert_eq!(match_file_trace(path, "random.txt"), None);
+    }
+
     #[test]
     fn test_clean_settings_json_mixed_hooks() {
         let dir = tempfile::tempdir().unwrap();

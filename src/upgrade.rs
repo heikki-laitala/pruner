@@ -321,4 +321,53 @@ mod tests {
         assert!(!p.os.is_empty());
         assert!(!p.arch.is_empty());
     }
+
+    #[test]
+    fn test_has_any_all_false() {
+        let d = DetectedIntegrations {
+            global: false,
+            hook: false,
+            copilot_global: false,
+            copilot_skill: false,
+        };
+        assert!(!d.has_any());
+    }
+
+    #[test]
+    fn test_has_any_global_true() {
+        let d = DetectedIntegrations {
+            global: true,
+            hook: true,
+            copilot_global: false,
+            copilot_skill: false,
+        };
+        assert!(d.has_any());
+    }
+
+    #[test]
+    fn test_has_any_copilot_true() {
+        let d = DetectedIntegrations {
+            global: false,
+            hook: false,
+            copilot_global: true,
+            copilot_skill: true,
+        };
+        assert!(d.has_any());
+    }
+
+    #[test]
+    fn test_cleanup_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::fs::write(path.join("file.txt"), "data").unwrap();
+        assert!(path.exists());
+        cleanup_temp(&path);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_cleanup_temp_nonexistent() {
+        // Should not panic on missing path
+        cleanup_temp(Path::new("/tmp/pruner-nonexistent-test-dir"));
+    }
 }
