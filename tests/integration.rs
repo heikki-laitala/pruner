@@ -1706,9 +1706,10 @@ mod cpp_project {
         let symbols = json["key_symbols"].as_array().unwrap();
 
         assert!(
-            symbols
-                .iter()
-                .any(|s| s["name"].as_str().unwrap_or("").contains("test_authenticate")),
+            symbols.iter().any(|s| s["name"]
+                .as_str()
+                .unwrap_or("")
+                .contains("test_authenticate")),
             "should find test_authenticate symbol"
         );
     }
