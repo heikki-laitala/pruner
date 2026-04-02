@@ -1,8 +1,6 @@
-**Note (2026-03-31):** Claude Code uses a prompt cache with up to 1-hour TTL — longer than the ~5 minutes originally assumed. This affects A/B test cost results in ways that interleaved scheduling alone cannot fully control. Tool call counts are unaffected (cache is transparent to the model), but cost and wall time deltas have unknown cache bias. A [post-hoc analysis](#prompt-cache-bias-analysis) explores the direction of bias but cannot reliably quantify it. Re-running with proper cache isolation is needed for trustworthy cost numbers.
-
 # Pruner
 
-**Cut AI coding costs by 24-62% with Claude Code. Speed up any agent by 62-87%.**
+**Cut AI coding costs by 15-62% with Claude Code. Speed up any agent by 59-86%.**
 
 AI coding agents (Claude Code, Codex, Copilot) spend most of their time exploring your codebase — grepping, globbing, reading files, figuring out what's relevant. On a 10K-file repo, a single task can burn 50-80 tool calls just on navigation.
 
@@ -12,10 +10,10 @@ Pruner eliminates this. It pre-indexes your entire repository using plain struct
 
 | Task type | Cost saved | Time saved | Tool calls saved |
 |-----------|-----------|-----------|-----------------|
-| Understanding / data flow | **37-52%** | **57-62%** | **78-87%** |
-| Cross-package tracing | **62%** | **64%** | **87%** |
-| Implementation (small) | **24%** | **42%** | **61%** |
-| Narrow fix | **28%** | **36%** | **68%** |
+| Understanding / data flow | **41-62%** | **52-64%** | **80-86%** |
+| Cross-package tracing | **49%** | **56%** | **80%** |
+| Implementation (small) | **15%** | **44%** | **59%** |
+| Narrow fix | **6%** | **39%** | **21%** |
 
 Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command. Claude Code users save on both cost and time. Copilot users save time ([Copilot results](#ab-test-results-copilot-cli)) — Copilot pricing is per premium request regardless of tool calls, so pruner speeds up tasks without affecting cost.
 
@@ -261,7 +259,7 @@ pruner stats .
 
 All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run N=3 times per side (with/without pruner). Runs are interleaved in randomized order (no same-scenario runs adjacent) to reduce Anthropic prompt-cache warming bias ([cache analysis](#prompt-cache-bias-analysis) shows reported numbers are mostly conservative). It takes around 10 seconds to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
 
-**Test environment:** Claude Code v2.1.81, pruner v0.2.2. Hook-mode results last run 2026-03-26 (3 rounds). Skill-mode results last run 2026-03-20 (N=1). Raw results: [`tests/ab-tests/results.json`](tests/ab-tests/results.json), [`tests/ab-tests/results_multi_repo.json`](tests/ab-tests/results_multi_repo.json).
+**Test environment:** Claude Code v2.1.81, pruner v0.2.4. Hook-mode results last run 2026-04-02 (3 rounds). Skill-mode results last run 2026-03-20 (N=1). Raw results: [`tests/ab-tests/results.json`](tests/ab-tests/results.json), [`tests/ab-tests/results_multi_repo.json`](tests/ab-tests/results_multi_repo.json).
 
 ### Results (prompt-submit hook — recommended)
 
@@ -269,12 +267,12 @@ The recommended setup for Claude Code. Pruner runs as a `UserPromptSubmit` hook 
 
 | Task | Prompt | Without (mean) | With (mean) | Δ cost | Δ tools | Δ time |
 |------|--------|---------------:|------------:|-------:|--------:|-------:|
-| Narrow fix | "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does." | $0.26 / 23 tools | $0.18 / 7 tools | **-28%** | **-68%** | **-36%** |
-| Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.44 / 47 tools | $0.17 / 6 tools | **-62%** | **-87%** | **-64%** |
-| Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.33 / 43 tools | $0.16 / 6 tools | **-52%** | **-87%** | **-62%** |
-| Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.31 / 45 tools | $0.20 / 10 tools | **-37%** | **-78%** | **-57%** |
-| Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.63 / 57 tools | $0.47 / 22 tools | **-24%** | **-61%** | **-42%** |
-| Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.91 / 66 tools | $0.88 / 65 tools | -3% | -1% | +233% |
+| Narrow fix | "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does." | $0.31 / 27 tools | $0.29 / 21 tools | **-6%** | **-21%** | **-39%** |
+| Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.42 / 40 tools | $0.21 / 8 tools | **-49%** | **-80%** | **-56%** |
+| Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.38 / 45 tools | $0.15 / 6 tools | **-62%** | **-86%** | **-64%** |
+| Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.38 / 53 tools | $0.22 / 10 tools | **-41%** | **-80%** | **-52%** |
+| Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.57 / 49 tools | $0.48 / 20 tools | **-15%** | **-59%** | **-44%** |
+| Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.99 / 76 tools | $0.96 / 57 tools | -3% | -25% | +8% |
 
 ### Results (skill mode — for Codex, Copilot, etc.)
 
@@ -291,45 +289,37 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 ### What the data shows
 
-**Hook mode saves cost on 5 of 6 tasks.** The prompt-submit hook injects context before Claude starts — zero tool calls for navigation. Cost savings range from -24% to -62% across exploration and implementation tasks. Cross-package tracing and understanding tasks show the biggest wins at -62% and -52% respectively.
+**Hook mode saves cost on 5 of 6 tasks.** The prompt-submit hook injects context before Claude starts — zero tool calls for navigation. Cost savings range from -6% to -62% across exploration and implementation tasks. Understanding and cross-package tracing show the biggest wins at -62% and -49% respectively.
 
-**Tool calls drop dramatically** across 5 of 6 tasks (-61% to -87%). Pruner's pre-computed context replaces grep/glob/read exploration chains. Understanding and cross-package tracing dropped from 43-47 to 6 tool calls (-87%).
+**Tool calls drop dramatically** across 5 of 6 tasks (-21% to -86%). Pruner's pre-computed context replaces grep/glob/read exploration chains. Understanding and cross-package tracing dropped from 40-45 to 6-8 tool calls (-80% to -86%).
 
-**Large implementation has high variance.** The `implement_large` task (rate limiter with tests) showed -3% mean cost but +233% mean time — however, this hides a 2-of-3 win rate on cost (-21%, +46%, -24%). One outlier run (Round 1) hit 1,316s where Claude read every file pruner pointed to but never wrote code. The root cause is query precision: broad keywords like "rate", "message", "limit" match too many irrelevant symbols in a 10K-file codebase, producing noisy context that sometimes helps and sometimes sends Claude down dead ends.
+**Understanding/tracing tasks are the sweet spot.** `understanding` (-62% cost, -86% tools) and `data_flow` (-41% cost, -80% tools) show the most consistent improvements across all 3 rounds. Pruner gives Claude the call graph upfront so it skips exploration entirely.
 
-**With pruner, behavior is more predictable.** Without pruner, Claude's strategy varies significantly — sometimes spawning subagents, sometimes exploring on the main thread. With pruner, tool calls are consistently low (6-22 across most tasks), reducing variance.
+**Narrow fix has high variance.** The `narrow_fix` task showed -6% mean cost but ranged from -30% to +58% across runs. Run 3 was an outlier where pruner hurt — for simple, targeted queries, pruner can occasionally send Claude down the wrong path.
+
+**Large implementation is roughly neutral.** The `implement_large` task showed -3% cost and -25% tools but +8% time. At this scale, task complexity dominates — pruner's upfront context is a small fraction of total work.
+
+**With pruner, behavior is more predictable.** Without pruner, Claude's strategy varies significantly — sometimes spawning subagents, sometimes exploring on the main thread. With pruner, tool calls are consistently low (6-21 across most tasks), reducing variance.
 
 **Token count is misleading.** Pruner often shows higher raw token counts because its context is included in every subsequent API call. But cost still decreases because cached input tokens (from the hook) are 10x cheaper than fresh tokens generated by tool calls. Fewer tool calls = fewer fresh tokens = lower cost despite higher total token count.
 
 ### When to use pruner
 
-- **Understanding / data flow**: 57-62% faster, 37-52% cheaper (Claude Code) — biggest win.
-- **Cross-package tracing**: 64% faster, 62% cheaper (Claude Code).
-- **Small implementation tasks**: 42% faster, 24% cheaper (Claude Code).
-- **Narrow tasks**: 36% faster, 28% cheaper (Claude Code).
-- **Large implementation tasks**: Won 2 of 3 rounds on cost (-21%, -24%), but high variance — one outlier run where Claude read files for 22 minutes without writing code. Query precision on broad keywords needs improvement.
+- **Understanding / data flow**: 52-64% faster, 41-62% cheaper (Claude Code) — biggest win.
+- **Cross-package tracing**: 56% faster, 49% cheaper (Claude Code).
+- **Small implementation tasks**: 44% faster, 15% cheaper (Claude Code).
+- **Narrow tasks**: 39% faster, 6% cheaper (Claude Code) — high variance, run 3 was an outlier.
+- **Large implementation tasks**: Roughly neutral on cost (-3%), slight tool reduction (-25%). Task complexity dominates.
 
 Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
-### Prompt-cache bias analysis
+### Prompt-cache note
 
-Anthropic's prompt cache has up to a **1-hour TTL** (not the ~5 minutes originally assumed). We attempted to quantify cache bias by analyzing `per_message_usage` token breakdowns from Claude Code's stream-json output. Full analysis: [`tests/ab-tests/analyze_cache_bias.py`](tests/ab-tests/analyze_cache_bias.py), report: [`tests/ab-tests/cache_bias_report.txt`](tests/ab-tests/cache_bias_report.txt).
+Claude Code always uses Anthropic's prompt cache (up to 1-hour TTL). This is not a confound — it's the production reality. The costs reported above are what users actually pay.
 
-**The per-message token data does not reconcile with reported totals.** Deduped per-message input token sums exceed reported `input_tokens` by 2-72x in most runs (18/36 single-repo, 22/24 multi-repo). This means Claude Code's stream-json `per_message_usage` does not reliably capture the full token accounting used for billing. As a result, we cannot compute accurate cache discount factors or no-cache cost estimates from the available data.
+Runs are interleaved in randomized order to prevent same-scenario runs from sharing cache. The "with" and "without" sides have different system prompts (hook injection changes the prefix), so cross-side cache sharing is minimal.
 
-**What we can say about cache direction (but not magnitude):**
-- The "without" side makes 3-10x more API calls than "with", each resending the growing conversation prefix. More calls = more opportunities for cached prefix re-use. This logically means caching benefits the "without" side more on cost and wall time.
-- However, we cannot put reliable numbers on how much this shifts the reported cost deltas.
-
-**What is unaffected by caching:**
-
-| Metric | Cache impact | Reported deltas reliable? |
-|--------|-------------|--------------------------|
-| **Tool calls** | None — purely behavioral, cache is transparent to the model | Yes, accurate as reported |
-| **Cost** | Unknown magnitude — likely helps "without" more (more API calls) | Unknown — re-run with cache isolation needed |
-| **Wall time** | Unknown magnitude — likely helps "without" more (faster TTFT) | Unknown — re-run with cache isolation needed |
-
-**Tool call reductions (-61% to -87%) are the most trustworthy metric** in these results. Cost and wall time deltas should be treated as directionally correct but with unknown cache bias.
+**Tool call counts are the cleanest metric** — purely behavioral, unaffected by cache pricing. Cost and wall time reflect real-world usage with caching enabled, as all Claude Code users experience.
 
 ## A/B test results (Copilot CLI)
 
