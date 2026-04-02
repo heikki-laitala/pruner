@@ -326,12 +326,14 @@ def install_pruner_in_clone(clone_path, pruner_bin, mode="hook"):
         skill_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(SKILL_SKILL_SRC, skill_dir / "SKILL.md")
 
-    # Append pruner instructions to CLAUDE.md
-    template_text = CLAUDE_TEMPLATE.read_text()
-    current = claude_md.read_text() if claude_md.exists() else ""
-    if "pruner context" not in current:
-        with open(claude_md, "a") as f:
-            f.write("\n" + template_text)
+    # Append pruner instructions to CLAUDE.md (skill mode only —
+    # in hook mode, context is injected automatically by the hook)
+    if mode == "skill":
+        template_text = CLAUDE_TEMPLATE.read_text()
+        current = claude_md.read_text() if claude_md.exists() else ""
+        if "pruner context" not in current:
+            with open(claude_md, "a") as f:
+                f.write("\n" + template_text)
 
     # Index the clone
     label = Path(clone_path).name
