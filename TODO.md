@@ -4,37 +4,9 @@
 
 Install flow is streamlined: `install.sh` + `pruner init` + `pruner index`.
 
-**A/B test results are currently invalid.** Previous results showed 24-62% cost savings, but the test setup did not account for Claude Code's 1-hour prompt cache TTL. The cache means the control (no-pruner) side may benefit from cached context across runs, biasing results. A valid A/B test setup that isolates cache effects is needed before any performance claims can be made.
+A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` flag, interleaved scheduling, `--baseline-branch` for feature impact measurement, and `--multi-turn` for interactive conversation scenarios.
 
-## Highest priority
-
-### 1. Cache-aware A/B test setup
-
-The current A/B test (`tests/ab_test.py`) does not account for Claude Code's 1-hour prompt cache TTL. When runs execute sequentially, the second run benefits from cached context regardless of whether pruner was active, biasing results. No performance claims can be made until this is fixed.
-
-**Implementation:**
-
-- Ensure each run starts with a cold cache (new session ID, or wait for TTL expiry, or use `--no-cache` if available)
-- Alternatively, run both sides with equal cache warmth: warm-up run (discarded) → measured run for each side
-- Log cache hit rates per run (`cache_read_input_tokens` vs `input_tokens`) so bias is visible in results
-- Add a `--validate-cache` flag that aborts if cache hit rate differs >10% between sides
-
-### 2. Feature impact measurement (main vs feature branch)
-
-To verify that TODO improvements actually bring value, we need A/B tests that compare `main` (baseline) against a feature branch, not just "with pruner" vs "without pruner".
-
-**Why this matters:**
-
-- Current setup only answers "does pruner help vs no pruner?" — it cannot measure whether a specific change (e.g., query precision, turn-aware budget) improves pruner itself
-- Without this, we ship features blindly and cannot prioritize the roadmap based on measured impact
-
-**Implementation:**
-
-- Add `--baseline-branch <ref>` flag to `ab_test.py`: builds pruner from that ref for the control side, and from the current worktree for the treatment side
-- Both sides run with pruner enabled — the only difference is the pruner binary version
-- Reuse the interleaved schedule and cache-aware setup from #1
-- Output a delta table: cost/time/tools for baseline branch vs feature branch
-- Use this to validate each TODO item before merging: if a feature doesn't measurably improve results, reconsider it
+**Multi-turn finding:** Pruner helps significantly on turn 0 (-50% tools, -53% time) but hurts on follow-up turns due to context accumulation (+107% tokens across 3 turns). This validates TODO #5 (turn-aware token budget) as the highest-impact improvement.
 
 ## High priority
 
@@ -237,9 +209,27 @@ For implementation tasks, pruner can analyze the call graph to suggest exactly w
 
 ### 16. More language parsers
 
-Add tree-sitter parsers for additional languages. Currently Python, JavaScript/TypeScript, Rust, Go, Java, C, and C++ have full symbol/import/call extraction.
+Add tree-sitter parsers for additional languages. Currently Python, JavaScript/TypeScript, Rust, Go, Java, C, C++, and C# have full symbol/import/call extraction.
 
-### 17. Semantic search
+### 17. Root repository indexing for monorepos/submodules
+
+`pruner init` and `pruner index` only index the current directory. In projects with subrepositories (git submodules, monorepo checkouts), users often work in a subdirectory but need context from the root repository too.
+
+**Why this matters:**
+
+- Shared types, interfaces, and utilities often live in the root repo while feature code lives in subrepos
+- Call graph edges that cross the subrepo boundary are invisible to pruner today
+- Users working in `services/api/` miss context from `shared/` or `packages/common/`
+
+**Implementation:**
+
+- Add `--include-root` flag to `pruner init` and `pruner index`
+- Detect if cwd is inside a parent git repo (walk up to find `.git` directory)
+- If `--include-root`: index the root repo as well, storing it in a separate DB or as a tagged partition in the same DB
+- During `pruner context`, merge results from both the local and root indexes
+- Rank local results higher by default, but allow root results to fill gaps (e.g., shared type definitions called from local code)
+
+### 18. Semantic search
 
 Add optional embedding-based search for queries that don't match symbol/file names (e.g., a function that handles authentication but is named `validateRequest`).
 
@@ -255,7 +245,10 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Graph expansion via execution paths
 - [x] Query performance fix (was timing out on large repos)
 - [x] Relevance scoring (exact > prefix > substring, quality penalties)
-- [x] Go, Java, C, C++ parsers
+- [x] Go, Java, C, C++, C# parsers
+- [x] Cache-aware A/B test setup (warmup runs, `--validate-cache` flag, cache hit rate logging)
+- [x] Feature impact measurement (`--baseline-branch <ref>` builds two pruner versions via git worktree)
+- [x] Multi-turn A/B test (`--multi-turn` flag for interactive conversation scenarios)
 
 ## Explored but rejected
 
