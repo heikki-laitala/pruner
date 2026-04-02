@@ -412,6 +412,7 @@ Full tree-sitter parsing (symbols, imports, calls):
 - Java
 - C
 - C++
+- C#
 
 Basic indexing (files, metadata):
 
