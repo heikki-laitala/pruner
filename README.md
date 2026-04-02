@@ -363,11 +363,11 @@ Hook and skill mode produce similar "with pruner" numbers (45 tools in both). Th
 make install
 
 # Run real A/B test (requires claude CLI, ~$5 per full run)
-python3 tests/ab_test.py                                    # all 6 tasks, hook mode, interleaved
+python3 tests/ab_test.py --save-raw --validate-cache        # all 6 tasks, hook mode, interleaved
 python3 tests/ab_test.py --task cross_package               # single task (both sides)
 python3 tests/ab_test.py --task implement --mode skill      # skill mode
 python3 tests/ab_test.py --only with                        # only "with pruner" side
-python3 tests/ab_test.py --task narrow_fix --save-raw       # save raw claude output
+python3 tests/ab_test.py --multi-turn --save-raw            # multi-turn interactive scenarios
 python3 tests/ab_test.py /path/to/repo                      # any repo (default: openclaw)
 
 # A/B test unit tests (fast, no claude CLI needed)
@@ -382,7 +382,7 @@ python3 tests/ab_test_copilot.py --mode hook --task implement --runs 3 --save-ra
 make bench
 ```
 
-The A/B test runs all scenarios in **interleaved randomized order** — each (task, side) pair is shuffled so that no two runs of the same task are adjacent. This reduces prompt-cache warming bias (Anthropic caches prompt prefixes for up to 1 hour; interleaving prevents same-scenario runs from sharing cache). See [cache bias analysis](#prompt-cache-note) for measured impact. Results are output as JSON to stdout and a summary table to stderr.
+The A/B test runs all scenarios in **interleaved randomized order** — each (task, side) pair is shuffled so that no two runs of the same task are adjacent. This reduces prompt-cache warming bias (Anthropic caches prompt prefixes for up to 1 hour; interleaving prevents same-scenario runs from sharing cache). Results are output as JSON to stdout and a summary table to stderr. Run multiple times for N>1 results.
 
 ## Architecture
 
