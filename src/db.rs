@@ -353,6 +353,27 @@ impl IndexDb {
             .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?)
     }
 
+    /// Count how many files contain a keyword in their path.
+    /// Used for keyword specificity scoring — a keyword matching 30%+ of files is noise.
+    pub fn count_files_matching(&self, keyword: &str) -> Result<i64> {
+        let pattern = format!("%{keyword}%");
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM files WHERE path LIKE ?1",
+            params![pattern],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Count how many symbols contain a keyword in their name.
+    pub fn count_symbols_matching(&self, keyword: &str) -> Result<i64> {
+        let pattern = format!("%{keyword}%");
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*) FROM symbols WHERE name LIKE ?1",
+            params![pattern],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Search files by keyword in path.
     pub fn search_files(&self, keyword: &str) -> Result<Vec<FileRow>> {
         let pattern = format!("%{keyword}%");
