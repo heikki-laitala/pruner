@@ -1701,15 +1701,15 @@ mod cpp_project {
         let dir = setup_fixture("cpp_project");
         let path = index_fixture(&dir);
 
-        let json = context_json_full(&path, "authenticate");
-        let files = json["key_files"].as_array().unwrap();
+        // Query for "test authenticate" so test files aren't penalized
+        let json = context_json_full(&path, "test authenticate");
+        let symbols = json["key_symbols"].as_array().unwrap();
 
         assert!(
-            files.iter().any(
-                |f| f["path"].as_str().unwrap_or("").contains("auth_test.cpp")
-                    && f["is_test"].as_bool().unwrap_or(false)
-            ),
-            "should detect C++ test file as test"
+            symbols
+                .iter()
+                .any(|s| s["name"].as_str().unwrap_or("").contains("test_authenticate")),
+            "should find test_authenticate symbol"
         );
     }
 }

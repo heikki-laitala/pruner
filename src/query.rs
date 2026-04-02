@@ -21,6 +21,11 @@ const MIN_SYMBOL_SCORE: i32 = 15;
 const SCORE_CUTOFF_RATIO: f64 = 0.25;
 const TRACE_TIME_BUDGET: Duration = Duration::from_secs(10);
 
+/// Keywords matching this fraction or more of files/symbols are noise.
+const DYNAMIC_STOP_THRESHOLD: f64 = 0.30;
+/// At least one keyword must match fewer than this fraction of files to proceed.
+const MIN_SPECIFICITY_THRESHOLD: f64 = 0.05;
+
 // ---------------------------------------------------------------------------
 // Scoring weights — keyword matches
 // ---------------------------------------------------------------------------
@@ -39,6 +44,10 @@ const FILE_DIR_CONTAINS: i32 = 5;
 const FILE_MULTI_KEYWORD_BONUS: i32 = 30;
 const FILE_LANGUAGE_BONUS: i32 = 20;
 const FILE_TEST_PENALTY: i32 = -5;
+/// Stronger penalty for test files when query is not about testing.
+const FILE_TEST_NON_TEST_QUERY_PENALTY: i32 = -25;
+/// Penalty for generated/compiled code files.
+const GENERATED_CODE_PENALTY: i32 = -40;
 /// Bonus per matched symbol hosted in a file (cross-reference boost).
 const FILE_SYMBOL_BOOST: i32 = 15;
 
@@ -142,7 +151,34 @@ impl QueryResult {
 
 /// Analyze a natural language query against the index.
 pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
-    let keywords = extract_keywords(ask);
+    // Detect non-code meta-questions early
+    if is_meta_question(ask) {
+        return Ok(QueryResult {
+            ask: ask.to_string(),
+            keywords: vec![],
+            matching_files: vec![],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec![],
+        });
+    }
+
+    let raw_keywords = extract_keywords(ask);
+    let keywords = filter_low_specificity_keywords(&raw_keywords, db)?;
+
+    // If no keyword is specific enough, return empty result
+    if keywords.is_empty() || !has_specific_keyword(&keywords, db)? {
+        return Ok(QueryResult {
+            ask: ask.to_string(),
+            keywords,
+            matching_files: vec![],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec![],
+        });
+    }
 
     let (mut matching_files, matching_symbols) = gather_candidates(&keywords, db)?;
 
@@ -194,6 +230,110 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         execution_paths,
         subsystems,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Non-code query detection
+// ---------------------------------------------------------------------------
+
+/// Detect meta-questions that don't benefit from codebase context.
+/// Examples: "does pruner bring value?", "how should we improve this?",
+/// "what's our testing strategy?", "summarize recent changes"
+fn is_meta_question(ask: &str) -> bool {
+    let lower = ask.to_lowercase();
+
+    // Patterns that indicate meta/process questions rather than code questions
+    const META_PATTERNS: &[&str] = &[
+        "bring value",
+        "how should we",
+        "what should we",
+        "should we use",
+        "do we need",
+        "is it worth",
+        "what's our strategy",
+        "what is our strategy",
+        "summarize recent",
+        "summarize the recent",
+        "what changed recently",
+        "who worked on",
+        "when was the last",
+        "how long will",
+        "how long would",
+        "estimate the effort",
+        "pros and cons",
+        "compare the approaches",
+        "what do you think",
+        "give me an overview",
+        "explain the architecture",
+        "how does the team",
+        "what's the status",
+        "what is the status",
+        "prioritize the",
+        "what's the plan",
+        "what is the plan",
+    ];
+
+    META_PATTERNS.iter().any(|p| lower.contains(p))
+}
+
+// ---------------------------------------------------------------------------
+// Keyword specificity filtering
+// ---------------------------------------------------------------------------
+
+/// Minimum repo size for dynamic stop-word filtering to kick in.
+/// Below this threshold, frequency analysis isn't meaningful.
+const MIN_FILES_FOR_SPECIFICITY: i64 = 10;
+
+/// Drop keywords that match too many files or symbols (repo-specific stop words).
+/// A keyword appearing in 30%+ of files or symbols is noise for that repo.
+fn filter_low_specificity_keywords(keywords: &[String], db: &IndexDb) -> Result<Vec<String>> {
+    let total_files = db.file_count()?;
+    // Skip filtering for small repos — not enough data for frequency to be meaningful
+    if total_files < MIN_FILES_FOR_SPECIFICITY {
+        return Ok(keywords.to_vec());
+    }
+
+    let total_symbols = db.symbol_count()?.max(1);
+
+    let mut filtered = Vec::new();
+    for kw in keywords {
+        let file_hits = db.count_files_matching(kw)?;
+        let symbol_hits = db.count_symbols_matching(kw)?;
+        let file_ratio = file_hits as f64 / total_files as f64;
+        let symbol_ratio = symbol_hits as f64 / total_symbols as f64;
+
+        if file_ratio < DYNAMIC_STOP_THRESHOLD && symbol_ratio < DYNAMIC_STOP_THRESHOLD {
+            filtered.push(kw.clone());
+        }
+    }
+    Ok(filtered)
+}
+
+/// Check if at least one keyword is specific enough (matches <5% of files).
+/// Prevents queries where all keywords are moderately common from returning noise.
+/// Skipped for small repos where frequency analysis isn't meaningful.
+fn has_specific_keyword(keywords: &[String], db: &IndexDb) -> Result<bool> {
+    let total_files = db.file_count()?;
+    if total_files < MIN_FILES_FOR_SPECIFICITY {
+        return Ok(true);
+    }
+
+    for kw in keywords {
+        let hits = db.count_files_matching(kw)?;
+        if (hits as f64 / total_files as f64) < MIN_SPECIFICITY_THRESHOLD {
+            return Ok(true);
+        }
+    }
+    // Also check symbol specificity — keyword may be specific to symbols even if
+    // it doesn't appear in file paths
+    let total_symbols = db.symbol_count()?.max(1);
+    for kw in keywords {
+        let hits = db.count_symbols_matching(kw)?;
+        if (hits as f64 / total_symbols as f64) < MIN_SPECIFICITY_THRESHOLD {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -408,11 +548,24 @@ fn trace_execution_path_cte(
 // ---------------------------------------------------------------------------
 
 /// Extract search keywords from a natural language query.
+/// Handles quoted phrases ("rate limiter") and hyphenated compounds (claude-code).
 pub fn extract_keywords(ask: &str) -> Vec<String> {
     let mut keywords = Vec::new();
     let mut seen = HashSet::new();
 
-    for word in ask.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+    // Phase 1: Extract quoted phrases
+    let mut remaining = ask.to_string();
+    for phrase in extract_quoted_phrases(ask) {
+        let lower = phrase.to_lowercase();
+        if seen.insert(lower.clone()) {
+            keywords.push(lower);
+        }
+        // Remove quoted phrase from remaining text so words aren't double-counted
+        remaining = remaining.replace(&format!("\"{phrase}\""), " ");
+    }
+
+    // Phase 2: Extract individual words from remaining text
+    for word in remaining.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
         let word = word.trim();
         if word.is_empty() {
             continue;
@@ -439,6 +592,22 @@ pub fn extract_keywords(ask: &str) -> Vec<String> {
     }
 
     keywords
+}
+
+/// Extract double-quoted phrases from a query string.
+fn extract_quoted_phrases(ask: &str) -> Vec<String> {
+    let mut phrases = Vec::new();
+    let mut chars = ask.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            let phrase: String = chars.by_ref().take_while(|&ch| ch != '"').collect();
+            let trimmed = phrase.trim().to_string();
+            if trimmed.contains(' ') {
+                phrases.push(trimmed);
+            }
+        }
+    }
+    phrases
 }
 
 /// Split a camelCase or snake_case identifier into parts.
@@ -611,13 +780,27 @@ fn score_and_rank_files<'a>(
     keywords: &[String],
     symbol_counts: &HashMap<i64, usize>,
 ) -> Vec<(&'a FileRow, i32)> {
+    let query_about_testing = is_query_about_testing(keywords);
+
     let mut scored: Vec<_> = files
         .iter()
         .map(|f| {
             let base = score_file(f, keywords);
             let sym_boost =
                 symbol_counts.get(&f.id).copied().unwrap_or(0) as i32 * FILE_SYMBOL_BOOST;
-            (f, base + sym_boost)
+            let mut score = base + sym_boost;
+
+            // Stronger test file penalty when query isn't about testing
+            if f.is_test && !query_about_testing {
+                score += FILE_TEST_NON_TEST_QUERY_PENALTY;
+            }
+
+            // Penalize generated/compiled code
+            if is_generated_code(&f.path) {
+                score += GENERATED_CODE_PENALTY;
+            }
+
+            (f, score)
         })
         .collect();
     scored.sort_by(|a, b| b.1.cmp(&a.1));
@@ -638,6 +821,38 @@ fn score_and_rank_files<'a>(
         scored.sort_by(|a, b| b.1.cmp(&a.1));
     }
     scored
+}
+
+/// Check if the query is about testing (test files should not be penalized).
+fn is_query_about_testing(keywords: &[String]) -> bool {
+    const TEST_KEYWORDS: &[&str] = &[
+        "test", "tests", "testing", "spec", "specs", "unittest", "pytest", "jest", "mocha",
+        "coverage", "mock", "mocks", "fixture", "fixtures",
+    ];
+    keywords
+        .iter()
+        .any(|kw| TEST_KEYWORDS.contains(&kw.as_str()))
+}
+
+/// Detect generated/compiled code from file path patterns.
+fn is_generated_code(path: &str) -> bool {
+    let path_lower = path.to_lowercase();
+    let filename = path_lower.rsplit('/').next().unwrap_or(&path_lower);
+
+    // Generated file patterns
+    filename.ends_with(".generated.ts")
+        || filename.ends_with(".generated.js")
+        || filename.ends_with(".gen.go")
+        || filename.ends_with(".pb.go")
+        || filename.ends_with(".pb.rs")
+        || filename.ends_with("_generated.rs")
+        || filename.ends_with("_generated.py")
+        || filename.ends_with(".g.dart")
+        || filename.ends_with(".freezed.dart")
+        // Common generated directories
+        || path_lower.contains("/generated/")
+        || path_lower.contains("/__generated__/")
+        || path_lower.contains("/.generated/")
 }
 
 // ---------------------------------------------------------------------------
@@ -1475,6 +1690,287 @@ mod tests {
         let path = trace_execution_path_cte(&start, &db, 5)?;
         assert_eq!(path.len(), 1);
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Dynamic stop-words and keyword specificity
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filter_low_specificity_keywords_drops_common() {
+        // "value" appears in 4/10 files (40%) → should be dropped
+        let db = IndexDb::open_memory().unwrap();
+        for i in 0..10 {
+            let name = if i < 4 {
+                format!("src/value_{i}.py")
+            } else {
+                format!("src/other_{i}.py")
+            };
+            db.insert_file(&name, Some("python"), 100, 10, false, 0)
+                .unwrap();
+        }
+        let keywords = vec!["value".to_string(), "auth".to_string()];
+        let filtered = filter_low_specificity_keywords(&keywords, &db).unwrap();
+        assert!(!filtered.contains(&"value".to_string()));
+        assert!(filtered.contains(&"auth".to_string()));
+    }
+
+    #[test]
+    fn test_filter_low_specificity_keeps_specific_keywords() {
+        // "auth" appears in 1/20 files (5%) → should be kept
+        let db = IndexDb::open_memory().unwrap();
+        db.insert_file("src/auth.py", Some("python"), 100, 10, false, 0)
+            .unwrap();
+        for i in 0..19 {
+            db.insert_file(
+                &format!("src/module_{i}.py"),
+                Some("python"),
+                100,
+                10,
+                false,
+                0,
+            )
+            .unwrap();
+        }
+        let keywords = vec!["auth".to_string()];
+        let filtered = filter_low_specificity_keywords(&keywords, &db).unwrap();
+        assert!(filtered.contains(&"auth".to_string()));
+    }
+
+    #[test]
+    fn test_filter_low_specificity_checks_symbol_frequency() {
+        // Keyword doesn't match file paths but matches 40% of symbols → dropped
+        let db = IndexDb::open_memory().unwrap();
+        for i in 0..10 {
+            let fid = db
+                .insert_file(
+                    &format!("src/mod_{i}.py"),
+                    Some("python"),
+                    100,
+                    10,
+                    false,
+                    0,
+                )
+                .unwrap();
+            // 4 out of 10 files have a symbol containing "value"
+            if i < 4 {
+                db.insert_symbol(fid, "get_value", "function", i * 10, i * 10 + 5, None, None)
+                    .unwrap();
+            } else {
+                db.insert_symbol(fid, "process", "function", i * 10, i * 10 + 5, None, None)
+                    .unwrap();
+            }
+        }
+        let keywords = vec!["value".to_string()];
+        let filtered = filter_low_specificity_keywords(&keywords, &db).unwrap();
+        assert!(!filtered.contains(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_has_specific_keyword() {
+        let db = IndexDb::open_memory().unwrap();
+        let fid = db
+            .insert_file("src/auth.py", Some("python"), 100, 10, false, 0)
+            .unwrap();
+        db.insert_symbol(fid, "authenticate", "function", 1, 10, None, None)
+            .unwrap();
+        for i in 0..20 {
+            let fid = db
+                .insert_file(
+                    &format!("src/module_{i}.py"),
+                    Some("python"),
+                    100,
+                    10,
+                    false,
+                    0,
+                )
+                .unwrap();
+            db.insert_symbol(
+                fid,
+                &format!("module_{i}_init"),
+                "function",
+                1,
+                10,
+                None,
+                None,
+            )
+            .unwrap();
+        }
+        // "auth" matches 1/21 files ≈ 4.8% < 5% → specific
+        assert!(has_specific_keyword(&["auth".to_string()], &db).unwrap());
+        // "module" matches 20/21 files ≈ 95% and 20/21 symbols → not specific
+        assert!(!has_specific_keyword(&["module".to_string()], &db).unwrap());
+    }
+
+    #[test]
+    fn test_analyze_query_returns_empty_for_nonspecific_query() {
+        // All keywords match 30%+ of files → no results
+        let db = IndexDb::open_memory().unwrap();
+        for i in 0..10 {
+            db.insert_file(
+                &format!("src/value_{i}.py"),
+                Some("python"),
+                100,
+                10,
+                false,
+                0,
+            )
+            .unwrap();
+        }
+        let result = analyze_query("find the value", &db).unwrap();
+        // "find" and "the" are stop words, "value" matches 100% of files → empty
+        assert!(result.matching_files.is_empty());
+        assert!(result.matching_symbols.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-word phrase handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_keywords_preserves_hyphenated_phrases() {
+        let kws = extract_keywords("fix the claude-code integration");
+        // Should contain "claude-code" as a phrase
+        assert!(kws.contains(&"claude-code".to_string()));
+    }
+
+    #[test]
+    fn test_extract_keywords_quoted_phrase() {
+        let kws = extract_keywords("find \"rate limiter\" in the code");
+        assert!(kws.contains(&"rate limiter".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Non-code query detection (#9)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_meta_question_detects_process_questions() {
+        assert!(is_meta_question("does pruner bring value?"));
+        assert!(is_meta_question("how should we improve this?"));
+        assert!(is_meta_question("what's the status of the migration?"));
+        assert!(is_meta_question("summarize recent changes"));
+    }
+
+    #[test]
+    fn test_is_meta_question_allows_code_questions() {
+        assert!(!is_meta_question("fix the login bug"));
+        assert!(!is_meta_question("how does authentication work?"));
+        assert!(!is_meta_question("add rate limiting to the API"));
+        assert!(!is_meta_question("where is the JWT validation?"));
+    }
+
+    #[test]
+    fn test_analyze_query_returns_empty_for_meta_question() {
+        let db = IndexDb::open_memory().unwrap();
+        db.insert_file("src/auth.rs", Some("rust"), 100, 10, false, 0)
+            .unwrap();
+        let result = analyze_query("does pruner bring value?", &db).unwrap();
+        assert!(result.matching_files.is_empty());
+        assert!(result.matching_symbols.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Negative scoring signals (#11)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_query_about_testing() {
+        assert!(is_query_about_testing(&["test".into(), "auth".into()]));
+        assert!(is_query_about_testing(&["jest".into(), "config".into()]));
+        assert!(!is_query_about_testing(&["auth".into(), "login".into()]));
+    }
+
+    #[test]
+    fn test_is_generated_code() {
+        assert!(is_generated_code("src/types.generated.ts"));
+        assert!(is_generated_code("api/service.pb.go"));
+        assert!(is_generated_code("src/__generated__/schema.ts"));
+        assert!(is_generated_code("lib/model_generated.rs"));
+        assert!(!is_generated_code("src/auth/login.rs"));
+        assert!(!is_generated_code("src/utils/helpers.ts"));
+    }
+
+    #[test]
+    fn test_test_files_penalized_for_non_test_query() {
+        let test_file = FileRow {
+            id: 1,
+            path: "tests/test_auth.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 20,
+            is_test: true,
+        };
+        let src_file = FileRow {
+            id: 2,
+            path: "src/auth.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 20,
+            is_test: false,
+        };
+        let keywords = vec!["auth".to_string()];
+        let no_counts = HashMap::new();
+        let files = [test_file, src_file];
+        let ranked = score_and_rank_files(&files, &keywords, &no_counts);
+        // Source file should rank higher than test file for non-test query
+        assert_eq!(ranked[0].0.path, "src/auth.rs");
+    }
+
+    #[test]
+    fn test_test_files_not_penalized_for_test_query() {
+        let test_file = FileRow {
+            id: 1,
+            path: "tests/test_auth.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 20,
+            is_test: true,
+        };
+        let src_file = FileRow {
+            id: 2,
+            path: "src/auth.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 20,
+            is_test: false,
+        };
+        // "test" keyword means query is about testing
+        let keywords = vec!["test".to_string(), "auth".to_string()];
+        let no_counts = HashMap::new();
+        let files = [test_file, src_file];
+        let ranked = score_and_rank_files(&files, &keywords, &no_counts);
+        // Test file should not be heavily penalized when query is about testing
+        let test_score = ranked.iter().find(|(f, _)| f.is_test).unwrap().1;
+        let src_score = ranked.iter().find(|(f, _)| !f.is_test).unwrap().1;
+        // Test file should score close to or higher than source (not -25 penalty)
+        assert!(test_score > src_score - 10);
+    }
+
+    #[test]
+    fn test_generated_files_penalized() {
+        let gen_file = FileRow {
+            id: 1,
+            path: "src/types.generated.ts".into(),
+            language: Some("typescript".into()),
+            size: 5000,
+            line_count: 200,
+            is_test: false,
+        };
+        let src_file = FileRow {
+            id: 2,
+            path: "src/types.ts".into(),
+            language: Some("typescript".into()),
+            size: 200,
+            line_count: 20,
+            is_test: false,
+        };
+        let keywords = vec!["types".to_string()];
+        let no_counts = HashMap::new();
+        let files = [gen_file, src_file];
+        let ranked = score_and_rank_files(&files, &keywords, &no_counts);
+        // Source file should rank higher than generated file
+        assert_eq!(ranked[0].0.path, "src/types.ts");
     }
 
     #[test]
