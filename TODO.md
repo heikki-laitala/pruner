@@ -6,6 +6,17 @@ Install flow is streamlined: `install.sh` + `pruner init` + `pruner index`.
 
 A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` flag, interleaved scheduling, `--baseline-branch` for feature impact measurement, and `--multi-turn` for interactive conversation scenarios.
 
+**Best for one-shot tasks** (`claude -p "task"`). N=3 A/B test results on openclaw (9.8K files, v0.2.4, 2026-04-02):
+
+| Task | Δ cost | Δ tools | Δ time |
+|------|--------|---------|--------|
+| Understanding | -62% | -86% | -64% |
+| Cross-package | -49% | -80% | -56% |
+| Data flow | -41% | -80% | -52% |
+| Implement | -15% | -59% | -44% |
+| Narrow fix | -6% | -21% | -39% |
+| Implement large | -3% | -25% | +8% |
+
 **Multi-turn finding:** Pruner helps significantly on turn 0 (-50% tools, -53% time) but hurts on follow-up turns due to context accumulation (+107% tokens across 3 turns). This validates TODO #5 (turn-aware token budget) as the highest-impact improvement.
 
 ## High priority
@@ -216,6 +227,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Non-code query detection (meta-questions return empty results)
 - [x] Negative scoring: test files penalized for non-test queries, generated code detection
 - [x] Multi-turn A/B test (`--multi-turn` flag for interactive conversation scenarios)
+- [x] Query precision fixes: meta-question false positive reduction, SQL LIKE wildcard escaping, test-intent ordering before specificity filtering
 
 ## Explored but rejected
 
