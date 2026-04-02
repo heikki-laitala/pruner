@@ -205,10 +205,12 @@ jobs:
           Get-Content "${{ runner.temp }}\context-output.md"
 
       # --- Run hook script directly (Unix only) ---
+      # Uses a different query than the previous step to avoid query-aware budget skip
+      # (identical output hash from the same query would cause pruner to emit nothing)
       - name: Test hook script produces output
         if: runner.os != 'Windows'
         run: |
-          echo '{"prompt": "How does authentication work?"}' | \
+          echo '{"prompt": "How does the CLI argument parsing work?"}' | \
             CLAUDE_PROJECT_DIR="${{ runner.temp }}/test-repo" \
             bash "${{ runner.temp }}/test-repo/.claude/hooks/pruner-context.sh" | \
             grep -q "Pruner context"
