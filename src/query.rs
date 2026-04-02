@@ -119,6 +119,18 @@ impl From<TraceRow> for PathStep {
 }
 
 impl QueryResult {
+    fn empty(ask: &str, keywords: Vec<String>) -> Self {
+        Self {
+            ask: ask.to_string(),
+            keywords,
+            matching_files: vec![],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec![],
+        }
+    }
+
     /// Aggregate relevance score for ranking across multiple repos.
     /// Combines file count, symbol count, execution path depth, and test coverage.
     pub fn relevance_score(&self) -> i32 {
@@ -153,31 +165,15 @@ impl QueryResult {
 pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     // Detect non-code meta-questions early
     if is_meta_question(ask) {
-        return Ok(QueryResult {
-            ask: ask.to_string(),
-            keywords: vec![],
-            matching_files: vec![],
-            matching_symbols: vec![],
-            related_tests: vec![],
-            execution_paths: vec![],
-            subsystems: vec![],
-        });
+        return Ok(QueryResult::empty(ask, vec![]));
     }
 
     let raw_keywords = extract_keywords(ask);
-    let keywords = filter_low_specificity_keywords(&raw_keywords, db)?;
+    let (keywords, has_specific) = filter_low_specificity_keywords(&raw_keywords, db)?;
 
     // If no keyword is specific enough, return empty result
-    if keywords.is_empty() || !has_specific_keyword(&keywords, db)? {
-        return Ok(QueryResult {
-            ask: ask.to_string(),
-            keywords,
-            matching_files: vec![],
-            matching_symbols: vec![],
-            related_tests: vec![],
-            execution_paths: vec![],
-            subsystems: vec![],
-        });
+    if keywords.is_empty() || !has_specific {
+        return Ok(QueryResult::empty(ask, keywords));
     }
 
     let (mut matching_files, matching_symbols) = gather_candidates(&keywords, db)?;
@@ -284,56 +280,56 @@ fn is_meta_question(ask: &str) -> bool {
 /// Below this threshold, frequency analysis isn't meaningful.
 const MIN_FILES_FOR_SPECIFICITY: i64 = 10;
 
-/// Drop keywords that match too many files or symbols (repo-specific stop words).
-/// A keyword appearing in 30%+ of files or symbols is noise for that repo.
-fn filter_low_specificity_keywords(keywords: &[String], db: &IndexDb) -> Result<Vec<String>> {
+/// Filter keywords by repo-specific frequency and check if any are specific enough.
+/// Returns (filtered_keywords, has_specific) in a single pass over the DB.
+///
+/// - Keywords matching 30%+ of files/symbols are dropped (dynamic stop-words)
+/// - has_specific is true if at least one surviving keyword matches <5% of files/symbols
+/// - Skipped for small repos (<10 files) where frequency analysis isn't meaningful
+fn filter_low_specificity_keywords(
+    keywords: &[String],
+    db: &IndexDb,
+) -> Result<(Vec<String>, bool)> {
     let total_files = db.file_count()?;
-    // Skip filtering for small repos — not enough data for frequency to be meaningful
     if total_files < MIN_FILES_FOR_SPECIFICITY {
-        return Ok(keywords.to_vec());
+        return Ok((keywords.to_vec(), true));
     }
 
     let total_symbols = db.symbol_count()?.max(1);
 
     let mut filtered = Vec::new();
+    let mut has_specific = false;
+
     for kw in keywords {
         let file_hits = db.count_files_matching(kw)?;
         let symbol_hits = db.count_symbols_matching(kw)?;
         let file_ratio = file_hits as f64 / total_files as f64;
         let symbol_ratio = symbol_hits as f64 / total_symbols as f64;
 
-        if file_ratio < DYNAMIC_STOP_THRESHOLD && symbol_ratio < DYNAMIC_STOP_THRESHOLD {
-            filtered.push(kw.clone());
+        // Drop keywords that are too common (repo-specific stop words)
+        if file_ratio >= DYNAMIC_STOP_THRESHOLD || symbol_ratio >= DYNAMIC_STOP_THRESHOLD {
+            continue;
+        }
+
+        filtered.push(kw.clone());
+
+        // Check if this keyword is specific enough
+        if file_ratio < MIN_SPECIFICITY_THRESHOLD || symbol_ratio < MIN_SPECIFICITY_THRESHOLD {
+            has_specific = true;
         }
     }
-    Ok(filtered)
+    Ok((filtered, has_specific))
 }
 
-/// Check if at least one keyword is specific enough (matches <5% of files).
-/// Prevents queries where all keywords are moderately common from returning noise.
-/// Skipped for small repos where frequency analysis isn't meaningful.
-fn has_specific_keyword(keywords: &[String], db: &IndexDb) -> Result<bool> {
-    let total_files = db.file_count()?;
-    if total_files < MIN_FILES_FOR_SPECIFICITY {
-        return Ok(true);
-    }
+// Keep individual functions for unit test access
+#[cfg(test)]
+fn filter_keywords_only(keywords: &[String], db: &IndexDb) -> Result<Vec<String>> {
+    filter_low_specificity_keywords(keywords, db).map(|(kw, _)| kw)
+}
 
-    for kw in keywords {
-        let hits = db.count_files_matching(kw)?;
-        if (hits as f64 / total_files as f64) < MIN_SPECIFICITY_THRESHOLD {
-            return Ok(true);
-        }
-    }
-    // Also check symbol specificity — keyword may be specific to symbols even if
-    // it doesn't appear in file paths
-    let total_symbols = db.symbol_count()?.max(1);
-    for kw in keywords {
-        let hits = db.count_symbols_matching(kw)?;
-        if (hits as f64 / total_symbols as f64) < MIN_SPECIFICITY_THRESHOLD {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+#[cfg(test)]
+fn has_specific_keyword(keywords: &[String], db: &IndexDb) -> Result<bool> {
+    filter_low_specificity_keywords(keywords, db).map(|(_, has)| has)
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,7 +1706,7 @@ mod tests {
                 .unwrap();
         }
         let keywords = vec!["value".to_string(), "auth".to_string()];
-        let filtered = filter_low_specificity_keywords(&keywords, &db).unwrap();
+        let filtered = filter_keywords_only(&keywords, &db).unwrap();
         assert!(!filtered.contains(&"value".to_string()));
         assert!(filtered.contains(&"auth".to_string()));
     }
@@ -1733,7 +1729,7 @@ mod tests {
             .unwrap();
         }
         let keywords = vec!["auth".to_string()];
-        let filtered = filter_low_specificity_keywords(&keywords, &db).unwrap();
+        let filtered = filter_keywords_only(&keywords, &db).unwrap();
         assert!(filtered.contains(&"auth".to_string()));
     }
 
@@ -1762,7 +1758,7 @@ mod tests {
             }
         }
         let keywords = vec!["value".to_string()];
-        let filtered = filter_low_specificity_keywords(&keywords, &db).unwrap();
+        let filtered = filter_keywords_only(&keywords, &db).unwrap();
         assert!(!filtered.contains(&"value".to_string()));
     }
 
