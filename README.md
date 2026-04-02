@@ -6,7 +6,7 @@ AI coding agents (Claude Code, Codex, Copilot) spend most of their time explorin
 
 Pruner eliminates this. It pre-indexes your entire repository using plain structural code analysis — call graphs, symbols, imports, execution paths — and gives the agent exactly the context it needs in one shot. **No LLM, no embeddings, no API keys, no network calls.** Just fast, deterministic tree-sitter parsing that runs locally in seconds. The agent skips exploration and goes straight to work.
 
-**Best for one-shot tasks** (`claude -p "task"`). In interactive multi-turn sessions, pruner injects context on every prompt — helpful on the first turn but wasteful on follow-ups when Claude already has the context. Turn-aware improvements are planned. See [when to use pruner](#when-to-use-pruner) for details.
+**Best for one-shot tasks** (`claude -p "task"`). In interactive multi-turn sessions, pruner injects context on every prompt — helpful on the first turn but wasteful on follow-ups when Claude already has the context. [Query-aware context budgets](TODO.md#5-query-aware-context-budget) are planned to fix this. See [when to use pruner](#when-to-use-pruner) for details.
 
 **Measured on real Claude Code sessions** ([full results](#ab-test-results-claude-code), openclaw, 9.8K files, N=3 per task):
 
@@ -317,7 +317,7 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 | Narrow fix | **39% faster** | Cost savings vary — pruner occasionally over-steers on simple queries |
 | Large implementation | Roughly neutral | Task complexity dominates |
 
-**Interactive sessions are a known limitation.** In multi-turn conversations, pruner's hook fires on every prompt, injecting 10-15K tokens each time. By turn 3-4, Claude has already read the key files — re-injecting context is wasteful and accelerates context compaction. Early testing showed pruner helps significantly on the first turn (-50% tools, -53% time) but hurts on follow-ups due to context accumulation. Turn-aware token budgets and deferred context loading are planned improvements.
+**Interactive sessions are a known limitation.** In multi-turn conversations, pruner's hook fires on every prompt, injecting 10-15K tokens each time. By turn 3-4, Claude has already read the key files — re-injecting context is wasteful and accelerates context compaction. Early testing showed pruner helps significantly on the first turn (-50% tools, -53% time) but hurts on follow-ups due to context accumulation. [Query-aware context budgets](TODO.md#5-query-aware-context-budget) are planned — comparing each query against the previous to skip redundant context and re-inject only on task switches.
 
 Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
