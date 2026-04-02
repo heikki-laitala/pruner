@@ -144,8 +144,9 @@ def parse_args():
                         help="Path to test repo (default: /tmp/pruner-bench/openclaw)")
     parser.add_argument("--task", choices=list(TASKS.keys()),
                         help="Run only this task")
-    parser.add_argument("--only", choices=["with", "without"],
-                        help="Run only one side (with or without pruner)")
+    parser.add_argument("--only", choices=["with", "without", "baseline", "feature"],
+                        help="Run only one side (with/without in standard mode, "
+                             "baseline/feature in branch mode)")
     parser.add_argument("--mode", choices=["hook", "skill"], default="hook",
                         help="Pruner delivery mode: hook (prompt-submit) or skill (tool call)")
     parser.add_argument("--save-raw", action="store_true",
@@ -785,6 +786,19 @@ def main():
     assert shutil.which("claude"), "claude CLI not found"
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
     assert Path(args.repo).is_dir(), f"repo not found at {args.repo}"
+
+    # Validate --only matches the active mode
+    if args.only:
+        if branch_mode and args.only in ("with", "without"):
+            parser_error = (f"--only {args.only} is invalid with --baseline-branch; "
+                            f"use --only baseline or --only feature")
+            print(f"ERROR: {parser_error}", file=sys.stderr)
+            sys.exit(1)
+        if not branch_mode and args.only in ("baseline", "feature"):
+            parser_error = (f"--only {args.only} is only valid with --baseline-branch; "
+                            f"use --only with or --only without")
+            print(f"ERROR: {parser_error}", file=sys.stderr)
+            sys.exit(1)
 
     if branch_mode:
         print(f"Setting up branch comparison: {args.baseline_branch} vs current "
