@@ -305,11 +305,17 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 ### When to use pruner
 
-- **Understanding / data flow**: 52-64% faster, 41-62% cheaper (Claude Code) — biggest win.
-- **Cross-package tracing**: 56% faster, 49% cheaper (Claude Code).
-- **Small implementation tasks**: 44% faster, 15% cheaper (Claude Code).
-- **Narrow tasks**: 39% faster, 6% cheaper (Claude Code) — high variance, run 3 was an outlier.
-- **Large implementation tasks**: Roughly neutral on cost (-3%), slight tool reduction (-25%). Task complexity dominates.
+**Best for one-shot tasks** — running Claude with `claude -p "task"` where a single prompt does the job. Pruner eliminates the exploration phase entirely, and the results above reflect this use case.
+
+| Scenario | Benefit | Notes |
+|----------|---------|-------|
+| Understanding / data flow | **52-64% faster, 41-62% cheaper** | Biggest win — Claude skips exploration entirely |
+| Cross-package tracing | **56% faster, 49% cheaper** | Call graph context is exactly what's needed |
+| Small implementation | **44% faster, 15% cheaper** | Finds the right files faster |
+| Narrow fix | **39% faster** | Cost savings vary — pruner occasionally over-steers on simple queries |
+| Large implementation | Roughly neutral | Task complexity dominates |
+
+**Interactive sessions are a known limitation.** In multi-turn conversations, pruner's hook fires on every prompt, injecting 10-15K tokens each time. By turn 3-4, Claude has already read the key files — re-injecting context is wasteful and accelerates context compaction. Early testing showed pruner helps significantly on the first turn (-50% tools, -53% time) but hurts on follow-ups due to context accumulation. Turn-aware token budgets and deferred context loading are planned improvements.
 
 Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
