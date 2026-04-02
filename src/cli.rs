@@ -904,34 +904,21 @@ fn cmd_context(
     let result = query::analyze_query(ask, &db)?;
 
     let pruner_dir = repo_path.join(INDEX_DIR);
+    let prev_query = if mode == ContextMode::Auto {
+        budget::load_last_query(&pruner_dir).unwrap_or(None)
+    } else {
+        None
+    };
 
     // Resolve auto mode: check query-aware budget first, then shape-based detection
     let resolved = if mode == ContextMode::Auto {
-        let prev = budget::load_last_query(&pruner_dir).unwrap_or(None);
-        if let Some(ref prev_query) = prev {
-            let budget_decision = budget::decide_budget(
-                &result.keywords,
-                &result.subsystems,
-                prev_query,
-                None, // output hash checked after generation
-            );
-            match budget_decision {
-                budget::Budget::Brief => {
-                    eprintln!("Mode: auto → brief (same topic as previous query)");
-                    ContextMode::Brief
-                }
-                budget::Budget::Full | budget::Budget::Skip => {
-                    // Skip is not possible here (no output hash yet); treat as Full
-                    let detected = detect_mode(&result);
-                    let label = match detected {
-                        ContextMode::Brief => "brief (narrow task: few files, single subsystem)",
-                        ContextMode::Focused => "focused (broad task: multiple files/subsystems)",
-                        _ => unreachable!(),
-                    };
-                    eprintln!("Mode: auto → {label}");
-                    detected
-                }
-            }
+        let is_same_topic = prev_query.as_ref().is_some_and(|prev| {
+            budget::decide_budget(&result.keywords, &result.subsystems, prev, None)
+                == budget::Budget::Brief
+        });
+        if is_same_topic {
+            eprintln!("Mode: auto → brief (same topic as previous query)");
+            ContextMode::Brief
         } else {
             let detected = detect_mode(&result);
             let label = match detected {
@@ -948,44 +935,37 @@ fn cmd_context(
 
     let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, resolved)?;
 
-    // Compute output hash for identical-output detection
+    // Compute output text and hash for identical-output detection
     let output_text = match fmt {
         "json" => format_context_json(&ctx)?,
-        _ => {
-            if resolved == ContextMode::Brief {
-                format_context_summary(&ctx)
-            } else {
-                format_context_text(&ctx)
-            }
-        }
+        _ if resolved == ContextMode::Brief => format_context_summary(&ctx),
+        _ => format_context_text(&ctx),
     };
     let output_hash = budget::hash_output(&output_text);
 
-    // Check if output is identical to previous → skip entirely (auto mode only)
-    if mode == ContextMode::Auto {
-        let prev = budget::load_last_query(&pruner_dir).unwrap_or(None);
-        if let Some(ref prev_query) = prev
-            && prev_query.output_hash.as_deref() == Some(output_hash.as_str())
-        {
-            eprintln!("Budget: skip (identical output to previous query)");
-            // Still save so next comparison works
-            let _ = budget::save_last_query(
-                &pruner_dir,
-                &budget::LastQuery {
-                    keywords: result.keywords.clone(),
-                    subsystems: result.subsystems.clone(),
-                    output_hash: Some(output_hash),
-                },
-            );
-            return Ok(());
-        }
+    // Skip entirely if output is identical to previous (auto mode only)
+    if prev_query
+        .as_ref()
+        .and_then(|p| p.output_hash.as_deref())
+        == Some(output_hash.as_str())
+    {
+        eprintln!("Budget: skip (identical output to previous query)");
+        let _ = budget::save_last_query(
+            &pruner_dir,
+            &budget::LastQuery {
+                keywords: result.keywords,
+                subsystems: result.subsystems,
+                output_hash: Some(output_hash),
+            },
+        );
+        return Ok(());
     }
 
     if resolved == ContextMode::Brief {
         // Write *full* context to .pruner/context.md so the LLM can drill deeper
         let full_ctx =
             context::generate_context(&result, &repo_path, max_snippet_lines, ContextMode::Full)?;
-        let ctx_path = repo_path.join(INDEX_DIR).join("context.md");
+        let ctx_path = pruner_dir.join("context.md");
         let full_text = format_context_text(&full_ctx);
         fs::write(&ctx_path, &full_text)?;
 
@@ -1015,13 +995,13 @@ fn cmd_context(
         }
     }
 
-    // Save current query metadata for next comparison (auto mode only)
+    // Save current query metadata for next comparison
     if mode == ContextMode::Auto {
         let _ = budget::save_last_query(
             &pruner_dir,
             &budget::LastQuery {
-                keywords: result.keywords.clone(),
-                subsystems: result.subsystems.clone(),
+                keywords: result.keywords,
+                subsystems: result.subsystems,
                 output_hash: Some(output_hash),
             },
         );
