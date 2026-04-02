@@ -169,6 +169,8 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     }
 
     let raw_keywords = extract_keywords(ask);
+    // Check test intent BEFORE filtering, so "test" isn't lost as a stop-word
+    let query_about_testing = is_query_about_testing(&raw_keywords);
     let (keywords, has_specific) = filter_low_specificity_keywords(&raw_keywords, db)?;
 
     // If no keyword is specific enough, return empty result
@@ -189,7 +191,13 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     }
 
     let related_tests = find_related_tests(&matching_files, db)?;
-    let file_scores = build_file_scores(&matching_files, &matching_symbols, &keywords, db)?;
+    let file_scores = build_file_scores(
+        &matching_files,
+        &matching_symbols,
+        &keywords,
+        db,
+        query_about_testing,
+    )?;
 
     let (matching_symbols, top_symbols) =
         rank_and_filter_symbols(&matching_symbols, &keywords, &file_scores);
@@ -211,7 +219,12 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     }
 
     let symbol_file_counts = count_symbols_per_file(&matching_symbols);
-    let matching_files = rank_and_filter_files(&matching_files, &keywords, &symbol_file_counts);
+    let matching_files = rank_and_filter_files(
+        &matching_files,
+        &keywords,
+        &symbol_file_counts,
+        query_about_testing,
+    );
     let mut related_tests = related_tests;
     related_tests.truncate(MAX_RESULT_TESTS);
 
@@ -235,10 +248,16 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
 /// Detect meta-questions that don't benefit from codebase context.
 /// Examples: "does pruner bring value?", "how should we improve this?",
 /// "what's our testing strategy?", "summarize recent changes"
+///
+/// Only matches when the entire query looks like a process/meta question.
+/// Uses whole-query substring matching but requires patterns to be specific
+/// enough to avoid false positives on code queries like
+/// "what is the status code returned by authenticate".
 fn is_meta_question(ask: &str) -> bool {
     let lower = ask.to_lowercase();
 
-    // Patterns that indicate meta/process questions rather than code questions
+    // Patterns that indicate meta/process questions rather than code questions.
+    // Each pattern must be specific enough to not accidentally match code queries.
     const META_PATTERNS: &[&str] = &[
         "bring value",
         "how should we",
@@ -253,8 +272,8 @@ fn is_meta_question(ask: &str) -> bool {
         "what changed recently",
         "who worked on",
         "when was the last",
-        "how long will",
-        "how long would",
+        "how long will it",
+        "how long would it",
         "estimate the effort",
         "pros and cons",
         "compare the approaches",
@@ -262,11 +281,11 @@ fn is_meta_question(ask: &str) -> bool {
         "give me an overview",
         "explain the architecture",
         "how does the team",
-        "what's the status",
-        "what is the status",
+        "what's the status of",
+        "what is the status of",
         "prioritize the",
-        "what's the plan",
-        "what is the plan",
+        "what's the plan for",
+        "what is the plan for",
     ];
 
     META_PATTERNS.iter().any(|p| lower.contains(p))
@@ -425,9 +444,10 @@ fn build_file_scores(
     symbols: &[SymbolRow],
     keywords: &[String],
     db: &IndexDb,
+    query_about_testing: bool,
 ) -> Result<HashMap<i64, i32>> {
     let no_counts = HashMap::new();
-    let scored = score_and_rank_files(files, keywords, &no_counts);
+    let scored = score_and_rank_files(files, keywords, &no_counts, query_about_testing);
     let mut map: HashMap<i64, i32> = scored.iter().map(|(f, s)| (f.id, *s)).collect();
 
     // Score files that host matched symbols but weren't in the file results.
@@ -481,8 +501,9 @@ fn rank_and_filter_files(
     files: &[FileRow],
     keywords: &[String],
     symbol_counts: &HashMap<i64, usize>,
+    query_about_testing: bool,
 ) -> Vec<FileRow> {
-    let scored = score_and_rank_files(files, keywords, symbol_counts);
+    let scored = score_and_rank_files(files, keywords, symbol_counts, query_about_testing);
     let cutoff = dynamic_cutoff(&scored, MIN_FILE_SCORE);
 
     scored
@@ -775,9 +796,8 @@ fn score_and_rank_files<'a>(
     files: &'a [FileRow],
     keywords: &[String],
     symbol_counts: &HashMap<i64, usize>,
+    query_about_testing: bool,
 ) -> Vec<(&'a FileRow, i32)> {
-    let query_about_testing = is_query_about_testing(keywords);
-
     let mut scored: Vec<_> = files
         .iter()
         .map(|f| {
@@ -1470,7 +1490,7 @@ mod tests {
             },
         ];
         let no_counts = HashMap::new();
-        let ranked = score_and_rank_files(&files, &["websocket".to_string()], &no_counts);
+        let ranked = score_and_rank_files(&files, &["websocket".to_string()], &no_counts, false);
         assert_eq!(ranked[0].0.id, 2, "source file should rank first");
         assert_eq!(ranked[1].0.id, 3, "docs should rank second");
         assert_eq!(ranked[2].0.id, 1, "zh-CN docs should rank last");
@@ -1846,6 +1866,8 @@ mod tests {
         assert!(is_meta_question("how should we improve this?"));
         assert!(is_meta_question("what's the status of the migration?"));
         assert!(is_meta_question("summarize recent changes"));
+        assert!(is_meta_question("can you summarize recent changes"));
+        assert!(is_meta_question("what is the plan for next sprint?"));
     }
 
     #[test]
@@ -1854,6 +1876,11 @@ mod tests {
         assert!(!is_meta_question("how does authentication work?"));
         assert!(!is_meta_question("add rate limiting to the API"));
         assert!(!is_meta_question("where is the JWT validation?"));
+        // P1 fix: code queries containing meta-pattern substrings must not be blocked
+        assert!(!is_meta_question(
+            "what is the status code returned by authenticate"
+        ));
+        assert!(!is_meta_question("what is the plan_id field used for?"));
     }
 
     #[test]
@@ -1908,7 +1935,7 @@ mod tests {
         let keywords = vec!["auth".to_string()];
         let no_counts = HashMap::new();
         let files = [test_file, src_file];
-        let ranked = score_and_rank_files(&files, &keywords, &no_counts);
+        let ranked = score_and_rank_files(&files, &keywords, &no_counts, false);
         // Source file should rank higher than test file for non-test query
         assert_eq!(ranked[0].0.path, "src/auth.rs");
     }
@@ -1935,7 +1962,7 @@ mod tests {
         let keywords = vec!["test".to_string(), "auth".to_string()];
         let no_counts = HashMap::new();
         let files = [test_file, src_file];
-        let ranked = score_and_rank_files(&files, &keywords, &no_counts);
+        let ranked = score_and_rank_files(&files, &keywords, &no_counts, true);
         // Test file should not be heavily penalized when query is about testing
         let test_score = ranked.iter().find(|(f, _)| f.is_test).unwrap().1;
         let src_score = ranked.iter().find(|(f, _)| !f.is_test).unwrap().1;
@@ -1964,7 +1991,7 @@ mod tests {
         let keywords = vec!["types".to_string()];
         let no_counts = HashMap::new();
         let files = [gen_file, src_file];
-        let ranked = score_and_rank_files(&files, &keywords, &no_counts);
+        let ranked = score_and_rank_files(&files, &keywords, &no_counts, false);
         // Source file should rank higher than generated file
         assert_eq!(ranked[0].0.path, "src/types.ts");
     }
