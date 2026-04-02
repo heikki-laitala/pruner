@@ -319,14 +319,14 @@ fn open_db(repo: &Path) -> Result<IndexDb> {
 /// Override with PRUNER_RECHECK_SECS=0 to force a check every time.
 const DEFAULT_RECHECK_SECS: u64 = 300;
 
-fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
+fn open_or_create_db(repo: &Path, verbose: bool, exclude_dirs: &[PathBuf]) -> Result<IndexDb> {
     let path = db_path(repo);
     if !path.exists() {
         eprintln!("No index found. Indexing {}...", repo.display());
         ensure_index_dir(repo)?;
         let db = IndexDb::open(&path)?;
         let repo_path = repo.canonicalize()?;
-        let stats = indexer::index_repo(&repo_path, &db, verbose, &[])?;
+        let stats = indexer::index_repo(&repo_path, &db, verbose, exclude_dirs)?;
         if stats.parsed == 0 {
             // No parseable source code — remove the empty index to avoid clutter
             drop(db);
@@ -355,7 +355,7 @@ fn open_or_create_db(repo: &Path, verbose: bool) -> Result<IndexDb> {
     }
 
     // Try incremental update
-    if let Some(stats) = indexer::index_repo_incremental(&repo_path, &db, verbose, &[])? {
+    if let Some(stats) = indexer::index_repo_incremental(&repo_path, &db, verbose, exclude_dirs)? {
         eprintln!(
             "Incremental update: {} new/modified, {} unchanged, {} deleted ({} skipped)",
             stats.files, stats.unchanged, stats.deleted, stats.skipped
@@ -965,7 +965,7 @@ fn cmd_context(
         }
     }
 
-    let db = open_or_create_db(repo, false)?;
+    let db = open_or_create_db(repo, false, &[])?;
     let repo_path = repo.canonicalize()?;
     let result = query::analyze_query(ask, &db)?;
 
@@ -1087,9 +1087,22 @@ fn cmd_context_multi(
     eprintln!("Multi-repo mode: {} sub-repos found", subrepos.len());
 
     // Phase 1: score all subrepos
+    // Pre-compute exclusion dirs for root: all non-root repos need to be excluded
+    // when refreshing the root index to prevent cross-contamination.
+    let root_exclude: Vec<PathBuf> = subrepos
+        .iter()
+        .filter(|s| s.as_path() != parent)
+        .filter_map(|s| s.canonicalize().ok())
+        .collect();
+
     let mut scored: Vec<(&PathBuf, query::QueryResult, i32)> = Vec::new();
     for subrepo in subrepos {
-        let db = open_or_create_db(subrepo, false)?;
+        let exclude = if subrepo.as_path() == parent {
+            root_exclude.as_slice()
+        } else {
+            &[]
+        };
+        let db = open_or_create_db(subrepo, false, exclude)?;
         let result = query::analyze_query(ask, &db)?;
 
         if result.matching_files.is_empty() && result.matching_symbols.is_empty() {
