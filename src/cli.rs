@@ -944,11 +944,7 @@ fn cmd_context(
     let output_hash = budget::hash_output(&output_text);
 
     // Skip entirely if output is identical to previous (auto mode only)
-    if prev_query
-        .as_ref()
-        .and_then(|p| p.output_hash.as_deref())
-        == Some(output_hash.as_str())
-    {
+    if prev_query.as_ref().and_then(|p| p.output_hash.as_deref()) == Some(output_hash.as_str()) {
         eprintln!("Budget: skip (identical output to previous query)");
         let _ = budget::save_last_query(
             &pruner_dir,
