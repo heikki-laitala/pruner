@@ -935,13 +935,11 @@ fn cmd_context(
 
     let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, resolved)?;
 
-    // Compute output text and hash for identical-output detection
-    let output_text = match fmt {
-        "json" => format_context_json(&ctx)?,
-        _ if resolved == ContextMode::Brief => format_context_summary(&ctx),
-        _ => format_context_text(&ctx),
-    };
-    let output_hash = budget::hash_output(&output_text);
+    // Hash the full text representation for identical-output detection,
+    // regardless of display format.  Brief mode omits snippets, so hashing
+    // only the brief summary would miss underlying code changes and
+    // incorrectly trigger the skip path.
+    let output_hash = budget::hash_output(&format_context_text(&ctx));
 
     // Skip entirely if output is identical to previous (auto mode only)
     if prev_query.as_ref().and_then(|p| p.output_hash.as_deref()) == Some(output_hash.as_str()) {
@@ -972,7 +970,7 @@ fn cmd_context(
                 if !age.is_empty() {
                     eprintln!("Index age: {age}");
                 }
-                print!("{output_text}");
+                print!("{}", format_context_summary(&ctx));
                 eprintln!("Full context: {}", ctx_path.display());
             }
         }
@@ -987,7 +985,7 @@ fn cmd_context(
                     fs::write(out.join("context.md"), format_context_text(&ctx))?;
                 }
             }
-            _ => print!("{output_text}"),
+            _ => print!("{}", format_context_text(&ctx)),
         }
     }
 
