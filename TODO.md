@@ -17,7 +17,14 @@ A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` fl
 | Narrow fix | -6% | -21% | -39% |
 | Implement large | -3% | -25% | +8% |
 
-**Multi-turn finding:** Pruner helps significantly on turn 0 (-50% tools, -53% time) but hurts on follow-up turns due to context accumulation (+107% tokens across 3 turns). This validates TODO #5 (turn-aware token budget) as the highest-impact improvement.
+**Interactive sessions are usable** after query-aware budget (TODO #5). N=2 rounds, 3-turn conversations on openclaw (v0.2.6):
+
+| Task | Δ cost (R1 / R2) | Δ tools (R1 / R2) | Δ time (R1 / R2) |
+|------|------------------:|-------------------:|-----------------:|
+| Iterative refinement | -24% / -29% | -62% / -55% | -32% / -33% |
+| Implement + feedback | +27%† / -1% | -33% / -44% | +4% / -23% |
+
+† Cache bias. Tool call reduction is consistent (33-62%); cost/time benefits are clear for iterative work, mixed for other patterns. Turn 0 captures most of the value (equivalent to one-shot). Follow-up turns get brief or skipped output, preventing the context accumulation problem seen before budget control.
 
 ## High priority
 
