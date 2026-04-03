@@ -276,12 +276,12 @@ def parse_args():
 
 
 def _clone_matches_repo(clone_path, repo):
-    """Check if an existing clone came from the same source repo."""
+    """Check if an existing clone contains the pinned commit."""
     try:
         result = subprocess.run(
-            ["git", "rev-parse", PINNED_COMMIT],
+            ["git", "cat-file", "-t", PINNED_COMMIT],
             cwd=clone_path, capture_output=True, text=True)
-        return result.returncode == 0
+        return result.returncode == 0 and result.stdout.strip() == "commit"
     except Exception:
         return False
 
