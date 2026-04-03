@@ -328,7 +328,7 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 ### Interactive session results
 
-Real 3-turn conversations on openclaw (9.8K files). Each scenario starts with an implementation prompt, then follow-up turns refine, correct, or extend the initial work. N=2 rounds, hook mode, pruner v0.2.6. Raw results: [`tests/ab-tests/multi_turn_run1.log`](tests/ab-tests/multi_turn_run1.log), [`tests/ab-tests/multi_turn_run2.log`](tests/ab-tests/multi_turn_run2.log).
+Real 3-turn conversations on openclaw (9.8K files, claude-opus-4-6, Claude Code 2.1.81, 2026-04-03). Each scenario starts with an implementation prompt, then follow-up turns refine, correct, or extend the initial work. N=2 rounds, hook mode, pruner v0.2.6. Raw results: [`tests/ab-tests/multi_turn_run1.log`](tests/ab-tests/multi_turn_run1.log), [`tests/ab-tests/multi_turn_run2.log`](tests/ab-tests/multi_turn_run2.log).
 
 | Task | Turns | Δ cost (R1 / R2) | Δ tools (R1 / R2) | Δ time (R1 / R2) |
 |------|------:|------------------:|-------------------:|-----------------:|
