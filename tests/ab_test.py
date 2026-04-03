@@ -275,13 +275,30 @@ def parse_args():
     return parser.parse_args()
 
 
+def _clone_matches_repo(clone_path, repo):
+    """Check if an existing clone came from the same source repo."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", PINNED_COMMIT],
+            cwd=clone_path, capture_output=True, text=True)
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def setup_clones(repo, mode="hook"):
     """Create two copies of the repo: one with pruner, one without."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
     for clone_path, label in [(CLONE_WITH, "with-pruner"), (CLONE_WITHOUT, "without-pruner")]:
         if clone_path.exists():
-            print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
+            if _clone_matches_repo(clone_path, repo):
+                print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
+            else:
+                print(f"  Replacing clone (different repo): {clone_path}", file=sys.stderr)
+                shutil.rmtree(clone_path)
+                shutil.copytree(repo, clone_path, symlinks=True,
+                                ignore=shutil.ignore_patterns('.pruner'))
         else:
             print(f"  Copying {repo} -> {clone_path} ...", file=sys.stderr)
             shutil.copytree(repo, clone_path, symlinks=True,
@@ -409,7 +426,13 @@ def setup_clones_branch_mode(repo, baseline_ref, mode="hook"):
     for clone_path, label in [(CLONE_BASELINE, "baseline-pruner"),
                                (CLONE_FEATURE, "feature-pruner")]:
         if clone_path.exists():
-            print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
+            if _clone_matches_repo(clone_path, repo):
+                print(f"  Reusing existing clone: {clone_path}", file=sys.stderr)
+            else:
+                print(f"  Replacing clone (different repo): {clone_path}", file=sys.stderr)
+                shutil.rmtree(clone_path)
+                shutil.copytree(repo, clone_path, symlinks=True,
+                                ignore=shutil.ignore_patterns('.pruner'))
         else:
             print(f"  Copying {repo} -> {clone_path} ...", file=sys.stderr)
             shutil.copytree(repo, clone_path, symlinks=True,
