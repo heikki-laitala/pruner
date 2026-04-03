@@ -334,17 +334,14 @@ Real 3-turn conversations on openclaw (9.8K files). Each scenario starts with an
 |------|------:|------------------:|-------------------:|-----------------:|
 | Iterative refinement | 3 | **-24% / -29%** | **-62% / -55%** | **-32% / -33%** |
 | Implement + feedback | 3 | +27%† / -1% | **-33% / -44%** | +4% / **-23%** |
-| Debug + clarify + fix | 3 | +71%† / +9%† | **-20% / -40%** | +3186%† / **-13%** |
 
-† Cache bias warning: cache hit rates differed >10% between with/without sides, making cost comparisons unreliable for that run.
+† Cache bias warning: cache hit rates differed >10% between with/without sides, making cost comparisons unreliable for that run. The `debug_clarify_resolve` scenario was excluded — R1 hit API rate limiting (103 min of retry backoff on one turn), making both rounds incomparable.
 
 **Iterative refinement is the clear winner.** Build a feature, make it configurable, add logging — the kind of incremental implementation work common in real sessions. Pruner saved 24-29% cost and 55-62% tool calls consistently across both rounds.
 
-**Tool calls drop across all scenarios.** Even when cost is ambiguous due to cache variance, tool calls are a clean metric (unaffected by caching). Every scenario showed 20-62% fewer tool calls with pruner — Claude spends less time exploring because the call graph context carries across turns.
+**Tool calls drop across both scenarios.** Even when cost is ambiguous due to cache variance, tool calls are a clean metric (unaffected by caching). Both scenarios showed 33-62% fewer tool calls with pruner — Claude spends less time exploring because the call graph context carries across turns.
 
 **Cost results are noisy for interactive sessions.** Token counts increase with pruner (context is included in every API call across all turns), but cost decreases when cached input tokens (10x cheaper) replace fresh tokens from tool calls. Cache hit rate differences between the with/without sides add variance — only `iterative_refinement` had consistent cache rates in both rounds.
-
-**Wall time variance is high.** The `debug_clarify_resolve` +3186% outlier in R1 reflects Claude taking a fundamentally different (slower) approach, not a pruner-specific issue. R2 showed -13% for the same scenario. Interactive sessions have more behavioral variance than one-shot tasks because each turn's strategy depends on previous turns.
 
 Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
