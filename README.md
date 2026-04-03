@@ -347,7 +347,7 @@ Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing
 
 ### Interactive session results (sonnet, N=10)
 
-Higher-confidence results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. N=10 rounds, hook mode. Raw results: [`/tmp/pruner-bench/ab-raw/results.json`].
+Higher-confidence results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. N=10 rounds, hook mode. Raw results: [`tests/ab-tests/fast_interactive_n10.json`](tests/ab-tests/fast_interactive_n10.json).
 
 | Task | Turns | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
 |------|------:|----------------------:|-----------------------:|----------------------:|
