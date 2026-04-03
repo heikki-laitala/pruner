@@ -1178,10 +1178,17 @@ def ensure_repo_cloned(repo_path, repo_url, pinned_commit):
                    capture_output=True, check=True)
 
 
-def run_one_round(args, round_num, model, repo, pinned_commit, task_dict):
+def run_one_round(args, round_num, model, repo, pinned_commit, task_dict,
+                  total_rounds=1):
     """Run one complete round of A/B tests. Returns (results, branch_mode)."""
-    global MODEL, PINNED_COMMIT
+    global MODEL, PINNED_COMMIT, RAW_DIR
     MODEL = model
+
+    # When running multiple rounds, save raw output in per-round subdirectories
+    if total_rounds > 1 and args.save_raw:
+        RAW_DIR = Path("/tmp/pruner-bench/ab-raw") / f"round{round_num}"
+    else:
+        RAW_DIR = Path("/tmp/pruner-bench/ab-raw")
     PINNED_COMMIT = pinned_commit
 
     branch_mode = args.baseline_branch is not None
@@ -1318,7 +1325,8 @@ def main():
             print(f"{'#'*60}", file=sys.stderr)
 
         results, branch_mode = run_one_round(
-            args, round_num, model, repo, pinned_commit, task_dict)
+            args, round_num, model, repo, pinned_commit, task_dict,
+            total_rounds=args.rounds)
         all_round_results.append(results)
 
         # Print per-round summary
@@ -1335,9 +1343,17 @@ def main():
 
     # JSON to stdout (all rounds)
     if args.rounds == 1:
-        print(json.dumps(all_round_results[0], indent=2))
+        output = all_round_results[0]
     else:
-        print(json.dumps({"rounds": all_round_results}, indent=2))
+        output = {"rounds": all_round_results}
+    print(json.dumps(output, indent=2))
+
+    # Save combined results to file when using --save-raw
+    if args.save_raw:
+        results_path = Path("/tmp/pruner-bench/ab-raw") / "results.json"
+        results_path.parent.mkdir(parents=True, exist_ok=True)
+        results_path.write_text(json.dumps(output, indent=2))
+        print(f"\n  Results saved to {results_path}", file=sys.stderr)
 
     # Cross-round summary for multi-round
     if args.rounds > 1:
