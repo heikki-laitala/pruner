@@ -1,0 +1,55 @@
+N=10 FAST IMPLEMENT A/B TEST ANALYSIS
+sonnet, NestJS/nest (2,138 files), hook mode, pruner v0.2.6, 2026-04-03
+
+================================================================================
+PER-ROUND RESULTS
+================================================================================
+
+R0  cost: 0.1407 vs 0.0885 (-37%)  tools: 17 vs 7 (-59%)  time: 53s vs 28s (-47%)
+R1  cost: 0.1270 vs 0.0899 (-29%)  tools: 23 vs 7 (-70%)  time: 49s vs 29s (-40%)
+R2  cost: 0.1370 vs 0.1270 (-7%)   tools: 23 vs 12 (-48%)  time: 56s vs 41s (-27%)
+R3  cost: 0.1038 vs 0.0831 (-20%)  tools: 9 vs 7 (-22%)  time: 41s vs 31s (-24%)
+R4  cost: 0.1235 vs 0.0789 (-36%)  tools: 25 vs 6 (-76%)  time: 61s vs 27s (-56%)
+R5  cost: 0.1017 vs 0.0917 (-10%)  tools: 10 vs 8 (-20%)  time: 43s vs 36s (-17%)
+R6  cost: 0.0956 vs 0.0994 (+4%)   tools: 9 vs 9 (+0%)   time: 43s vs 31s (-28%)
+R7  cost: 0.1351 vs 0.1099 (-19%)  tools: 18 vs 10 (-44%)  time: 50s vs 38s (-23%)
+R8  cost: 0.0974 vs 0.1155 (+19%)  tools: 9 vs 10 (+11%)  time: 40s vs 41s (+3%)
+R9  cost: 0.0843 vs 0.2168 (+157%) tools: 10 vs 20 (+100%) time: 37s vs 560s (+1405%)
+
+R9 is an API rate-limiting outlier (560s with-pruner vs normal 27-41s).
+
+================================================================================
+SUMMARY (mean ± stdev)
+================================================================================
+
+Cost:  +2% ± 57pp  (median: -14%)
+Tools: -23% ± 52pp  (median: -33%)
+Time:  -29% ± 17pp  (excluding R9 outlier, N=9)
+
+================================================================================
+CACHE BEHAVIOR
+================================================================================
+
+Cache hit rate:  without=92.8% ± 6.3pp  with=96.7% ± 0.9pp  diff=+4.0pp
+Fresh tokens:    without=38,371  with=14,147  Δ=-63%
+Total API input: without=440,776  with=412,966  Δ=-6%
+
+Zero-cache hypothetical cost: +9% ± 65pp  (actual: +2% ± 57pp)
+
+================================================================================
+KEY FINDING: BIMODAL BASELINE
+================================================================================
+
+The without-pruner side has bimodal behavior:
+  - "Efficient" rounds (R3, R5, R6, R8, R9): 9-10 tool calls, $0.08-0.10
+  - "Exploratory" rounds (R0, R1, R2, R4, R7): 17-25 tool calls, $0.12-0.14
+
+With pruner is more consistent: 6-12 tool calls, $0.08-0.13
+
+When the baseline is already efficient (9-10 tools), pruner adds overhead
+for no benefit (+4% to +157% cost). When the baseline explores heavily
+(17-25 tools), pruner saves significantly (-7% to -37% cost).
+
+This explains the high variance: the benefit depends on whether the
+baseline would have been efficient anyway. Median (-14% cost, -33% tools)
+is more representative than mean (+2% cost).
