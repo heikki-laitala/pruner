@@ -100,6 +100,22 @@ Claude Code's Grep sorts by modification time (most recent first), Glob also sor
 
 ## Medium priority
 
+### 9. Faster evaluation feedback loop
+
+Current A/B tests run full Claude sessions end-to-end (43 min to 4+ hours per N=2 interactive run). With N=5-10 needed per scenario for statistical significance, validating a single change can take days. This blocks iteration on all other improvements.
+
+**Offline evaluation (no API calls):**
+
+- **Post-hoc hit rate analysis:** Script that reads existing raw JSONL logs and correlates pruner's suggested files with Claude's actual Read/Edit calls. Measures precision (did Claude use what pruner suggested?) and recall (did Claude read files pruner missed?). Runs in seconds on saved logs.
+- **Token budget simulation:** Replay recorded queries through budget logic to measure skip/brief/focused rates without running Claude. Validates budget changes instantly.
+- **Output diff measurement:** Run `pruner context` with old vs new code on the same queries, compare token counts and file rankings. No Claude needed.
+
+**Cheaper live evaluation:**
+
+- **Sonnet instead of Opus for A/B tests:** 5-10x faster, much cheaper. Relative delta (with vs without pruner) should hold. Reserve Opus for final validation only.
+- **Single-turn proxy:** Interactive benefit mostly comes from turn 0. Test changes with one-shot A/B (minutes, not hours) and only run multi-turn for budget-specific changes.
+- **Smaller test repo:** openclaw is 9.8K files. A 1-2K file repo would run proportionally faster for quick iteration.
+
 ### 10. TypeScript/JS-specific improvements
 
 **Barrel file resolution:** `index.ts` re-export files are common. Pruner should follow re-exports to actual implementations rather than stopping at the barrel.
