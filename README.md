@@ -296,6 +296,19 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 | Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.66 / 48 tools | $0.70 / 23 tools | +6% | **-52%** | **-34%** |
 | Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.98 / 69 tools | $0.64 / 28 tools | **-35%** | **-59%** | **-50%** |
 
+### Results (sonnet, one-shot, N=5)
+
+Higher-confidence one-shot results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. N=5 rounds, hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n5.json`](tests/ab-tests/fast_oneshot_n5.json), analysis: [`tests/ab-tests/fast_oneshot_n5_analysis.txt`](tests/ab-tests/fast_oneshot_n5_analysis.txt).
+
+| Task | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
+|------|----------------------:|-----------------------:|----------------------:|
+| Understanding | **-64% ± 16pp** | **-86% ± 9pp** | **-63% ± 10pp** |
+| Implement | +14% ± 43pp | -34% ± 51pp | -14% ± 31pp |
+
+Understanding results are consistent with the opus/openclaw numbers above (-62% cost, -86% tools), confirming the benefit holds across models and repos. Implementation has high variance — one outlier round where without-pruner got lucky with only 8 tool calls (+90% cost). Excluding that round: -5% cost, -55% tools, -28% time.
+
+Cache rates are nearly identical (~92% both sides). In a zero-cache hypothetical, understanding would save -87% — more than the actual -64%. See [cache analysis](#prompt-cache-note).
+
 ### What the data shows
 
 **Hook mode saves cost on 5 of 6 tasks.** The prompt-submit hook injects context before Claude starts — zero tool calls for navigation. Cost savings range from -6% to -62% across exploration and implementation tasks. Understanding and cross-package tracing show the biggest wins at -62% and -49% respectively.

@@ -1,0 +1,61 @@
+N=5 FAST ONE-SHOT A/B TEST ANALYSIS
+sonnet, NestJS/nest (2,138 files), hook mode, pruner v0.2.6, 2026-04-03
+
+================================================================================
+PER-ROUND RESULTS
+================================================================================
+
+--- understanding ---
+R0  cost: 0.2629 vs 0.1404 (-47%)  tools: 26 vs 6 (-77%)  time: 121s vs 48s (-61%)
+R1  cost: 0.2220 vs 0.0804 (-64%)  tools: 34 vs 4 (-88%)  time: 120s vs 43s (-64%)
+R2  cost: 0.2615 vs 0.0247 (-91%)  tools: 31 vs 0 (-100%)  time: 127s vs 26s (-80%)
+R3  cost: 0.2931 vs 0.1121 (-62%)  tools: 38 vs 5 (-87%)  time: 124s vs 56s (-54%)
+R4  cost: 0.2403 vs 0.1015 (-58%)  tools: 28 vs 6 (-79%)  time: 100s vs 46s (-54%)
+
+--- implement ---
+R0  cost: 0.1362 vs 0.1289 (-5%)  tools: 26 vs 9 (-65%)  time: 57s vs 36s (-37%)
+R1  cost: 0.0730 vs 0.1386 (+90%)  tools: 8 vs 12 (+50%)  time: 30s vs 42s (+40%)
+R2  cost: 0.1309 vs 0.1267 (-3%)  tools: 29 vs 10 (-66%)  time: 52s vs 39s (-25%)
+R3  cost: 0.1363 vs 0.1329 (-3%)  tools: 30 vs 10 (-67%)  time: 64s vs 47s (-27%)
+R4  cost: 0.0980 vs 0.0884 (-10%)  tools: 9 vs 7 (-22%)  time: 38s vs 29s (-24%)
+
+================================================================================
+SUMMARY (mean ± stdev)
+================================================================================
+
+Task                 Δ cost            Δ tools           Δ time
+understanding        -64% ± 16pp       -86% ± 9pp        -63% ± 10pp
+implement            +14% ± 43pp       -34% ± 51pp       -14% ± 31pp
+
+================================================================================
+CACHE BEHAVIOR
+================================================================================
+
+--- understanding ---
+Cache hit rate:    without=92.3% ± 3.4pp    with=89.2% ± 10.0pp    diff=-3.2pp
+Fresh tokens:      without=100,385    with=21,011    Δ=-79%
+Total API input:   without=1,343,312    with=167,415    Δ=-88%
+
+--- implement ---
+Cache hit rate:    without=92.3% ± 4.5pp    with=95.4% ± 2.0pp    diff=+3.0pp
+Fresh tokens:      without=58,480    with=20,986    Δ=-64%
+Total API input:   without=622,004    with=444,482    Δ=-29%
+
+================================================================================
+HYPOTHETICAL: ZERO-CACHE COST
+================================================================================
+
+understanding: zero-cache Δ cost = -87% ± 6pp  (actual: -64% ± 16pp)
+implement: zero-cache Δ cost = +2% ± 86pp  (actual: +14% ± 43pp)
+
+================================================================================
+NOTES
+================================================================================
+
+- Implement R1 is an outlier: without-pruner got lucky with only 8 tool calls
+  (vs 26-30 in other rounds). Excluding R1, implement shows -5% ± 3pp cost,
+  -55% ± 21pp tools, -28% ± 6pp time.
+- Cache rates are nearly identical on both sides (~92%). Savings come from
+  fewer tokens processed, not better caching.
+- Zero-cache hypothetical shows understanding would save -87% (more than
+  actual -64%), confirming cache partially masks pruner's benefit.
