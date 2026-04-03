@@ -5,15 +5,22 @@ Sets up two clones of the test repo:
   A — with pruner installed (hook or skill mode)
   B — vanilla (no pruner)
 
-Runs Claude Code (opus) on identical tasks, measures actual token usage,
-tool calls, cost, and turns. Three modes: standard (with vs without pruner),
-branch comparison (baseline vs feature pruner binary), and multi-turn
-(interactive conversations with multiple user turns).
+Runs Claude Code on identical tasks, measures actual token usage,
+tool calls, cost, and turns. Four modes: standard (with vs without pruner),
+branch comparison (baseline vs feature pruner binary), multi-turn
+(interactive conversations with multiple user turns), and fast
+(sonnet + smaller repo for quick iteration).
 
 Examples:
 
     # Single-turn: all tasks, hook mode, interleaved schedule
     python3 tests/ab_test.py --save-raw
+
+    # Fast iteration: sonnet + express repo, 3 rounds
+    python3 tests/ab_test.py --fast --rounds 3 --save-raw
+
+    # Fast multi-turn: 5 rounds with cache validation
+    python3 tests/ab_test.py --fast --multi-turn --rounds 5 --validate-cache --save-raw
 
     # Single-turn: one task, both sides
     python3 tests/ab_test.py --task narrow_fix --save-raw
@@ -26,6 +33,9 @@ Examples:
 
     # Single-turn: custom repo
     python3 tests/ab_test.py /path/to/repo --task narrow_fix --save-raw
+
+    # Override model (use sonnet with default repo)
+    python3 tests/ab_test.py --model sonnet --task narrow_fix --save-raw
 
     # Branch comparison: main (baseline) vs current worktree (feature)
     python3 tests/ab_test.py --baseline-branch main --task narrow_fix --save-raw
@@ -51,6 +61,9 @@ Options:
     --only SIDE            Run only one side (with/without or baseline/feature)
     --baseline-branch REF  Compare pruner from REF vs current worktree (feature)
     --multi-turn           Run multi-turn conversation scenarios instead of single-turn
+    --fast                 Use sonnet model + smaller repo (express) for quick iteration
+    --model MODEL          Override model (default: opus, or sonnet with --fast)
+    --rounds N             Run the full A/B test N times (default: 1)
     --save-raw             Save raw stream-json output to /tmp/pruner-bench/ab-raw/
     --validate-cache       Warn if cache hit rates differ >10% between paired runs
 
@@ -58,7 +71,7 @@ Requires:
   - `claude` CLI installed and logged in
   - `pruner` release binary built (cargo build --release)
 
-Default repo: /tmp/pruner-bench/openclaw
+Default repo: openclaw (~9.8K files) or nestjs/nest (~2.1K files with --fast)
 """
 
 import subprocess, json, os, sys, time, shutil, argparse, random
@@ -82,7 +95,18 @@ BASELINE_BIN_DIR = WORK_DIR / "baseline-bin"
 
 MODEL = "opus"
 MAX_TURNS = 15
-PINNED_COMMIT = "fb602c9b02014ec9a8bc256c149b39861c1435ab"
+
+# Default repo: openclaw (~9.8K files, TypeScript monorepo)
+DEFAULT_REPO = "/tmp/pruner-bench/openclaw"
+DEFAULT_REPO_URL = "https://github.com/openclaw/openclaw.git"
+DEFAULT_PINNED_COMMIT = "fb602c9b02014ec9a8bc256c149b39861c1435ab"
+
+# Fast repo: nestjs/nest (~2.1K files, TypeScript monorepo)
+FAST_REPO = "/tmp/pruner-bench/nest"
+FAST_REPO_URL = "https://github.com/nestjs/nest.git"
+FAST_PINNED_COMMIT = "v10.4.9"  # tag
+
+PINNED_COMMIT = DEFAULT_PINNED_COMMIT
 
 TASKS = {
     "narrow_fix": (
@@ -112,6 +136,27 @@ TASKS = {
         "exceeding the limit are rejected with a user-friendly reply. Add configuration "
         "options to set custom limits per channel. Include unit tests."
     ),
+}
+
+# Tasks for --fast mode (nestjs/nest repo, ~2.1K TS files)
+FAST_TASKS = {
+    "understanding": (
+        "How does the NestJS dependency injection system work? "
+        "Trace how @Injectable() decorators and the injector resolve dependencies."
+    ),
+    "implement": (
+        "Add a request timing interceptor that measures how long each request takes "
+        "and logs it. Find where interceptors are registered and add it there."
+    ),
+}
+
+FAST_MULTI_TURN_TASKS = {
+    "iterative_refinement": [
+        "Add a request timing interceptor that measures how long each request takes "
+        "and adds an X-Response-Time header to the response.",
+        "Make the header name configurable via an options object passed to the interceptor.",
+        "Add a threshold option so the header is only added when response time exceeds it.",
+    ],
 }
 
 MULTI_TURN_TASKS = {
@@ -204,8 +249,8 @@ def build_pruner_from_ref(ref, output_dir):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="A/B test pruner with real Claude Code sessions")
-    parser.add_argument("repo", nargs="?", default="/tmp/pruner-bench/openclaw",
-                        help="Path to test repo (default: /tmp/pruner-bench/openclaw)")
+    parser.add_argument("repo", nargs="?", default=None,
+                        help="Path to test repo (default: openclaw, or express with --fast)")
     parser.add_argument("--task",
                         help="Run only this task")
     parser.add_argument("--only", choices=["with", "without", "baseline", "feature"],
@@ -221,6 +266,12 @@ def parse_args():
                         help="Compare pruner from REF (baseline) vs current worktree (feature)")
     parser.add_argument("--multi-turn", action="store_true",
                         help="Run multi-turn conversation scenarios instead of single-turn")
+    parser.add_argument("--fast", action="store_true",
+                        help="Fast iteration mode: use sonnet model and smaller repo (express)")
+    parser.add_argument("--model", default=None,
+                        help="Claude model to use (default: opus, or sonnet with --fast)")
+    parser.add_argument("--rounds", type=int, default=1, metavar="N",
+                        help="Run the full A/B test N times (default: 1)")
     return parser.parse_args()
 
 
@@ -1037,39 +1088,97 @@ def print_summary(results, branch_mode=False):
         )
 
 
-def main():
-    args = parse_args()
+def print_cross_round_summary(all_round_results, branch_mode=False):
+    """Print aggregate statistics across multiple rounds."""
+    ctrl_key = "baseline" if branch_mode else "without"
+    treat_key = "feature" if branch_mode else "with_pruner"
+
+    # Collect per-category deltas across rounds
+    categories = {}
+    for round_results in all_round_results:
+        for entry in round_results:
+            cat = entry["category"]
+            ctrl = entry.get(ctrl_key)
+            treat = entry.get(treat_key)
+            if not ctrl or not treat:
+                continue
+            if cat not in categories:
+                categories[cat] = {"cost": [], "tools": [], "time": []}
+
+            if ctrl["cost_usd"]:
+                categories[cat]["cost"].append(
+                    (treat["cost_usd"] - ctrl["cost_usd"]) / ctrl["cost_usd"] * 100)
+            if ctrl["tool_calls"]:
+                categories[cat]["tools"].append(
+                    (treat["tool_calls"] - ctrl["tool_calls"]) / ctrl["tool_calls"] * 100)
+            if ctrl.get("wall_time_s") and treat.get("wall_time_s"):
+                categories[cat]["time"].append(
+                    (treat["wall_time_s"] - ctrl["wall_time_s"]) / ctrl["wall_time_s"] * 100)
+
+    n = len(all_round_results)
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"  CROSS-ROUND SUMMARY (N={n})", file=sys.stderr)
+    print(f"{'='*60}", file=sys.stderr)
+    print(f"  {'Task':<24} {'Δ cost':>16} {'Δ tools':>16} {'Δ time':>16}",
+          file=sys.stderr)
+    print(f"  {'':24} {'mean ± spread':>16} {'mean ± spread':>16} {'mean ± spread':>16}",
+          file=sys.stderr)
+    print("  " + "-" * 76, file=sys.stderr)
+
+    for cat, deltas in categories.items():
+        parts = []
+        for metric in ["cost", "tools", "time"]:
+            vals = deltas[metric]
+            if len(vals) >= 2:
+                mean = sum(vals) / len(vals)
+                spread = max(vals) - min(vals)
+                parts.append(f"{mean:+.0f}% ± {spread:.0f}pp")
+            elif len(vals) == 1:
+                parts.append(f"{vals[0]:+.0f}%")
+            else:
+                parts.append("N/A")
+        print(f"  {cat:<24} {parts[0]:>16} {parts[1]:>16} {parts[2]:>16}",
+              file=sys.stderr)
+
+
+def ensure_repo_cloned(repo_path, repo_url, pinned_commit):
+    """Clone the test repo if it doesn't exist, and verify the pinned commit."""
+    repo = Path(repo_path)
+    if repo.is_dir():
+        return
+    print(f"  Cloning {repo_url} -> {repo} ...", file=sys.stderr)
+    repo.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", repo_url, str(repo)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "checkout", pinned_commit], cwd=repo,
+                   capture_output=True, check=True)
+
+
+def run_one_round(args, round_num, model, repo, pinned_commit, task_dict):
+    """Run one complete round of A/B tests. Returns (results, branch_mode)."""
+    global MODEL, PINNED_COMMIT
+    MODEL = model
+    PINNED_COMMIT = pinned_commit
+
     branch_mode = args.baseline_branch is not None
 
-    assert shutil.which("claude"), "claude CLI not found"
-    assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
-    assert Path(args.repo).is_dir(), f"repo not found at {args.repo}"
-
-    # Validate --only matches the active mode
-    if args.only:
-        if branch_mode and args.only in ("with", "without"):
-            parser_error = (f"--only {args.only} is invalid with --baseline-branch; "
-                            f"use --only baseline or --only feature")
-            print(f"ERROR: {parser_error}", file=sys.stderr)
-            sys.exit(1)
-        if not branch_mode and args.only in ("baseline", "feature"):
-            parser_error = (f"--only {args.only} is only valid with --baseline-branch; "
-                            f"use --only with or --only without")
-            print(f"ERROR: {parser_error}", file=sys.stderr)
-            sys.exit(1)
+    if round_num > 0:
+        # Force fresh clones by removing workspace (avoids stale state)
+        for p in [CLONE_WITH, CLONE_WITHOUT, CLONE_BASELINE, CLONE_FEATURE]:
+            if p.exists():
+                shutil.rmtree(p)
 
     if branch_mode:
         print(f"Setting up branch comparison: {args.baseline_branch} vs current "
               f"(mode={args.mode}) ...", file=sys.stderr)
-        setup_clones_branch_mode(args.repo, args.baseline_branch, mode=args.mode)
+        setup_clones_branch_mode(repo, args.baseline_branch, mode=args.mode)
         sides = ("baseline", "feature")
     else:
         print(f"Setting up test clones (mode={args.mode}) ...", file=sys.stderr)
-        setup_clones(args.repo, mode=args.mode)
+        setup_clones(repo, mode=args.mode)
         sides = ("without", "with")
 
     # Select tasks
-    task_dict = MULTI_TURN_TASKS if args.multi_turn else TASKS
     if args.task:
         if args.task not in task_dict:
             print(f"ERROR: Unknown task '{args.task}'. "
@@ -1080,7 +1189,6 @@ def main():
         tasks = list(task_dict.items())
 
     multi_turn_label = " (multi-turn)" if args.multi_turn else ""
-    # Build interleaved schedule: randomized order, same scenario never adjacent
     schedule = interleaved_schedule(tasks, only=args.only, sides=sides)
     print(f"\nRun schedule ({len(schedule)} runs){multi_turn_label}:", file=sys.stderr)
     for i, (cat, _, side) in enumerate(schedule):
@@ -1125,21 +1233,91 @@ def main():
             )
         results.append(entry)
 
-    # JSON to stdout
-    print(json.dumps(results, indent=2))
+    return results, branch_mode
 
-    # Summary to stderr
-    print_summary(results, branch_mode=branch_mode)
 
-    # Cache symmetry validation
-    if args.validate_cache:
-        cache_warnings = validate_cache_symmetry(results)
-        if cache_warnings:
-            print(f"\n  CACHE WARNINGS:", file=sys.stderr)
-            for w in cache_warnings:
-                print(f"    {w}", file=sys.stderr)
-        else:
-            print(f"\n  Cache symmetry OK (all pairs within 10%)", file=sys.stderr)
+def main():
+    args = parse_args()
+    branch_mode = args.baseline_branch is not None
+
+    # Resolve model
+    if args.model:
+        model = args.model
+    elif args.fast:
+        model = "sonnet"
+    else:
+        model = "opus"
+
+    # Resolve repo and pinned commit
+    if args.fast:
+        repo = args.repo or FAST_REPO
+        pinned_commit = FAST_PINNED_COMMIT
+        repo_url = FAST_REPO_URL
+    else:
+        repo = args.repo or DEFAULT_REPO
+        pinned_commit = DEFAULT_PINNED_COMMIT
+        repo_url = DEFAULT_REPO_URL
+
+    # Resolve task dict
+    if args.fast:
+        task_dict = FAST_MULTI_TURN_TASKS if args.multi_turn else FAST_TASKS
+    else:
+        task_dict = MULTI_TURN_TASKS if args.multi_turn else TASKS
+
+    assert shutil.which("claude"), "claude CLI not found"
+    assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
+
+    # Auto-clone repo if needed
+    ensure_repo_cloned(repo, repo_url, pinned_commit)
+    assert Path(repo).is_dir(), f"repo not found at {repo}"
+
+    # Validate --only matches the active mode
+    if args.only:
+        if branch_mode and args.only in ("with", "without"):
+            print(f"ERROR: --only {args.only} is invalid with --baseline-branch; "
+                  f"use --only baseline or --only feature", file=sys.stderr)
+            sys.exit(1)
+        if not branch_mode and args.only in ("baseline", "feature"):
+            print(f"ERROR: --only {args.only} is only valid with --baseline-branch; "
+                  f"use --only with or --only without", file=sys.stderr)
+            sys.exit(1)
+
+    fast_label = " [FAST]" if args.fast else ""
+    print(f"\nA/B test config{fast_label}: model={model}, repo={Path(repo).name}, "
+          f"rounds={args.rounds}", file=sys.stderr)
+
+    all_round_results = []
+    for round_num in range(args.rounds):
+        if args.rounds > 1:
+            print(f"\n{'#'*60}", file=sys.stderr)
+            print(f"  ROUND {round_num + 1} / {args.rounds}", file=sys.stderr)
+            print(f"{'#'*60}", file=sys.stderr)
+
+        results, branch_mode = run_one_round(
+            args, round_num, model, repo, pinned_commit, task_dict)
+        all_round_results.append(results)
+
+        # Print per-round summary
+        print_summary(results, branch_mode=branch_mode)
+
+        if args.validate_cache:
+            cache_warnings = validate_cache_symmetry(results)
+            if cache_warnings:
+                print(f"\n  CACHE WARNINGS:", file=sys.stderr)
+                for w in cache_warnings:
+                    print(f"    {w}", file=sys.stderr)
+            else:
+                print(f"\n  Cache symmetry OK (all pairs within 10%)", file=sys.stderr)
+
+    # JSON to stdout (all rounds)
+    if args.rounds == 1:
+        print(json.dumps(all_round_results[0], indent=2))
+    else:
+        print(json.dumps({"rounds": all_round_results}, indent=2))
+
+    # Cross-round summary for multi-round
+    if args.rounds > 1:
+        print_cross_round_summary(all_round_results, branch_mode=branch_mode)
 
 
 if __name__ == "__main__":

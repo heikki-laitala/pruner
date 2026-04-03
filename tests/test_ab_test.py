@@ -15,7 +15,9 @@ from ab_test import (
     interleaved_schedule, parse_stream, ensure_pruner_on_path,
     compute_cache_hit_rate, validate_cache_symmetry,
     build_pruner_from_ref, aggregate_multi_turn_results,
-    TASKS, MULTI_TURN_TASKS, PRUNER_BIN, PRUNER_DIR, WORK_DIR,
+    print_cross_round_summary,
+    TASKS, MULTI_TURN_TASKS, FAST_TASKS, FAST_MULTI_TURN_TASKS,
+    PRUNER_BIN, PRUNER_DIR, WORK_DIR,
 )
 from ab_test_copilot import (
     interleaved_schedule as copilot_interleaved_schedule,
@@ -531,6 +533,63 @@ class TestAggregateMultiTurnResults:
         results = [self._make_turn_result(), self._make_turn_result()]
         agg = aggregate_multi_turn_results(results)
         assert len(agg["per_message_usage"]) == 2
+
+
+class TestFastTasks:
+    def test_fast_tasks_exist(self):
+        assert len(FAST_TASKS) >= 1
+        for name, prompt in FAST_TASKS.items():
+            assert isinstance(prompt, str), f"{name} should be a string"
+
+    def test_fast_multi_turn_tasks_exist(self):
+        assert len(FAST_MULTI_TURN_TASKS) >= 1
+        for name, turns in FAST_MULTI_TURN_TASKS.items():
+            assert isinstance(turns, list), f"{name} should be a list"
+            assert len(turns) >= 2, f"{name} should have at least 2 turns"
+
+    def test_fast_schedule_works(self):
+        tasks = list(FAST_TASKS.items())
+        schedule = interleaved_schedule(tasks)
+        assert len(schedule) == len(tasks) * 2
+
+    def test_fast_multi_turn_schedule_works(self):
+        tasks = list(FAST_MULTI_TURN_TASKS.items())
+        schedule = interleaved_schedule(tasks)
+        assert len(schedule) == len(tasks) * 2
+
+
+class TestCrossRoundSummary:
+    def test_computes_mean_and_spread(self):
+        round1 = [{
+            "category": "test",
+            "without": {"cost_usd": 1.0, "tool_calls": 10, "wall_time_s": 100,
+                        "total_tokens": 1000},
+            "with_pruner": {"cost_usd": 0.7, "tool_calls": 5, "wall_time_s": 70,
+                            "total_tokens": 900},
+            "token_delta_pct": -10, "cost_delta_pct": -30,
+        }]
+        round2 = [{
+            "category": "test",
+            "without": {"cost_usd": 1.0, "tool_calls": 10, "wall_time_s": 100,
+                        "total_tokens": 1000},
+            "with_pruner": {"cost_usd": 0.8, "tool_calls": 6, "wall_time_s": 80,
+                            "total_tokens": 950},
+            "token_delta_pct": -5, "cost_delta_pct": -20,
+        }]
+        # Should not raise
+        print_cross_round_summary([round1, round2])
+
+    def test_single_round_no_spread(self):
+        round1 = [{
+            "category": "test",
+            "without": {"cost_usd": 1.0, "tool_calls": 10, "wall_time_s": 100,
+                        "total_tokens": 1000},
+            "with_pruner": {"cost_usd": 0.7, "tool_calls": 5, "wall_time_s": 70,
+                            "total_tokens": 900},
+            "token_delta_pct": -10, "cost_delta_pct": -30,
+        }]
+        # Single round should not raise
+        print_cross_round_summary([round1])
 
 
 class TestCopilotInterleavedSchedule:
