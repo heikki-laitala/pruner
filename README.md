@@ -367,6 +367,17 @@ Runs are interleaved in randomized order to prevent same-scenario runs from shar
 
 **Tool call counts are the cleanest metric** — purely behavioral, unaffected by cache pricing. Cost and wall time reflect real-world usage with caching enabled, as all Claude Code users experience.
 
+**Cache analysis (sonnet, N=10, iterative_refinement on nest).** Cache hit rates are nearly identical on both sides — 93.0% without pruner vs 93.7% with pruner. Pruner's cost savings come from fewer tokens, not better caching:
+
+| Metric | Without pruner | With pruner | Delta |
+|--------|---------------:|------------:|------:|
+| Cache hit rate | 93.0% | 93.7% | +0.7pp |
+| Fresh (non-cached) tokens | 108,610 | 18,998 | **-83%** |
+| Total API input tokens | 1,573,867 | 300,500 | **-81%** |
+| Tool calls | 48.4 | 8.2 | **-83%** |
+
+In a hypothetical zero-cache scenario (all tokens at full price), pruner would save **-80% ± 6pp** — actually *more* than the observed -60%. Caching partially masks pruner's benefit because the without-pruner side has more tokens eligible for cache reads. The savings are driven by the model doing genuinely less work (7-9 tool calls vs 33-59), not by cache pricing differences. Note: this analysis is from the sonnet/nest interactive test, not the opus/openclaw one-shot results above — cache behavior may differ across models and tasks.
+
 ## A/B test results (Copilot CLI)
 
 ### Results (skill mode — Copilot runs pruner as a tool)
