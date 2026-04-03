@@ -26,6 +26,14 @@ A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` fl
 
 † Cache bias. Tool call reduction is consistent (33-62%); cost/time benefits are clear for iterative work, mixed for other patterns. Turn 0 captures most of the value (equivalent to one-shot). Follow-up turns get brief or skipped output, preventing the context accumulation problem seen before budget control.
 
+**Statistically significant interactive results** on NestJS/nest (2.1K files, sonnet, N=10, v0.2.6, 2026-04-03):
+
+| Task | Δ cost | Δ tools | Δ time |
+|------|--------|---------|--------|
+| Iterative refinement | -60% ± 7pp | -83% ± 3pp | -69% ± 12pp† |
+
+† 1 of 10 rounds excluded (API rate limiting outlier: 1202s vs normal 35-43s). Tool calls are the cleanest metric: -83% with only 3pp standard deviation across 10 rounds.
+
 ## High priority
 
 ### 4. IDE/session context awareness
