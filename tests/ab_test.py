@@ -7,9 +7,9 @@ Sets up two clones of the test repo:
 
 Runs Claude Code on identical tasks, measures actual token usage,
 tool calls, cost, and turns. Four modes: standard (with vs without pruner),
-branch comparison (baseline vs feature pruner binary), multi-turn
-(interactive conversations with multiple user turns), and fast
-(sonnet + smaller repo for quick iteration).
+branch comparison (baseline vs feature pruner binary), interactive
+(multi-turn conversations), and fast (sonnet + smaller repo for
+quick iteration).
 
 Examples:
 
@@ -20,7 +20,7 @@ Examples:
     python3 tests/ab_test.py --fast --rounds 3 --save-raw
 
     # Fast multi-turn: 5 rounds with cache validation
-    python3 tests/ab_test.py --fast --multi-turn --rounds 5 --validate-cache --save-raw
+    python3 tests/ab_test.py --fast --interactive --rounds 5 --validate-cache --save-raw
 
     # Single-turn: one task, both sides
     python3 tests/ab_test.py --task narrow_fix --save-raw
@@ -41,13 +41,13 @@ Examples:
     python3 tests/ab_test.py --baseline-branch main --task narrow_fix --save-raw
 
     # Multi-turn: interactive conversation scenarios (3 user turns each)
-    python3 tests/ab_test.py --multi-turn --save-raw
+    python3 tests/ab_test.py --interactive --save-raw
 
     # Multi-turn: single scenario
-    python3 tests/ab_test.py --multi-turn --task implement_feedback_fix --save-raw
+    python3 tests/ab_test.py --interactive --task implement_feedback_fix --save-raw
 
     # Multi-turn + branch comparison
-    python3 tests/ab_test.py --multi-turn --baseline-branch main --task debug_clarify_resolve --save-raw
+    python3 tests/ab_test.py --interactive --baseline-branch main --task debug_clarify_resolve --save-raw
 
     # Cache validation (warn if cache hit rates differ >10% between sides)
     python3 tests/ab_test.py --task narrow_fix --validate-cache --save-raw
@@ -60,7 +60,7 @@ Options:
     --mode hook|skill      Pruner delivery: hook (prompt-submit) or skill (tool call)
     --only SIDE            Run only one side (with/without or baseline/feature)
     --baseline-branch REF  Compare pruner from REF vs current worktree (feature)
-    --multi-turn           Run multi-turn conversation scenarios instead of single-turn
+    --interactive           Run interactive (multi-turn) conversation scenarios
     --fast                 Use sonnet model + smaller repo (express) for quick iteration
     --model MODEL          Override model (default: opus, or sonnet with --fast)
     --rounds N             Run the full A/B test N times (default: 1)
@@ -264,8 +264,9 @@ def parse_args():
                         help="Warn if cache hit rates differ >10%% between paired runs")
     parser.add_argument("--baseline-branch", metavar="REF",
                         help="Compare pruner from REF (baseline) vs current worktree (feature)")
-    parser.add_argument("--multi-turn", action="store_true",
-                        help="Run multi-turn conversation scenarios instead of single-turn")
+    parser.add_argument("--interactive", "--multi-turn", action="store_true",
+                        dest="interactive",
+                        help="Run interactive (multi-turn) conversation scenarios")
     parser.add_argument("--fast", action="store_true",
                         help="Fast iteration mode: use sonnet model and smaller repo (express)")
     parser.add_argument("--model", default=None,
@@ -1211,16 +1212,16 @@ def run_one_round(args, round_num, model, repo, pinned_commit, task_dict):
     else:
         tasks = list(task_dict.items())
 
-    multi_turn_label = " (multi-turn)" if args.multi_turn else ""
+    interactive_label = " (interactive)" if args.interactive else ""
     schedule = interleaved_schedule(tasks, only=args.only, sides=sides)
-    print(f"\nRun schedule ({len(schedule)} runs){multi_turn_label}:", file=sys.stderr)
+    print(f"\nRun schedule ({len(schedule)} runs){interactive_label}:", file=sys.stderr)
     for i, (cat, _, side) in enumerate(schedule):
         print(f"  {i+1}. {cat} [{side}]", file=sys.stderr)
 
     # Run all experiments
     run_results = {}
     for category, prompts_or_prompt, side in schedule:
-        if args.multi_turn:
+        if args.interactive:
             result = run_multi_turn_single(
                 category, prompts_or_prompt, side, mode=args.mode,
                 save_raw=args.save_raw, branch_mode=branch_mode)
@@ -1283,9 +1284,9 @@ def main():
 
     # Resolve task dict
     if args.fast:
-        task_dict = FAST_MULTI_TURN_TASKS if args.multi_turn else FAST_TASKS
+        task_dict = FAST_MULTI_TURN_TASKS if args.interactive else FAST_TASKS
     else:
-        task_dict = MULTI_TURN_TASKS if args.multi_turn else TASKS
+        task_dict = MULTI_TURN_TASKS if args.interactive else TASKS
 
     assert shutil.which("claude"), "claude CLI not found"
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
