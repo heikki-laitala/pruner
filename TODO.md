@@ -57,10 +57,12 @@ Claude Code defers MCP tool schemas to save context: tools are listed by name on
 
 **Implementation:**
 
-- **Phase 1 (hook):** Inject brief summary (~2K tokens): keywords detected, subsystems identified, top 8 file pointers with one-line descriptions, top 10 symbols
-- **Phase 2 (skill, on-demand):** Model calls `pruner context --detail` to get full execution paths, code snippets, and expanded analysis
-- Hook output includes a note: "Run `pruner context --detail` for execution paths and code snippets"
-- This mirrors Claude Code's own deferred loading pattern and cuts upfront cost by 80%
+- **`pruner context` (default, hook):** Emit brief summary (~2K tokens): keywords detected, subsystems identified, top 8 file pointers with one-line descriptions, top 10 symbols. Include inline instruction: `→ Run pruner context --detail for execution paths and code snippets`. No CLAUDE.md change needed — the instruction travels with the hook output.
+- **`pruner context --detail` (on-demand, skill):** Return full focused output — execution paths, code snippets, expanded analysis. This is what the hook gives today (~10-15K tokens). Model calls it only when brief pointers aren't enough.
+- **SKILL.md:** Already defines `pruner context`. Add `--detail` flag documentation so the model knows when and how to invoke it.
+- **Hook script:** Change default `pruner context` invocation (no flags needed — brief becomes the default). The `--detail` flag is only used by the model via skill/tool call.
+- **Interactive session benefit:** On turn 0, model sees brief pointers and pulls `--detail` if needed. On follow-up turns, brief pointers are enough (or skipped by query-aware budget), cutting per-turn token cost from ~10K to ~2K or zero.
+- Mirrors Claude Code's own deferred loading pattern (ToolSearchTool) and cuts upfront cost by ~80%.
 
 ### 7. Pruner output competes with 40+ attachment types
 
