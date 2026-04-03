@@ -16,7 +16,7 @@ Examples:
     # Single-turn: all tasks, hook mode, interleaved schedule
     python3 tests/ab_test.py --save-raw
 
-    # Fast iteration: sonnet + express repo, 3 rounds
+    # Fast iteration: sonnet + nest repo, 3 rounds
     python3 tests/ab_test.py --fast --rounds 3 --save-raw
 
     # Fast multi-turn: 5 rounds with cache validation
@@ -61,11 +61,16 @@ Options:
     --only SIDE            Run only one side (with/without or baseline/feature)
     --baseline-branch REF  Compare pruner from REF vs current worktree (feature)
     --interactive           Run interactive (multi-turn) conversation scenarios
-    --fast                 Use sonnet model + smaller repo (express) for quick iteration
+    --fast                 Use sonnet model + smaller repo (nest) for quick iteration
     --model MODEL          Override model (default: opus, or sonnet with --fast)
     --rounds N             Run the full A/B test N times (default: 1)
-    --save-raw             Save raw stream-json output to /tmp/pruner-bench/ab-raw/
+    --save-raw             Save raw stream-json output (per-round subdirs with --rounds)
     --validate-cache       Warn if cache hit rates differ >10% between paired runs
+
+Output (with --save-raw):
+    /tmp/pruner-bench/ab-raw/results.json          Combined structured results
+    /tmp/pruner-bench/ab-raw/*.jsonl                Raw JSONL (single round)
+    /tmp/pruner-bench/ab-raw/round0/*.jsonl         Raw JSONL (multi-round)
 
 Requires:
   - `claude` CLI installed and logged in
