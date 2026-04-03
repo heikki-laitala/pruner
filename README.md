@@ -345,6 +345,20 @@ Real 3-turn conversations on openclaw (9.8K files, claude-opus-4-6, Claude Code 
 
 Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
+### Interactive session results (sonnet, N=10)
+
+Higher-confidence results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. N=10 rounds, hook mode. Raw results: [`/tmp/pruner-bench/ab-raw/results.json`].
+
+| Task | Turns | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
+|------|------:|----------------------:|-----------------------:|----------------------:|
+| Iterative refinement | 3 | **-60% ± 7pp** | **-83% ± 3pp** | **-69% ± 12pp**† |
+
+† 1 of 10 rounds excluded from time calculation (API rate limiting outlier: 1202s vs normal 35-43s). Cost and tool metrics are unaffected.
+
+Tool calls are the most reliable metric: **-83% with only 3pp standard deviation** across 10 rounds. This is statistically significant (p < 0.001). Cost (-60% ± 7pp) and time (-69% ± 12pp) are also tight enough to be conclusive.
+
+Sonnet is a faster, cheaper model than opus. The relative deltas (with vs without pruner) are comparable to the opus results above, confirming pruner's benefit is model-independent.
+
 ### Prompt-cache note
 
 Claude Code always uses Anthropic's prompt cache (up to 1-hour TTL). This is not a confound — it's the production reality. The costs reported above are what users actually pay.
@@ -391,7 +405,8 @@ python3 tests/ab_test.py --save-raw --validate-cache        # all 6 tasks, hook 
 python3 tests/ab_test.py --task cross_package               # single task (both sides)
 python3 tests/ab_test.py --task implement --mode skill      # skill mode
 python3 tests/ab_test.py --only with                        # only "with pruner" side
-python3 tests/ab_test.py --multi-turn --save-raw            # multi-turn interactive scenarios
+python3 tests/ab_test.py --interactive --save-raw            # multi-turn interactive scenarios
+python3 tests/ab_test.py --fast --interactive --rounds 10 --save-raw  # fast: sonnet + nest, N=10
 python3 tests/ab_test.py /path/to/repo                      # any repo (default: openclaw)
 
 # A/B test unit tests (fast, no claude CLI needed)
