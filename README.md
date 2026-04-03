@@ -6,7 +6,7 @@ AI coding agents (Claude Code, Codex, Copilot) spend most of their time explorin
 
 Pruner eliminates this. It pre-indexes your entire repository using plain structural code analysis — call graphs, symbols, imports, execution paths — and gives the agent exactly the context it needs in one shot. **No LLM, no embeddings, no API keys, no network calls.** Just fast, deterministic tree-sitter parsing that runs locally in seconds. The agent skips exploration and goes straight to work.
 
-**Best for one-shot tasks** (`claude -p "task"`). In interactive multi-turn sessions, pruner uses query-aware context budgets to avoid waste — same-topic follow-ups get brief output or are skipped entirely, while task switches get full context. See [when to use pruner](#when-to-use-pruner) and [interactive session results](#interactive-session-results) for details.
+**Best for one-shot tasks** (`claude -p "task"`). In interactive multi-turn sessions, pruner uses query-aware context budgets to avoid waste — same-topic follow-ups get brief output or are skipped entirely, while task switches get full context. See [when to use pruner](#when-to-use-pruner) for details.
 
 **Measured on real Claude Code sessions** ([full results](#ab-test-results-claude-code), openclaw, 9.8K files, N=3 per task):
 
