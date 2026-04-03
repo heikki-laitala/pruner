@@ -296,18 +296,19 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 | Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.66 / 48 tools | $0.70 / 23 tools | +6% | **-52%** | **-34%** |
 | Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.98 / 69 tools | $0.64 / 28 tools | **-35%** | **-59%** | **-50%** |
 
-### Results (sonnet, one-shot, N=5)
+### Results (sonnet, one-shot, N=5-10)
 
-Higher-confidence one-shot results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. N=5 rounds, hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n5.json`](tests/ab-tests/fast_oneshot_n5.json), analysis: [`tests/ab-tests/fast_oneshot_n5_analysis.txt`](tests/ab-tests/fast_oneshot_n5_analysis.txt).
+Higher-confidence one-shot results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. Hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n5.json`](tests/ab-tests/fast_oneshot_n5.json), [`tests/ab-tests/fast_implement_n10.json`](tests/ab-tests/fast_implement_n10.json).
 
-| Task | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
-|------|----------------------:|-----------------------:|----------------------:|
-| Understanding | **-64% ± 16pp** | **-86% ± 9pp** | **-63% ± 10pp** |
-| Implement | +14% ± 43pp | -34% ± 51pp | -14% ± 31pp |
+| Task | N | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
+|------|--:|----------------------:|-----------------------:|----------------------:|
+| Understanding | 5 | **-64% ± 16pp** | **-86% ± 9pp** | **-63% ± 10pp** |
+| Implement | 10 | -14%† | -33%† | **-29% ± 17pp**‡ |
 
-Understanding results are consistent with the opus/openclaw numbers above (-62% cost, -86% tools), confirming the benefit holds across models and repos. Implementation has high variance — one outlier round where without-pruner got lucky with only 8 tool calls (+90% cost). Excluding that round: -5% cost, -55% tools, -28% time.
+† Implement median. Mean is near zero (+2% cost, -23% tools) due to bimodal baseline behavior: without-pruner sometimes explores heavily (17-25 tools, pruner saves 20-37%) and sometimes is already efficient (9-10 tools, pruner adds slight overhead). Stdev is 52-57pp — too high for the mean to be meaningful. Median captures the typical case better.
+‡ Excluding 1 API rate-limiting outlier (560s vs normal 27-41s), N=9.
 
-Cache rates are nearly identical (~92% both sides). In a zero-cache hypothetical, understanding would save -87% — more than the actual -64%. See [cache analysis](#prompt-cache-note).
+Understanding results are consistent with the opus/openclaw numbers above (-62% cost, -86% tools), confirming the benefit holds across models and repos. Cache rates are nearly identical (~92% both sides). See [cache analysis](#prompt-cache-note).
 
 ### What the data shows
 
