@@ -104,7 +104,7 @@ DEFAULT_PINNED_COMMIT = "fb602c9b02014ec9a8bc256c149b39861c1435ab"
 # Fast repo: nestjs/nest (~2.1K files, TypeScript monorepo)
 FAST_REPO = "/tmp/pruner-bench/nest"
 FAST_REPO_URL = "https://github.com/nestjs/nest.git"
-FAST_PINNED_COMMIT = "v10.4.9"  # tag
+FAST_PINNED_COMMIT = "416830c3924b37ec354d4e15c14119519e389afc"  # v10.4.9
 
 PINNED_COMMIT = DEFAULT_PINNED_COMMIT
 
