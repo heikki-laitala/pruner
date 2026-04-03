@@ -326,6 +326,26 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 **Interactive sessions use query-aware budgets.** In multi-turn conversations, pruner compares each query against the previous (keywords + subsystems). Same-topic follow-ups get brief output (~3K tokens) or are skipped entirely when output is identical. Task switches get full focused context. This prevents the context accumulation problem where 5 turns of 10K tokens each would accelerate compaction.
 
+### Interactive session results
+
+Real 3-turn conversations on openclaw (9.8K files). Each scenario starts with an implementation prompt, then follow-up turns refine, correct, or extend the initial work. N=2 rounds, hook mode, pruner v0.2.6. Raw results: [`tests/ab-tests/multi_turn_run1.log`](tests/ab-tests/multi_turn_run1.log), [`tests/ab-tests/multi_turn_run2.log`](tests/ab-tests/multi_turn_run2.log).
+
+| Task | Turns | Δ cost (R1 / R2) | Δ tools (R1 / R2) | Δ time (R1 / R2) |
+|------|------:|------------------:|-------------------:|-----------------:|
+| Iterative refinement | 3 | **-24% / -29%** | **-62% / -55%** | **-32% / -33%** |
+| Implement + feedback | 3 | +27%† / -1% | **-33% / -44%** | +4% / **-23%** |
+| Debug + clarify + fix | 3 | +71%† / +9%† | **-20% / -40%** | +3186%† / **-13%** |
+
+† Cache bias warning: cache hit rates differed >10% between with/without sides, making cost comparisons unreliable for that run.
+
+**Iterative refinement is the clear winner.** Build a feature, make it configurable, add logging — the kind of incremental implementation work common in real sessions. Pruner saved 24-29% cost and 55-62% tool calls consistently across both rounds.
+
+**Tool calls drop across all scenarios.** Even when cost is ambiguous due to cache variance, tool calls are a clean metric (unaffected by caching). Every scenario showed 20-62% fewer tool calls with pruner — Claude spends less time exploring because the call graph context carries across turns.
+
+**Cost results are noisy for interactive sessions.** Token counts increase with pruner (context is included in every API call across all turns), but cost decreases when cached input tokens (10x cheaper) replace fresh tokens from tool calls. Cache hit rate differences between the with/without sides add variance — only `iterative_refinement` had consistent cache rates in both rounds.
+
+**Wall time variance is high.** The `debug_clarify_resolve` +3186% outlier in R1 reflects Claude taking a fundamentally different (slower) approach, not a pruner-specific issue. R2 showed -13% for the same scenario. Interactive sessions have more behavioral variance than one-shot tasks because each turn's strategy depends on previous turns.
+
 Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing is per premium request regardless of tool calls — pruner speeds up tasks but doesn't reduce cost.
 
 ### Prompt-cache note
