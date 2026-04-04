@@ -7,17 +7,15 @@ Reads raw JSONL logs from A/B tests and measures:
   - Navigation overhead: how many tool calls were pure exploration vs productive work?
 
 Usage:
-    # Analyze a single JSONL log pair (with vs without pruner)
-    python3 tests/posthoc_analysis.py /tmp/pruner-bench/ab-raw/round0/implement_with.jsonl
+    # Analyze saved results.json files (from tests/ab-tests/)
+    python3 tests/posthoc_analysis.py tests/ab-tests/fast_implement_n10.json --repo /tmp/pruner-bench/nest
+    python3 tests/posthoc_analysis.py tests/ab-tests/ --repo /tmp/pruner-bench/nest --pruner ./target/release/pruner
 
-    # Analyze all rounds in a directory
-    python3 tests/posthoc_analysis.py /tmp/pruner-bench/ab-raw/
-
-    # Analyze with pruner re-run (gets fresh suggestions to compare)
+    # Analyze raw JSONL logs (from /tmp/pruner-bench/ab-raw/)
     python3 tests/posthoc_analysis.py /tmp/pruner-bench/ab-raw/ --repo /tmp/pruner-bench/nest
 
     # Show per-file detail
-    python3 tests/posthoc_analysis.py /tmp/pruner-bench/ab-raw/round0/ --verbose
+    python3 tests/posthoc_analysis.py tests/ab-tests/fast_implement_n10.json --repo /tmp/pruner-bench/nest -v
 
 Output:
     Results printed to stderr. JSON summary to stdout (pipe to file).
@@ -134,14 +132,15 @@ def detect_workspace_prefix(calls):
 def get_pruner_suggestions(repo_path, query, pruner_bin="pruner"):
     """Run pruner context and extract suggested file paths."""
     try:
+        # Use --full to bypass query-aware budget (which may skip/brief repeated queries)
         result = subprocess.run(
-            [pruner_bin, "context", repo_path, query, "--format", "json"],
+            [pruner_bin, "context", repo_path, query, "--format", "json", "--full"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
             # Try cargo run
             result = subprocess.run(
-                ["cargo", "run", "--release", "--", "context", repo_path, query, "--format", "json"],
+                ["cargo", "run", "--release", "--", "context", repo_path, query, "--format", "json", "--full"],
                 capture_output=True, text=True, timeout=60,
                 cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
@@ -267,6 +266,114 @@ def analyze_log(jsonl_path, repo_path=None, pruner_bin="pruner", verbose=False):
                 print("  Precision: {:.1f}%  Recall: {:.1f}%".format(precision, recall), file=sys.stderr)
 
     return result
+
+
+def extract_tool_calls_from_results_json(tools_list):
+    """Extract tool calls from a results.json tools array (input_preview format).
+
+    Each entry has {name, input_preview} where input_preview is a string repr of a dict.
+    """
+    calls = []
+    for t in tools_list:
+        tool = t.get("name", "")
+        preview = t.get("input_preview", "")
+        file_path = None
+
+        if tool in ("Read", "Edit", "Write"):
+            # Extract file_path from preview string like "{'file_path': '/path/to/file'}"
+            # Handle truncated previews where closing quote may be missing
+            m = re.search(r"'file_path':\s*'([^']+)'?", preview)
+            if m:
+                path = m.group(1)
+                # Skip truncated paths (no file extension = probably cut off)
+                if re.search(r'\.\w+$', path):
+                    file_path = path
+
+        calls.append({
+            "tool": tool,
+            "file_path": file_path,
+            "is_navigation": tool in NAVIGATION_TOOLS,
+            "input": {},
+        })
+    return calls
+
+
+def analyze_results_json(results_path, repo_path=None, pruner_bin="pruner", verbose=False):
+    """Analyze a results.json file (from --save-raw A/B tests).
+
+    Returns list of result dicts, same format as analyze_log.
+    """
+    with open(results_path) as f:
+        data = json.load(f)
+
+    results = []
+    for round_idx, rd in enumerate(data.get("rounds", [])):
+        for r in rd:
+            category = r.get("category", "unknown")
+            for side_key, side_label in [("without", "without"), ("with_pruner", "with")]:
+                side = r.get(side_key, {})
+                tools_list = side.get("tools", [])
+                calls = extract_tool_calls_from_results_json(tools_list)
+
+                prefix = detect_workspace_prefix(calls)
+                files_read, files_written = extract_files_used(calls, prefix)
+                all_files_used = files_read | files_written
+
+                nav_calls = sum(1 for c in calls if c["is_navigation"])
+                prod_calls = sum(1 for c in calls if not c["is_navigation"])
+
+                result = {
+                    "file": "R{}/{}_{}".format(round_idx, category, side_label),
+                    "side": side_label,
+                    "total_tool_calls": len(calls),
+                    "navigation_calls": nav_calls,
+                    "productive_calls": prod_calls,
+                    "files_read": sorted(files_read),
+                    "files_written": sorted(files_written),
+                    "files_used": sorted(all_files_used),
+                    "files_used_count": len(all_files_used),
+                }
+
+                # Hit rate for with-pruner side
+                if side_label == "with" and repo_path:
+                    task_queries = {
+                        "understanding": "How does the NestJS dependency injection system work? Trace how @Injectable() decorators and the injector resolve dependencies.",
+                        "implement": "Add a request timing interceptor that measures how long each request takes and logs it. Find where interceptors are registered and add it there.",
+                        "iterative_refinement": "Add a request timing interceptor that measures how long each request takes and adds an X-Response-Time header to the response.",
+                    }
+                    query = task_queries.get(category)
+                    if query:
+                        key_files, all_suggested = get_pruner_suggestions(repo_path, query, pruner_bin)
+                        hits = files_read & all_suggested
+                        misses = files_read - all_suggested
+                        unused = all_suggested - files_read
+
+                        precision = len(hits) / len(all_suggested) * 100 if all_suggested else 0
+                        recall = len(hits) / len(files_read) * 100 if files_read else 0
+
+                        result.update({
+                            "task": category,
+                            "query": query,
+                            "pruner_suggested": sorted(all_suggested),
+                            "pruner_key_files": sorted(key_files),
+                            "hits": sorted(hits),
+                            "misses": sorted(misses),
+                            "unused_suggestions": sorted(unused),
+                            "files_created": sorted(files_written),
+                            "precision": round(precision, 1),
+                            "recall": round(recall, 1),
+                        })
+
+                        if verbose:
+                            print("\n  R{}/{} [{}] — {}".format(
+                                round_idx, category, side_label, category), file=sys.stderr)
+                            print("  Pruner suggested {} files, Claude read {} files, created {} files".format(
+                                len(all_suggested), len(files_read), len(files_written)), file=sys.stderr)
+                            print("  Hits: {}  Misses: {}  Precision: {:.0f}%  Recall: {:.0f}%".format(
+                                len(hits), len(misses), precision, recall), file=sys.stderr)
+
+                results.append(result)
+    return results
 
 
 def find_jsonl_files(path):
@@ -400,21 +507,62 @@ def print_summary(results, file=sys.stderr):
                 print("  {} ({}x)".format(f, count), file=file)
 
 
+def find_results_json_files(path):
+    """Find results.json files (from --save-raw A/B tests)."""
+    p = Path(path)
+    if p.is_file() and p.name.endswith(".json"):
+        return [str(p)]
+    if p.is_dir():
+        return sorted(str(f) for f in p.glob("*.json")
+                       if f.name != "results.json"  # skip generic name, prefer specific
+                       or not list(p.glob("fast_*.json")))
+    return []
+
+
 def main():
     args = parse_args()
-    jsonl_files = find_jsonl_files(args.path)
-
-    if not jsonl_files:
-        print("No JSONL files found at {}".format(args.path), file=sys.stderr)
-        sys.exit(1)
-
-    print("Found {} JSONL files".format(len(jsonl_files)), file=sys.stderr)
 
     results = []
-    for f in jsonl_files:
-        r = analyze_log(f, repo_path=args.repo, pruner_bin=args.pruner, verbose=args.verbose)
-        if r:
-            results.append(r)
+    p = Path(args.path)
+
+    # Auto-detect: results.json files or raw JSONL logs
+    if p.is_file() and p.suffix == ".json":
+        # Single results.json file
+        print("Analyzing results.json: {}".format(args.path), file=sys.stderr)
+        results = analyze_results_json(args.path, repo_path=args.repo,
+                                       pruner_bin=args.pruner, verbose=args.verbose)
+    elif p.is_dir():
+        # Check for both formats
+        json_files = sorted(p.glob("*.json"))
+        jsonl_files = find_jsonl_files(args.path)
+
+        if json_files and not jsonl_files:
+            # Only results.json files
+            for jf in json_files:
+                print("Analyzing results.json: {}".format(jf.name), file=sys.stderr)
+                results.extend(analyze_results_json(str(jf), repo_path=args.repo,
+                                                    pruner_bin=args.pruner, verbose=args.verbose))
+        elif jsonl_files:
+            # Raw JSONL logs (preferred — more detail)
+            print("Found {} JSONL files".format(len(jsonl_files)), file=sys.stderr)
+            for f in jsonl_files:
+                r = analyze_log(f, repo_path=args.repo, pruner_bin=args.pruner, verbose=args.verbose)
+                if r:
+                    results.append(r)
+        else:
+            print("No JSONL or results.json files found at {}".format(args.path), file=sys.stderr)
+            sys.exit(1)
+    else:
+        # Single JSONL file
+        jsonl_files = find_jsonl_files(args.path)
+        if not jsonl_files:
+            print("No files found at {}".format(args.path), file=sys.stderr)
+            sys.exit(1)
+        print("Found {} JSONL files".format(len(jsonl_files)), file=sys.stderr)
+        for f in jsonl_files:
+            r = analyze_log(f, repo_path=args.repo, pruner_bin=args.pruner, verbose=args.verbose)
+            if r:
+                results.append(r)
 
     if results:
         print_summary(results)
