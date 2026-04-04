@@ -75,8 +75,6 @@ if [ -n "$OUTPUT" ]; then
   echo "## Pruner context (pre-computed codebase analysis)"
   echo ""
   echo "$OUTPUT"
-  echo ""
-  echo "Use this context to work directly. Only read source files if a snippet is truncated. Do not re-explore with grep/glob for the same keywords."
 fi
 
 exit 0
