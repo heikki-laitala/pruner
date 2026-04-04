@@ -1,5 +1,7 @@
 # Pruner
 
+Pre-computed code context engine for AI coding agents. Tree-sitter call graphs + keyword matching, no LLM. Injects relevant files, symbols, and execution paths via Claude Code hook.
+
 ## Engineering Principles
 
 ### KISS
