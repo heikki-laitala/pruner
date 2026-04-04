@@ -1,4 +1,6 @@
-## Pruner — automatic code context
+# Pruner
+
+## Automatic code context
 
 Before making code changes, fixing bugs, refactoring, or answering questions about this codebase:
 
