@@ -446,6 +446,10 @@ python3 tests/ab_test_copilot.py /tmp/pruner-bench/openclaw
 python3 tests/ab_test_copilot.py --mode skill --task cross_package --runs 3 /tmp/pruner-bench/openclaw
 python3 tests/ab_test_copilot.py --mode hook --task implement --runs 3 --save-raw /tmp/pruner-bench/openclaw
 
+# Post-hoc hit rate analysis (no claude CLI needed, runs on saved JSONL logs)
+python3 tests/posthoc_analysis.py /tmp/pruner-bench/ab-raw/ --repo /tmp/pruner-bench/nest --pruner ./target/release/pruner
+python3 tests/posthoc_analysis.py /tmp/pruner-bench/ab-raw/ --repo /tmp/pruner-bench/nest --pruner ./target/release/pruner -v  # verbose
+
 # Pruner performance benchmark (no claude CLI needed, ~2 min, clones openclaw)
 make bench
 ```
