@@ -23,10 +23,19 @@ A hook runs `pruner context` on every prompt submit and injects the output as ad
 
 ## When you need more detail
 
+The hook output is a brief summary (~2K tokens) with file/symbol pointers. If you need execution paths and code snippets, run:
+
+```bash
+pruner context /absolute/path/to/repo "<query>" --detail
+```
+
+This returns the full focused output (~10-15K tokens) with code snippets and execution path trees.
+
 - **Single symbol**: `pruner show-symbol /path/to/repo "<name>"` — signature, callers, callees.
 - **Single file**: `pruner show-file /path/to/repo "<path>"` — all symbols and imports.
 
 ## Other modes
 
-- `--brief` — metadata only, no snippets (~3K tokens). Use when you only need file/symbol pointers.
+- `--detail` — execution paths + code snippets (~10-15K tokens). Use when brief pointers aren't enough.
+- `--brief` — metadata only, no snippets (~2K tokens). Use when you only need file/symbol pointers.
 - `--full` — uncapped output with all snippets (~50-70K tokens). Use for deep analysis.

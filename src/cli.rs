@@ -3,7 +3,7 @@
 
 use crate::budget;
 use crate::context::{
-    self, ContextMode, detect_mode, format_context_json, format_context_summary,
+    self, ContextMode, format_context_json, format_context_summary,
     format_context_text,
 };
 use crate::db::IndexDb;
@@ -123,6 +123,9 @@ enum Commands {
         /// Brief mode: metadata only, no snippets (~3K tokens)
         #[arg(long)]
         brief: bool,
+        /// Detailed mode: execution paths + code snippets (~10-15K tokens)
+        #[arg(long)]
+        detail: bool,
         /// Full mode: uncapped output (~50-70K tokens on large repos)
         #[arg(long)]
         full: bool,
@@ -252,13 +255,16 @@ pub fn run() -> Result<()> {
             format,
             max_snippet_lines,
             brief,
+            detail,
             full,
             output,
         } => {
-            let mode = if brief {
-                ContextMode::Brief
-            } else if full {
+            let mode = if full {
                 ContextMode::Full
+            } else if detail {
+                ContextMode::Focused
+            } else if brief {
+                ContextMode::Brief
             } else {
                 ContextMode::Auto
             };
@@ -976,25 +982,10 @@ fn cmd_context(
         None
     };
 
-    // Resolve auto mode: check query-aware budget first, then shape-based detection
+    // Resolve auto mode: always brief (deferred context — model can request --detail)
     let resolved = if mode == ContextMode::Auto {
-        let is_same_topic = prev_query.as_ref().is_some_and(|prev| {
-            budget::decide_budget(&result.keywords, &result.subsystems, prev, None)
-                == budget::Budget::Brief
-        });
-        if is_same_topic {
-            eprintln!("Mode: auto → brief (same topic as previous query)");
-            ContextMode::Brief
-        } else {
-            let detected = detect_mode(&result);
-            let label = match detected {
-                ContextMode::Brief => "brief (narrow task: few files, single subsystem)",
-                ContextMode::Focused => "focused (broad task: multiple files/subsystems)",
-                _ => unreachable!(),
-            };
-            eprintln!("Mode: auto → {label}");
-            detected
-        }
+        eprintln!("Mode: auto → brief (deferred context; use --detail for full output)");
+        ContextMode::Brief
     } else {
         mode
     };
@@ -1164,7 +1155,7 @@ fn cmd_context_multi(
         let repo_path = subrepo.canonicalize()?;
 
         let resolved = if mode == ContextMode::Auto {
-            detect_mode(result)
+            ContextMode::Brief
         } else {
             mode
         };

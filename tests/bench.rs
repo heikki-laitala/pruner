@@ -215,7 +215,10 @@ fn bench_real_repo() {
                 "full" => {
                     args.push("--full");
                 }
-                _ => {} // focused is the default
+                "focused" => {
+                    args.push("--detail");
+                }
+                _ => {}
             }
             let child = Command::new(&bin)
                 .args(&args)
