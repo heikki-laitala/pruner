@@ -114,7 +114,7 @@ Current A/B tests run full Claude sessions end-to-end (43 min to 4+ hours per N=
 
 **Offline evaluation (no API calls):**
 
-- **Post-hoc hit rate analysis:** Script that reads existing raw JSONL logs and correlates pruner's suggested files with Claude's actual Read/Edit calls. Measures precision (did Claude use what pruner suggested?) and recall (did Claude read files pruner missed?). Runs in seconds on saved logs.
+- ~~**Post-hoc hit rate analysis:** Script that reads existing raw JSONL logs and correlates pruner's suggested files with Claude's actual Read/Edit calls. Measures precision (did Claude use what pruner suggested?) and recall (did Claude read files pruner missed?). Runs in seconds on saved logs.~~ **Done** (`tests/posthoc_analysis.py`). Results: recall 73% overall (100% understanding, 97% iterative refinement, 42% implement). Precision 9% (suggests ~25 files, Claude uses ~3-5). Navigation calls drop 80%. Most common implement miss: module registration files (`app.module.ts`) not in call graph.
 - **Token budget simulation:** Replay recorded queries through budget logic to measure skip/brief/focused rates without running Claude. Validates budget changes instantly.
 - **Output diff measurement:** Run `pruner context` with old vs new code on the same queries, compare token counts and file rankings. No Claude needed.
 
@@ -224,6 +224,8 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Query precision fixes: meta-question false positive reduction, SQL LIKE wildcard escaping, test-intent ordering before specificity filtering
 - [x] Root directory indexing for multi-repo setups (`--no-root` flag to opt out)
 - [x] Query-aware context budget (same-topic → brief, identical output → skip, new topic → focused)
+- [x] Post-hoc hit rate analysis (`tests/posthoc_analysis.py`) — offline precision/recall from saved JSONL logs
+- [x] Fast A/B test mode (`--fast` sonnet + nest, `--rounds N`, `--interactive`)
 
 ## Explored but rejected
 
