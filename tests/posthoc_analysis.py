@@ -308,7 +308,13 @@ def analyze_results_json(results_path, repo_path=None, pruner_bin="pruner", verb
 
     results = []
     for round_idx, rd in enumerate(data.get("rounds", [])):
-        for r in rd:
+        # Normalize: rounds can be a list of task dicts (fast_*.json)
+        # or a dict with "tasks" or "results" key (results.json, results_multi_repo.json)
+        if isinstance(rd, dict):
+            task_list = rd.get("tasks") or rd.get("results") or []
+        else:
+            task_list = rd
+        for r in task_list:
             category = r.get("category", "unknown")
             for side_key, side_label in [("without", "without"), ("with_pruner", "with")]:
                 side = r.get(side_key, {})

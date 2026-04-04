@@ -7,10 +7,12 @@ import pytest
 
 from posthoc_analysis import (
     extract_tool_calls,
+    extract_tool_calls_from_results_json,
     extract_files_used,
     detect_workspace_prefix,
     detect_task_query,
     is_followup_turn,
+    analyze_results_json,
     NAVIGATION_TOOLS,
     PRODUCTIVE_TOOLS,
 )
@@ -223,3 +225,59 @@ class TestIsFollowupTurn:
 
     def test_turn10_is_followup(self):
         assert is_followup_turn("implement_with_turn10.jsonl")
+
+
+def _make_results_json(rounds, tmpdir):
+    """Write a results.json file with given rounds structure."""
+    path = os.path.join(tmpdir, "results.json")
+    with open(path, "w") as f:
+        json.dump({"rounds": rounds}, f)
+    return path
+
+
+def _make_task_record(category="understanding"):
+    """Create a minimal task record with tool calls on both sides."""
+    return {
+        "category": category,
+        "without": {
+            "tools": [
+                {"name": "Read", "input_preview": "{'file_path': '/ws/src/a.ts'}"},
+                {"name": "Grep", "input_preview": "{'pattern': 'auth'}"},
+            ],
+        },
+        "with_pruner": {
+            "tools": [
+                {"name": "Read", "input_preview": "{'file_path': '/ws/src/b.ts'}"},
+            ],
+        },
+    }
+
+
+class TestAnalyzeResultsJsonRoundFormats:
+    def test_list_format_rounds(self, tmp_path):
+        """Rounds as list of task lists (fast_*.json format)."""
+        rounds = [[_make_task_record()]]
+        path = _make_results_json(rounds, str(tmp_path))
+        results = analyze_results_json(path)
+        assert len(results) == 2  # without + with sides
+
+    def test_dict_format_rounds_with_tasks_key(self, tmp_path):
+        """Rounds as dicts with 'tasks' key (results.json format)."""
+        rounds = [{"round": 0, "timestamp": "2026-01-01", "tasks": [_make_task_record()]}]
+        path = _make_results_json(rounds, str(tmp_path))
+        results = analyze_results_json(path)
+        assert len(results) == 2
+
+    def test_dict_format_rounds_with_results_key(self, tmp_path):
+        """Rounds as dicts with 'results' key (results_multi_repo.json format)."""
+        rounds = [{"round": 0, "timestamp": "2026-01-01", "results": [_make_task_record()]}]
+        path = _make_results_json(rounds, str(tmp_path))
+        results = analyze_results_json(path)
+        assert len(results) == 2
+
+    def test_dict_format_empty_tasks(self, tmp_path):
+        """Dict round with no tasks/results key returns empty."""
+        rounds = [{"round": 0, "timestamp": "2026-01-01"}]
+        path = _make_results_json(rounds, str(tmp_path))
+        results = analyze_results_json(path)
+        assert len(results) == 0
