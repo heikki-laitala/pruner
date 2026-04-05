@@ -29,8 +29,10 @@ IMPORTANT: Always pass the repo as an absolute path argument. Do NOT use `cd <re
 3. **Read source files only if needed** — if a snippet is truncated or you need surrounding context, use the file:line pointers from the output.
 4. **Do NOT re-explore** — pruner already searched the index. Do not grep or glob for the same keywords.
 
-## When you need more detail
+## When to escalate
 
+- **Read `.pruner/context.md`** — if available, contains full execution paths and code snippets from the last hook run. Zero cost.
+- **Run with `--detail`** — regenerates focused output (~10-15K tokens). Use for understanding/debugging queries.
 - **Single symbol**: `pruner show-symbol /path/to/repo "<name>"` — signature, callers, callees.
 - **Single file**: `pruner show-file /path/to/repo "<path>"` — all symbols and imports.
 
