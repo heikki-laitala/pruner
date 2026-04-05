@@ -3,8 +3,7 @@
 
 use crate::budget;
 use crate::context::{
-    self, ContextMode, format_context_json, format_context_summary,
-    format_context_text,
+    self, ContextMode, format_context_json, format_context_summary, format_context_text,
 };
 use crate::db::IndexDb;
 use crate::indexer;
