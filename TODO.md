@@ -53,24 +53,6 @@ Claude Code auto-injects: IDE selection (selected lines), open file path, LSP di
 - Read CLAUDE.md if present, extract directory/subsystem hints to boost scoring
 - Skip snippets for files already covered by IDE selection
 
-### 6. Deferred context mode (two-phase output)
-
-Claude Code defers MCP tool schemas to save context: tools are listed by name only, and full schemas are fetched on-demand via ToolSearchTool. Pruner could adopt the same pattern.
-
-**Why this matters:**
-
-- Current hook mode dumps 10-15K tokens upfront regardless of whether the model needs all of it
-- Many queries only need the file pointers (model reads the files itself)
-- Full execution paths and snippets are only needed for understanding/tracing tasks
-
-**Implementation:**
-
-- **`pruner context` (default, hook):** Emit brief summary (~2K tokens): keywords detected, subsystems identified, top 8 file pointers with one-line descriptions, top 10 symbols. Include inline instruction: `→ Run pruner context --detail for execution paths and code snippets`. No CLAUDE.md change needed — the instruction travels with the hook output.
-- **`pruner context --detail` (on-demand, skill):** Return full focused output — execution paths, code snippets, expanded analysis. This is what the hook gives today (~10-15K tokens). Model calls it only when brief pointers aren't enough.
-- **SKILL.md:** Already defines `pruner context`. Add `--detail` flag documentation so the model knows when and how to invoke it.
-- **Hook script:** Change default `pruner context` invocation (no flags needed — brief becomes the default). The `--detail` flag is only used by the model via skill/tool call.
-- **Interactive session benefit:** On turn 0, model sees brief pointers and pulls `--detail` if needed. On follow-up turns, brief pointers are enough (or skipped by query-aware budget), cutting per-turn token cost from ~10K to ~2K or zero.
-- Mirrors Claude Code's own deferred loading pattern (ToolSearchTool) and cuts upfront cost by ~80%.
 
 ### 7. Pruner output competes with 40+ attachment types
 
@@ -226,6 +208,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Query-aware context budget (same-topic → brief, identical output → skip, new topic → focused)
 - [x] Post-hoc hit rate analysis (`tests/posthoc_analysis.py`) — offline precision/recall from saved JSONL logs
 - [x] Fast A/B test mode (`--fast` sonnet + nest, `--rounds N`, `--interactive`)
+- [x] Deferred context mode: brief default (~2.5K tokens), `--detail` for full output. Full context written to `.pruner/context.md` for zero-cost escalation. A/B tested: -24% cost, -17% tools on implement tasks (N=3)
 
 ## Explored but rejected
 
