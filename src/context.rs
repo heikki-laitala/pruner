@@ -154,7 +154,23 @@ pub fn generate_context(
     } else {
         mode
     };
-    let limits = Limits::for_mode(resolved, max_snippet_lines);
+    let mut limits = Limits::for_mode(resolved, max_snippet_lines);
+
+    // High-confidence snippet: in brief mode, if the top symbol has an exact
+    // keyword match, include 1 snippet so the model has a concrete example.
+    if resolved == ContextMode::Brief {
+        if let Some(top_sym) = query.matching_symbols.first() {
+            let name_lower = top_sym.name.to_lowercase();
+            let has_exact = query
+                .keywords
+                .iter()
+                .any(|kw| name_lower == *kw || name_lower.contains(kw));
+            if has_exact {
+                limits.max_snippets = 1;
+                limits.max_snippet_lines = max_snippet_lines.min(30);
+            }
+        }
+    }
 
     // Execution paths
     let execution_paths: Vec<Vec<PathEntry>> = query
@@ -376,6 +392,19 @@ pub fn format_context_summary(ctx: &ContextPackage) -> String {
         }
     }
 
+    // High-confidence snippet (at most 1 in brief mode)
+    if !ctx.snippets.is_empty() {
+        out.push_str("\nCode snippet:\n");
+        let s = &ctx.snippets[0];
+        out.push_str(&format!(
+            "  {} ({}:{}-{})\n",
+            s.symbol, s.file, s.line_start, s.line_end
+        ));
+        out.push_str("```\n");
+        out.push_str(&s.code);
+        out.push_str("\n```\n");
+    }
+
     out.push_str("\nUse this context to work directly. Only read source files if a snippet is truncated. Do not re-explore with grep/glob for the same keywords.\n");
 
     out
@@ -583,11 +612,52 @@ mod tests {
         let ctx = generate_context(&result, tmp.path(), 50, ContextMode::Brief).unwrap();
 
         assert!(!ctx.key_files.is_empty());
-        // Brief mode limits snippets to 10 lines
-        for snippet in &ctx.snippets {
-            let line_count = snippet.code.lines().count();
-            assert!(line_count <= 10);
-        }
+        // Brief mode with exact keyword match: should include 1 high-confidence snippet
+        assert_eq!(
+            ctx.snippets.len(),
+            1,
+            "brief mode should include 1 snippet for exact keyword match"
+        );
+        assert!(ctx.snippets[0].symbol.contains("login"));
+    }
+
+    #[test]
+    fn test_generate_context_brief_no_snippet_without_match() {
+        use crate::db::IndexDb;
+        use crate::query;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("login.rs"),
+            "fn login() {\n    verify();\n}\nfn verify() {}\n",
+        )
+        .unwrap();
+
+        let db_path = tmp.path().join(".pruner");
+        std::fs::create_dir_all(&db_path).unwrap();
+        let db = IndexDb::open(&db_path.join("index.db")).unwrap();
+
+        let fid = db
+            .insert_file("src/login.rs", Some("rust"), 50, 4, false, 0)
+            .unwrap();
+        db.insert_symbol(fid, "login", "function", 1, 3, None, None)
+            .unwrap();
+        db.insert_symbol(fid, "verify", "function", 4, 4, None, None)
+            .unwrap();
+
+        // Query with a keyword that doesn't match any symbol name exactly
+        let result = query::analyze_query("how does authentication work", &db).unwrap();
+        let ctx = generate_context(&result, tmp.path(), 50, ContextMode::Brief).unwrap();
+
+        // No exact keyword match → no snippets in brief mode
+        assert!(
+            ctx.snippets.is_empty(),
+            "brief mode should have no snippets without exact keyword match, got: {:?}",
+            ctx.snippets.iter().map(|s| &s.symbol).collect::<Vec<_>>()
+        );
     }
 
     #[test]
