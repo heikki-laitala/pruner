@@ -990,7 +990,16 @@ fn cmd_context(
         mode
     };
 
-    let ctx = context::generate_context(&result, &repo_path, max_snippet_lines, resolved)?;
+    let index_file_count = db.file_count().unwrap_or(0);
+    let index_symbol_count = db.symbol_count().unwrap_or(0);
+    let ctx = context::generate_context_with_stats(
+        &result,
+        &repo_path,
+        max_snippet_lines,
+        resolved,
+        index_file_count,
+        index_symbol_count,
+    )?;
 
     // Hash the full text representation for identical-output detection,
     // regardless of display format.  Brief mode omits snippets, so hashing
@@ -1014,8 +1023,14 @@ fn cmd_context(
 
     if resolved == ContextMode::Brief {
         // Write *full* context to .pruner/context.md so the LLM can drill deeper
-        let full_ctx =
-            context::generate_context(&result, &repo_path, max_snippet_lines, ContextMode::Full)?;
+        let full_ctx = context::generate_context_with_stats(
+            &result,
+            &repo_path,
+            max_snippet_lines,
+            ContextMode::Full,
+            index_file_count,
+            index_symbol_count,
+        )?;
         let ctx_path = pruner_dir.join("context.md");
         let full_text = format_context_text(&full_ctx);
         fs::write(&ctx_path, &full_text)?;
@@ -1095,7 +1110,7 @@ fn cmd_context_multi(
         .filter_map(|s| s.canonicalize().ok())
         .collect();
 
-    let mut scored: Vec<(&PathBuf, query::QueryResult, i32)> = Vec::new();
+    let mut scored: Vec<(&PathBuf, query::QueryResult, i32, i64, i64)> = Vec::new();
     for subrepo in subrepos {
         let exclude = if subrepo.as_path() == parent {
             root_exclude.as_slice()
@@ -1110,7 +1125,9 @@ fn cmd_context_multi(
         }
 
         let score = result.relevance_score();
-        scored.push((subrepo, result, score));
+        let fc = db.file_count().unwrap_or(0);
+        let sc = db.symbol_count().unwrap_or(0);
+        scored.push((subrepo, result, score, fc, sc));
     }
 
     if scored.is_empty() {
@@ -1119,11 +1136,11 @@ fn cmd_context_multi(
     }
 
     // Phase 2: filter out low-scoring subrepos relative to the best
-    let max_score = scored.iter().map(|(_, _, s)| *s).max().unwrap_or(0);
+    let max_score = scored.iter().map(|(_, _, s, _, _)| *s).max().unwrap_or(0);
     let threshold = (max_score as f64 * MULTI_REPO_SCORE_THRESHOLD) as i32;
 
     let mut skipped_names: Vec<String> = Vec::new();
-    scored.retain(|(subrepo, _, score)| {
+    scored.retain(|(subrepo, _, score, _, _)| {
         let name = multi_repo_name(subrepo, parent);
         if *score < threshold {
             eprintln!("  Skipping {name} (score {score} < threshold {threshold})");
@@ -1145,7 +1162,7 @@ fn cmd_context_multi(
     // Inject multi-repo awareness header for the LLM
     let included_names: Vec<String> = scored
         .iter()
-        .map(|(s, _, _)| multi_repo_name(s, parent))
+        .map(|(s, _, _, _, _)| multi_repo_name(s, parent))
         .collect();
 
     if fmt != "json" {
@@ -1160,7 +1177,7 @@ fn cmd_context_multi(
         combined_text.push_str("\n\n");
     }
 
-    for (subrepo, result, _score) in &scored {
+    for (subrepo, result, _score, fc, sc) in &scored {
         let repo_path = subrepo.canonicalize()?;
 
         let resolved = if mode == ContextMode::Auto {
@@ -1169,7 +1186,14 @@ fn cmd_context_multi(
             mode
         };
 
-        let ctx = context::generate_context(result, &repo_path, max_snippet_lines, resolved)?;
+        let ctx = context::generate_context_with_stats(
+            result,
+            &repo_path,
+            max_snippet_lines,
+            resolved,
+            *fc,
+            *sc,
+        )?;
 
         let repo_name = multi_repo_name(subrepo, parent);
 
