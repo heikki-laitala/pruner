@@ -21,15 +21,14 @@ A hook runs `pruner context` on every prompt submit and injects the output as ad
 3. **Do NOT re-explore** — pruner already searched the index. Do not grep or glob for the same keywords.
 4. **Do NOT run `pruner context` again** — it already ran via the hook.
 
-## When you need more detail
+## When to escalate
 
-The hook output is a brief summary (~2K tokens) with file/symbol pointers. If you need execution paths and code snippets, run:
+The hook output is a brief summary (~2K tokens) with file/symbol pointers. For deeper context:
 
-```bash
-pruner context /absolute/path/to/repo "<query>" --detail
-```
+1. **Read `.pruner/context.md`** — already written with full execution paths and code snippets. Zero cost, instant. Use this for understanding queries ("how does X work?"), debugging, or when you need to trace a flow.
+2. **Run `pruner context --detail`** — regenerates focused output (~10-15K tokens). Use only if `.pruner/context.md` is stale or missing.
 
-This returns the full focused output (~10-15K tokens) with code snippets and execution path trees.
+For **code changes, refactoring, and simple lookups**, brief pointers are sufficient — just read the specific files listed.
 
 - **Single symbol**: `pruner show-symbol /path/to/repo "<name>"` — signature, callers, callees.
 - **Single file**: `pruner show-file /path/to/repo "<path>"` — all symbols and imports.

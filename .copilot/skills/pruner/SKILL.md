@@ -27,8 +27,10 @@ Use an absolute repo path. Avoid `cd ... && pruner context .` in tool calls.
 4. Read source files only if a snippet is truncated or you need nearby lines.
 5. Do not re-explore the same query with grep/glob right after pruner.
 
-## More detail
+## When to escalate
 
+- **Read `.pruner/context.md`** — if available, contains full execution paths and code snippets from the last run. Zero cost.
+- **Run with `--detail`** — regenerates focused output (~10-15K tokens). Use for understanding/debugging queries.
 - `pruner show-symbol /path/to/repo "<name>"` for callers/callees/signature.
 - `pruner show-file /path/to/repo "<path>"` for symbols/imports in one file.
 
