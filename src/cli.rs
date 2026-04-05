@@ -3,7 +3,8 @@
 
 use crate::budget;
 use crate::context::{
-    self, ContextMode, format_context_json, format_context_summary, format_context_text,
+    self, ContextMode, brief_guidance, format_context_json, format_context_summary,
+    format_context_text,
 };
 use crate::db::IndexDb;
 use crate::indexer;
@@ -1021,12 +1022,21 @@ fn cmd_context(
 
         match fmt {
             "json" => println!("{}", format_context_json(&ctx)?),
+            "both" => {
+                print!("{}", format_context_summary(&ctx));
+                print!("{}", brief_guidance());
+                if let Some(out) = output {
+                    fs::write(out.join("context.json"), format_context_json(&ctx)?)?;
+                    fs::write(out.join("context.md"), format_context_text(&full_ctx))?;
+                }
+            }
             _ => {
                 let age = format_index_age(repo);
                 if !age.is_empty() {
                     eprintln!("Index age: {age}");
                 }
                 print!("{}", format_context_summary(&ctx));
+                print!("{}", brief_guidance());
                 eprintln!("Full context: {}", ctx_path.display());
             }
         }
@@ -1182,6 +1192,11 @@ fn cmd_context_multi(
                 }
             }
         }
+    }
+
+    // Append brief guidance once (not per-repo) when in brief mode
+    if (mode == ContextMode::Auto || mode == ContextMode::Brief) && fmt != "json" {
+        combined_text.push_str(brief_guidance());
     }
 
     match fmt {
