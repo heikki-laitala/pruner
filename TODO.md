@@ -103,13 +103,13 @@ Current A/B tests run full Claude sessions end-to-end (43 min to 4+ hours per N=
 
 Claude Code uses Anthropic's prompt cache (up to 1-hour TTL for eligible users, 5-min otherwise). It has sophisticated cache-break detection that hashes system prompts, tool schemas, and cache_control markers. Any change in pruner's output between turns invalidates the cache suffix, potentially wasting 50-80K cached tokens.
 
-**Implementation:**
+**Status: Done.** Most items were already implemented; the remaining non-determinism (sort tiebreakers) is now fixed:
 
-- **Stabilize output ordering**: When scores are close (within 5%), sort alphabetically instead of by score
-- **Consistent template structure**: Identical markdown sections across queries — only content changes
-- **Two-part output**: Stable "project structure" section (cached, changes rarely) + volatile "query-specific" section (recomputed per prompt)
-- **Output hashing**: Hash pruner's output and compare with `.pruner/last-output-hash`. If identical, return a "no change" signal so the hook script skips injection entirely — prevents unnecessary cache invalidation
-- **Deterministic formatting**: Avoid timestamps, run IDs, or any non-deterministic content in the output
+- **Stabilize output ordering**: ~~When scores are close (within 5%), sort alphabetically instead of by score~~ → Alphabetical tiebreakers on all 3 sort sites (symbol, file, post-dedup)
+- **Consistent template structure**: Already consistent — identical markdown sections across queries
+- **Two-part output**: YAGNI — output is already brief (~2.5K tokens) with query-specific content only
+- **Output hashing**: Already implemented via budget system (`hash_output` + `last-query.json`)
+- **Deterministic formatting**: Already clean — no timestamps, run IDs, or non-deterministic content
 
 ## Low priority / future
 
@@ -193,6 +193,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Fast A/B test mode (`--fast` sonnet + nest, `--rounds N`, `--interactive`)
 - [x] Deferred context mode: brief default (~2.5K tokens), `--detail` for full output. Full context written to `.pruner/context.md` for zero-cost escalation. A/B tested: -24% cost, -17% tools on implement tasks (N=3)
 - [x] Structural ranking transparency: authority header with index stats, per-file reasons (symbol/keyword hit counts), ranking note. A/B tested: neutral on cost/tools (N=3), no regression
+- [x] Prompt cache-friendly output: deterministic sort ordering via alphabetical tiebreakers on all sort sites. Output hashing and skip already implemented via budget system. No timestamps or non-deterministic content
 
 ## Explored but rejected
 
