@@ -697,7 +697,7 @@ fn score_and_rank_symbols<'a>(
         .iter()
         .map(|s| (s, score_symbol(s, keywords, file_scores)))
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
     scored
 }
 
@@ -819,7 +819,7 @@ fn score_and_rank_files<'a>(
             (f, score)
         })
         .collect();
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.path.cmp(&b.0.path)));
 
     // 3rd+ file with same name gets halved score
     let mut name_counts: HashMap<&str, usize> = HashMap::new();
@@ -834,7 +834,7 @@ fn score_and_rank_files<'a>(
         }
     }
     if had_dupes {
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.path.cmp(&b.0.path)));
     }
     scored
 }
@@ -2018,5 +2018,64 @@ mod tests {
             ..empty
         };
         assert!(with_files.relevance_score() > 0);
+    }
+
+    #[test]
+    fn test_file_sort_deterministic_with_equal_scores() {
+        let files = vec![
+            FileRow {
+                id: 1,
+                path: "src/zebra.rs".into(),
+                language: Some("rust".into()),
+                size: 100,
+                line_count: 10,
+                is_test: false,
+            },
+            FileRow {
+                id: 2,
+                path: "src/alpha.rs".into(),
+                language: Some("rust".into()),
+                size: 100,
+                line_count: 10,
+                is_test: false,
+            },
+        ];
+        // Both files have no keyword match → equal scores
+        let ranked = score_and_rank_files(&files, &["unrelated".into()], &HashMap::new(), false);
+        assert_eq!(ranked.len(), 2);
+        // Alphabetical tiebreaker: alpha before zebra
+        assert!(ranked[0].0.path < ranked[1].0.path);
+    }
+
+    #[test]
+    fn test_symbol_sort_deterministic_with_equal_scores() {
+        let symbols = vec![
+            SymbolRow {
+                id: 1,
+                file_id: 1,
+                name: "zebra".into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 5,
+                signature: None,
+                file_path: "a.rs".into(),
+            },
+            SymbolRow {
+                id: 2,
+                file_id: 1,
+                name: "alpha".into(),
+                kind: "function".into(),
+                line_start: 10,
+                line_end: 15,
+                signature: None,
+                file_path: "a.rs".into(),
+            },
+        ];
+        // Neither matches "unrelated" → equal scores
+        let ranked = score_and_rank_symbols(&symbols, &["unrelated".into()], &no_file_scores());
+        assert_eq!(ranked.len(), 2);
+        // Alphabetical tiebreaker: alpha before zebra
+        assert_eq!(ranked[0].0.name, "alpha");
+        assert_eq!(ranked[1].0.name, "zebra");
     }
 }
