@@ -376,10 +376,12 @@ pub fn format_context_summary(ctx: &ContextPackage) -> String {
         }
     }
 
-    out.push_str("\nUse this context to work directly. Only read source files if a snippet is truncated. Do not re-explore with grep/glob for the same keywords.\n");
-    out.push_str("For deep understanding or debugging, read .pruner/context.md for full execution paths and code snippets.\n");
-
     out
+}
+
+/// One-time guidance appended after all brief summaries (single or multi-repo).
+pub fn brief_guidance() -> &'static str {
+    "\nUse this context to work directly. Only read source files if a snippet is truncated. Do not re-explore with grep/glob for the same keywords.\nFor deep understanding or debugging, read .pruner/context.md for full execution paths and code snippets.\n"
 }
 
 /// Format context as JSON string.
