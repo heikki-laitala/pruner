@@ -71,23 +71,6 @@ Claude Code injects context from 40+ sources per turn: IDE selection, open files
 - Cap total pruner output at a percentage of the model's context window (e.g., 5% = 10K for 200K context)
 - In the hook script: check if CLAUDE.md or `.claude/rules/` exist and pass `--has-project-docs` flag
 
-### 8. Structural ranking beats mtime — tell the model
-
-Claude Code's Grep sorts by modification time (most recent first), Glob also sorts by mtime. Both cap results (250 and 100 respectively). This means recent-but-irrelevant files rank above old-but-critical files.
-
-**Why this matters:**
-
-- Pruner's call-graph-based ranking is strictly better than mtime for structural relevance
-- But the model doesn't know this — it may re-grep and override pruner's suggestions with mtime-sorted results
-- Making this explicit helps the model trust pruner over its own exploration
-
-**Implementation:**
-
-- Add a brief note in pruner output: "Files ranked by structural relevance (call graph + keyword specificity), not recency"
-- For key files, include why they ranked high: "auth.ts: 5 callers, matches 3 query keywords"
-- This transparency helps the model make informed decisions about when to trust pruner vs explore further
-- Include an authority header in the output: "Pre-computed from full codebase index (tree-sitter call graph, N files, N symbols)". Claude Code's system prompt tells the model to treat hook output as "coming from the user" but doesn't tell it how much to trust the data. This header helps the model calibrate — it's an authoritative structural index, not cached notes or heuristic guesses. Particularly important because more capable models (observed with gpt-5.3-codex in Copilot tests) tend to second-guess externally provided context and re-explore anyway.
-
 ## Medium priority
 
 ### 9. Faster evaluation feedback loop
@@ -209,6 +192,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Post-hoc hit rate analysis (`tests/posthoc_analysis.py`) — offline precision/recall from saved JSONL logs
 - [x] Fast A/B test mode (`--fast` sonnet + nest, `--rounds N`, `--interactive`)
 - [x] Deferred context mode: brief default (~2.5K tokens), `--detail` for full output. Full context written to `.pruner/context.md` for zero-cost escalation. A/B tested: -24% cost, -17% tools on implement tasks (N=3)
+- [x] Structural ranking transparency: authority header with index stats, per-file reasons (symbol/keyword hit counts), ranking note. A/B tested: neutral on cost/tools (N=3), no regression
 
 ## Explored but rejected
 
