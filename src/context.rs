@@ -18,6 +18,10 @@ pub struct ContextPackage {
     pub key_symbols: Vec<KeySymbol>,
     pub relevant_tests: Vec<TestFile>,
     pub snippets: Vec<Snippet>,
+    /// Total files in the index (for authority header).
+    pub index_file_count: i64,
+    /// Total symbols in the index (for authority header).
+    pub index_symbol_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +39,10 @@ pub struct KeyFile {
     pub language: Option<String>,
     pub lines: i64,
     pub is_test: bool,
+    /// Number of matched symbols in this file.
+    pub symbol_hits: usize,
+    /// Number of query keywords matching the file path.
+    pub keyword_hits: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -149,6 +157,18 @@ pub fn generate_context(
     max_snippet_lines: usize,
     mode: ContextMode,
 ) -> Result<ContextPackage> {
+    generate_context_with_stats(query, repo_path, max_snippet_lines, mode, 0, 0)
+}
+
+/// Generate a context package with index statistics for authority header.
+pub fn generate_context_with_stats(
+    query: &QueryResult,
+    repo_path: &Path,
+    max_snippet_lines: usize,
+    mode: ContextMode,
+    index_file_count: i64,
+    index_symbol_count: i64,
+) -> Result<ContextPackage> {
     let resolved = if mode == ContextMode::Auto {
         detect_mode(query)
     } else {
@@ -176,16 +196,32 @@ pub fn generate_context(
         })
         .collect();
 
+    // Count symbols per file for per-file reason annotations
+    let mut sym_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for s in &query.matching_symbols {
+        *sym_counts.entry(s.file_id).or_default() += 1;
+    }
+
     // Key files
     let key_files: Vec<KeyFile> = query
         .matching_files
         .iter()
         .take(limits.max_files)
-        .map(|f| KeyFile {
-            path: f.path.clone(),
-            language: f.language.clone(),
-            lines: f.line_count,
-            is_test: f.is_test,
+        .map(|f| {
+            let path_lower = f.path.to_lowercase();
+            let keyword_hits = query
+                .keywords
+                .iter()
+                .filter(|kw| path_lower.contains(kw.as_str()))
+                .count();
+            KeyFile {
+                path: f.path.clone(),
+                language: f.language.clone(),
+                lines: f.line_count,
+                is_test: f.is_test,
+                symbol_hits: sym_counts.get(&f.id).copied().unwrap_or(0),
+                keyword_hits,
+            }
         })
         .collect();
 
@@ -257,6 +293,8 @@ pub fn generate_context(
         key_symbols,
         relevant_tests,
         snippets,
+        index_file_count,
+        index_symbol_count,
     })
 }
 
@@ -265,6 +303,15 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
     let mut out = String::new();
 
     out.push_str(&format!("# Context: {}\n\n", ctx.ask));
+
+    // Authority header
+    if ctx.index_file_count > 0 {
+        out.push_str(&format!(
+            "Pre-computed from full codebase index (tree-sitter call graph, {} files, {} symbols). Files ranked by structural relevance (call graph + keyword specificity), not recency.\n\n",
+            ctx.index_file_count, ctx.index_symbol_count
+        ));
+    }
+
     out.push_str(&format!("**Keywords:** {}\n", ctx.keywords.join(", ")));
     out.push_str(&format!(
         "**Subsystems:** {}\n\n",
@@ -297,10 +344,18 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
         for f in &ctx.key_files {
             let lang = f.language.as_deref().unwrap_or("?");
             let test = if f.is_test { " [test]" } else { "" };
-            out.push_str(&format!(
-                "- `{}` ({}, {} lines){}\n",
-                f.path, lang, f.lines, test
-            ));
+            let reason = format_file_reason(f);
+            if reason.is_empty() {
+                out.push_str(&format!(
+                    "- `{}` ({}, {} lines){}\n",
+                    f.path, lang, f.lines, test
+                ));
+            } else {
+                out.push_str(&format!(
+                    "- `{}` ({}, {} lines){} — {}\n",
+                    f.path, lang, f.lines, test, reason
+                ));
+            }
         }
         out.push('\n');
     }
@@ -348,6 +403,14 @@ pub fn format_context_text(ctx: &ContextPackage) -> String {
 pub fn format_context_summary(ctx: &ContextPackage) -> String {
     let mut out = String::new();
 
+    // Authority header — helps the model calibrate trust
+    if ctx.index_file_count > 0 {
+        out.push_str(&format!(
+            "Pre-computed from full codebase index (tree-sitter call graph, {} files, {} symbols). Files ranked by structural relevance (call graph + keyword specificity), not recency.\n\n",
+            ctx.index_file_count, ctx.index_symbol_count
+        ));
+    }
+
     out.push_str(&format!("Keywords: {}\n", ctx.keywords.join(", ")));
     out.push_str(&format!("Subsystems: {}\n", ctx.subsystems.join(", ")));
     out.push_str(&format!("Execution paths: {}\n", ctx.execution_paths.len()));
@@ -355,7 +418,12 @@ pub fn format_context_summary(ctx: &ContextPackage) -> String {
     if !ctx.key_files.is_empty() {
         out.push_str("\nKey files:\n");
         for f in &ctx.key_files {
-            out.push_str(&format!("  {}\n", f.path));
+            let reason = format_file_reason(f);
+            if reason.is_empty() {
+                out.push_str(&format!("  {}\n", f.path));
+            } else {
+                out.push_str(&format!("  {} ({})\n", f.path, reason));
+            }
         }
     }
 
@@ -377,6 +445,26 @@ pub fn format_context_summary(ctx: &ContextPackage) -> String {
     }
 
     out
+}
+
+/// Build a short reason string for why a file ranked high.
+fn format_file_reason(f: &KeyFile) -> String {
+    let mut parts = Vec::new();
+    if f.symbol_hits > 0 {
+        parts.push(format!(
+            "{} symbol{}",
+            f.symbol_hits,
+            if f.symbol_hits == 1 { "" } else { "s" }
+        ));
+    }
+    if f.keyword_hits > 0 {
+        parts.push(format!(
+            "{} keyword{}",
+            f.keyword_hits,
+            if f.keyword_hits == 1 { "" } else { "s" }
+        ));
+    }
+    parts.join(", ")
 }
 
 /// One-time guidance appended after all brief summaries (single or multi-repo).
@@ -419,6 +507,8 @@ mod tests {
                 language: Some("rust".into()),
                 lines: 50,
                 is_test: false,
+                symbol_hits: 2,
+                keyword_hits: 1,
             }],
             key_symbols: vec![
                 KeySymbol {
@@ -448,6 +538,8 @@ mod tests {
                 line_end: 15,
                 code: "fn handle_login(req: Request) {\n    verify(req);\n}".into(),
             }],
+            index_file_count: 100,
+            index_symbol_count: 500,
         }
     }
 
@@ -481,6 +573,8 @@ mod tests {
             key_symbols: vec![],
             relevant_tests: vec![],
             snippets: vec![],
+            index_file_count: 0,
+            index_symbol_count: 0,
         };
         let text = format_context_text(&ctx);
         assert!(text.contains("# Context: nothing"));
@@ -515,6 +609,8 @@ mod tests {
             key_symbols: vec![],
             relevant_tests: vec![],
             snippets: vec![],
+            index_file_count: 0,
+            index_symbol_count: 0,
         };
         let summary = format_context_summary(&ctx);
         assert!(!summary.contains("Key files:"));
@@ -544,10 +640,14 @@ mod tests {
                 language: Some("rust".into()),
                 lines: 30,
                 is_test: true,
+                symbol_hits: 0,
+                keyword_hits: 0,
             }],
             key_symbols: vec![],
             relevant_tests: vec![],
             snippets: vec![],
+            index_file_count: 0,
+            index_symbol_count: 0,
         };
         let text = format_context_text(&ctx);
         assert!(text.contains("[test]"));
@@ -611,6 +711,8 @@ mod tests {
             }],
             relevant_tests: vec![],
             snippets: vec![],
+            index_file_count: 0,
+            index_symbol_count: 0,
         };
         let text = format_context_text(&ctx);
         // When no signature, should use the name
