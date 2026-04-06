@@ -1303,24 +1303,27 @@ def main():
     assert shutil.which("claude"), "claude CLI not found"
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
 
-    # Check for global pruner hook that would contaminate the "without" side
-    home = Path.home()
-    global_settings = home / ".claude" / "settings.json"
-    if global_settings.exists():
-        try:
-            settings = json.loads(global_settings.read_text())
-            hooks = settings.get("hooks", {})
-            for event, hook_list in hooks.items():
-                for hook in (hook_list if isinstance(hook_list, list) else []):
-                    cmd = hook.get("command", "") if isinstance(hook, dict) else ""
-                    if "pruner" in cmd.lower():
-                        print(f"ERROR: Global pruner hook found in {global_settings} "
-                              f"(event={event}, command={cmd!r}). This would contaminate "
-                              f"the 'without' side of the A/B test. Remove it first.",
-                              file=sys.stderr)
-                        sys.exit(1)
-        except (json.JSONDecodeError, KeyError):
-            pass  # Settings file is malformed, not our problem
+    # Check for global pruner hook that would contaminate the "without" side.
+    # Only relevant when a "without" control side will actually run.
+    runs_without = not branch_mode and args.only not in ("with",)
+    if runs_without:
+        home = Path.home()
+        global_settings = home / ".claude" / "settings.json"
+        if global_settings.exists():
+            try:
+                settings = json.loads(global_settings.read_text())
+                hooks = settings.get("hooks", {})
+                for event, hook_list in hooks.items():
+                    for hook in (hook_list if isinstance(hook_list, list) else []):
+                        cmd = hook.get("command", "") if isinstance(hook, dict) else ""
+                        if "pruner" in cmd.lower():
+                            print(f"ERROR: Global pruner hook found in {global_settings} "
+                                  f"(event={event}, command={cmd!r}). This would contaminate "
+                                  f"the 'without' side of the A/B test. Remove it first.",
+                                  file=sys.stderr)
+                            sys.exit(1)
+            except (json.JSONDecodeError, KeyError):
+                pass  # Settings file is malformed, not our problem
 
     # Auto-clone repo if needed
     ensure_repo_cloned(repo, repo_url, pinned_commit)
