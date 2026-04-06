@@ -268,20 +268,20 @@ pruner stats .
 
 All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run N=3 times per side (with/without pruner). Runs are interleaved in randomized order (no same-scenario runs adjacent) to reduce Anthropic prompt-cache warming bias ([cache analysis](#prompt-cache-note) shows reported numbers are mostly conservative). It takes around 10 seconds to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
 
-**Test environment:** Claude Code v2.1.81, pruner v0.2.4. Hook-mode results last run 2026-04-02 (3 rounds). Raw results: [`tests/ab-tests/results.json`](tests/ab-tests/results.json).
+**Test environment:** Claude Code v2.1.81, pruner v0.2.7. Hook-mode results last run 2026-04-06 (3 rounds). Raw results: [`tests/ab-tests/opus_openclaw_oneshot_n3.json`](tests/ab-tests/opus_openclaw_oneshot_n3.json).
 
 ### Results (prompt-submit hook — recommended)
 
 The recommended setup for Claude Code. Pruner runs as a `UserPromptSubmit` hook that injects context before Claude starts thinking. Zero tool calls for navigation. Pruner auto-detects task scope: focused context with code snippets (~10-15K tokens) for broad tasks, brief pointers (~3K tokens) for narrow tasks. Runs interleaved in randomized order to reduce prompt-cache warming bias. N=3 per task — values are means across 3 rounds.
 
-| Task | Prompt | Without (mean) | With (mean) | Δ cost | Δ tools | Δ time |
-|------|--------|---------------:|------------:|-------:|--------:|-------:|
-| Narrow fix | "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does." | $0.31 / 27 tools | $0.29 / 21 tools | **-6%** | **-21%** | **-39%** |
-| Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.42 / 40 tools | $0.21 / 8 tools | **-49%** | **-80%** | **-56%** |
-| Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.38 / 45 tools | $0.15 / 6 tools | **-62%** | **-86%** | **-64%** |
-| Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.38 / 53 tools | $0.22 / 10 tools | **-41%** | **-80%** | **-52%** |
-| Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.57 / 49 tools | $0.48 / 20 tools | **-15%** | **-59%** | **-44%** |
-| Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.99 / 76 tools | $0.96 / 57 tools | -3% | -25% | +8% |
+| Task | Prompt | Without (mean) | With (mean) | Δ cost | Δ tools |
+|------|--------|---------------:|------------:|-------:|--------:|
+| Narrow fix | "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does." | $0.23 / 18 tools | $0.34 / 20 tools | +45% | +7% |
+| Cross-package | "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files." | $0.57 / 48 tools | $0.55 / 19 tools | -5% | **-61%** |
+| Understanding | "How does the plugin/extension loading system work in this repo? What are the key files and entry points?" | $0.60 / 48 tools | $0.37 / 13 tools | **-38%** | **-74%** |
+| Data flow | "How does authentication and token validation work in this repo? List the key files and describe the flow." | $0.36 / 54 tools | $0.44 / 34 tools | +21% | **-36%** |
+| Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.60 / 54 tools | $0.47 / 20 tools | **-21%** | **-63%** |
+| Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.92 / 63 tools | $0.80 / 43 tools | **-12%** | **-31%** |
 
 ### Results (skill mode — for Codex, Copilot, etc.)
 
@@ -311,19 +311,17 @@ Understanding results are consistent across all test configurations (-59% to -64
 
 ### What the data shows
 
-**Hook mode saves cost on 5 of 6 tasks.** The prompt-submit hook injects context before Claude starts — zero tool calls for navigation. Cost savings range from -6% to -62% across exploration and implementation tasks. Understanding and cross-package tracing show the biggest wins at -62% and -49% respectively.
+**Tool calls drop dramatically** across 4 of 6 tasks (-31% to -74%). Pruner's pre-computed context replaces grep/glob/read exploration chains. Understanding and implement dropped from 48-54 to 13-20 tool calls (-74% and -63% respectively).
 
-**Tool calls drop dramatically** across 5 of 6 tasks (-21% to -86%). Pruner's pre-computed context replaces grep/glob/read exploration chains. Understanding and cross-package tracing dropped from 40-45 to 6-8 tool calls (-80% to -86%).
+**Understanding/tracing tasks are the sweet spot — statistically confirmed.** `understanding` shows -38% cost and -74% tools on opus/openclaw (N=3), and -64% ± 16pp cost, -86% ± 9pp tools on sonnet/nest (N=5). Interactive refinement (N=10) confirms at -60% ± 7pp cost, -83% ± 3pp tools. These results are statistically significant (p < 0.001 for tool calls).
 
-**Understanding/tracing tasks are the sweet spot — statistically confirmed.** `understanding` shows -62% cost and -86% tools on opus/openclaw (N=3), and -64% ± 16pp cost, -86% ± 9pp tools on sonnet/nest (N=5). Two models, two repos, same numbers. Interactive refinement (N=10) confirms at -60% ± 7pp cost, -83% ± 3pp tools. These results are statistically significant (p < 0.001 for tool calls).
+**Implementation has a bimodal baseline.** N=10 implement runs on sonnet/nest revealed the model's without-pruner strategy varies between "efficient" (9-10 tools) and "exploratory" (17-25 tools). With pruner, it's consistently 6-12 tools. On opus/openclaw, implement shows -21% cost and -63% tools. Median on sonnet: -14% cost, -33% tools. This variance is structural (the model's non-deterministic strategy choice), not statistical — more rounds won't tighten it.
 
-**Implementation has a bimodal baseline.** N=10 implement runs on sonnet/nest revealed the model's without-pruner strategy varies between "efficient" (9-10 tools) and "exploratory" (17-25 tools). With pruner, it's consistently 6-12 tools. When the baseline explores, pruner saves 20-37% cost. When the baseline is already efficient, pruner adds slight overhead. Median: -14% cost, -33% tools. This variance is structural (the model's non-deterministic strategy choice), not statistical — more rounds won't tighten it.
+**Narrow fix can hurt.** The `narrow_fix` task showed +45% mean cost with high variance across runs. For simple, targeted queries, pruner's upfront context adds overhead without enough navigation savings to compensate.
 
-**Narrow fix has high variance.** The `narrow_fix` task showed -6% mean cost but ranged from -30% to +58% across runs. Run 3 was an outlier where pruner hurt — for simple, targeted queries, pruner can occasionally send Claude down the wrong path.
+**Large implementation shows modest gains.** The `implement_large` task showed -12% cost and -31% tools. At this scale, task complexity dominates — pruner's upfront context is a small fraction of total work, but tool reduction is still meaningful.
 
-**Large implementation is roughly neutral.** The `implement_large` task showed -3% cost and -25% tools but +8% time. At this scale, task complexity dominates — pruner's upfront context is a small fraction of total work.
-
-**With pruner, behavior is more predictable.** Without pruner, Claude's strategy varies significantly — sometimes spawning subagents, sometimes exploring on the main thread, sometimes getting lucky with few tool calls. With pruner, tool calls are consistently low (6-12 across most tasks), reducing variance even when median cost savings are modest.
+**With pruner, behavior is more predictable.** Without pruner, Claude's strategy varies significantly — sometimes spawning subagents, sometimes exploring on the main thread, sometimes getting lucky with few tool calls. With pruner, tool calls are consistently low (13-20 across most tasks), reducing variance even when median cost savings are modest.
 
 **Cache is not the explanation.** N=10 cache analysis shows nearly identical hit rates on both sides (93% vs 94%). Pruner's savings come from 63-83% fewer fresh tokens processed. In a zero-cache hypothetical, understanding would save -87% — *more* than the actual -64%. See [cache analysis](#prompt-cache-note).
 
