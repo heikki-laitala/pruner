@@ -1327,10 +1327,11 @@ def main():
     assert shutil.which("claude"), "claude CLI not found"
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
 
-    # Check for global pruner hook that would contaminate the "without" side.
-    # Only relevant when a "without" control side will actually run.
+    # Check for global pruner hook that would contaminate results.
+    # In standard mode: contaminates the "without" side.
+    # In branch mode: overrides the per-clone pruner binary on both sides.
     runs_without = not branch_mode and args.only not in ("with",)
-    if runs_without:
+    if runs_without or branch_mode:
         home = Path.home()
         global_settings = home / ".claude" / "settings.json"
         if global_settings.exists():
@@ -1351,7 +1352,7 @@ def main():
                             if cmd and "pruner" in cmd.lower():
                                 print(f"ERROR: Global pruner hook found in {global_settings} "
                                       f"(event={event}, command={cmd!r}). This would contaminate "
-                                      f"the 'without' side of the A/B test. Remove it first.",
+                                      f"the A/B test results. Remove it first.",
                                       file=sys.stderr)
                                 sys.exit(1)
             except (json.JSONDecodeError, KeyError):
