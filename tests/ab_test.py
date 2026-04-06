@@ -68,7 +68,7 @@ Options:
     --validate-cache       Warn if cache hit rates differ >10% between paired runs
 
 Output (with --save-raw):
-    /tmp/pruner-bench/ab-raw/results.json          Combined structured results
+    /tmp/pruner-bench/ab-raw/{model}_{repo}_{mode}_n{rounds}_{timestamp}.json
     /tmp/pruner-bench/ab-raw/*.jsonl                Raw JSONL (single round)
     /tmp/pruner-bench/ab-raw/round0/*.jsonl         Raw JSONL (multi-round)
 
@@ -1355,8 +1355,14 @@ def main():
 
     # Save combined results to file when using --save-raw
     if args.save_raw:
-        results_path = Path("/tmp/pruner-bench/ab-raw") / "results.json"
-        results_path.parent.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        repo_name = Path(repo).name
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        mode_tag = "interactive" if args.interactive else "oneshot"
+        filename = f"{model}_{repo_name}_{mode_tag}_n{args.rounds}_{timestamp}.json"
+        results_dir = Path("/tmp/pruner-bench/ab-raw")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        results_path = results_dir / filename
         results_path.write_text(json.dumps(output, indent=2))
         print(f"\n  Results saved to {results_path}", file=sys.stderr)
 
