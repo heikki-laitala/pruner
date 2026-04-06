@@ -47,9 +47,10 @@ Post-hoc analysis (N=20 sessions): 78% recall, 7% precision. Navigation calls -8
 
 | Task | Δ cost | Δ tools | Δ time |
 |------|--------|---------|--------|
-| Iterative refinement | -73% ± 41pp | -88% ± 17pp | +5% ± 368pp† |
+| Iterative refinement | -63% | -82% | -69% |
+| Debug/clarify/resolve | -15% | -71% | -34% |
 
-† Time has a single massive outlier inflating the spread; cost and tools are the reliable metrics. Tool calls: -88% with 17pp spread across 10 rounds.
+N=6 clean rounds (7 completed, round 1 excluded for cache asymmetry, round 8 timed out). Iterative refinement (implement → refine → extend) shows strong wins. Debug/clarify/resolve (understanding → clarification → deep trace) shows clear tool reduction with moderate cost savings.
 
 ## High priority
 
