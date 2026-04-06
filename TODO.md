@@ -6,16 +6,14 @@ Install flow is streamlined: `install.sh` + `pruner init` + `pruner index`.
 
 A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` flag, interleaved scheduling, `--baseline-branch` for feature impact measurement, and `--multi-turn` for interactive conversation scenarios.
 
-**Best for one-shot tasks** (`claude -p "task"`). N=3 A/B test results on openclaw (9.8K files, v0.2.4, 2026-04-02):
+**One-shot results** on NestJS/nest (2.1K files, sonnet, N=10, v0.2.6, 2026-04-06):
 
 | Task | Δ cost | Δ tools | Δ time |
 |------|--------|---------|--------|
-| Understanding | -62% | -86% | -64% |
-| Cross-package | -49% | -80% | -56% |
-| Data flow | -41% | -80% | -52% |
-| Implement | -15% | -59% | -44% |
-| Narrow fix | -6% | -21% | -39% |
-| Implement large | -3% | -25% | +8% |
+| Understanding | -59% ± 32pp | -87% ± 18pp | -67% ± 41pp |
+| Implement | -7% ± 91pp | -29% ± 100pp | -23% ± 118pp |
+
+Post-hoc analysis (N=20 sessions): 78% recall, 7% precision. Navigation calls -88%. Understanding recall 98%, implement recall 58%. Main gap: module registration files (`app.module.ts`) not in call graph.
 
 **Interactive sessions are usable** after query-aware budget (TODO #5). N=2 rounds, 3-turn conversations on openclaw (v0.2.6):
 
