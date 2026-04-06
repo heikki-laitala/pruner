@@ -300,9 +300,22 @@ def _clone_matches_repo(clone_path, repo):
         return False
 
 
+def clear_claude_project_state(clone_path):
+    """Remove Claude's cached project state for a clone so each run starts fresh."""
+    resolved = str(clone_path.resolve())
+    folder_name = resolved.lstrip("/").replace("/", "-")
+    project_dir = Path.home() / ".claude" / "projects" / f"-{folder_name}"
+    if project_dir.exists():
+        shutil.rmtree(project_dir)
+        print(f"  Cleared Claude project state: {project_dir}", file=sys.stderr)
+
+
 def setup_clones(repo, mode="hook"):
     """Create two copies of the repo: one with pruner, one without."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+    for clone_path in [CLONE_WITH, CLONE_WITHOUT]:
+        clear_claude_project_state(clone_path)
 
     for clone_path, label in [(CLONE_WITH, "with-pruner"), (CLONE_WITHOUT, "without-pruner")]:
         if clone_path.exists():
@@ -433,6 +446,9 @@ def setup_clones_branch_mode(repo, baseline_ref, mode="hook"):
     Uses PRUNER_BIN (current worktree) for the feature side.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+    for clone_path in [CLONE_BASELINE, CLONE_FEATURE]:
+        clear_claude_project_state(clone_path)
 
     # Build baseline binary from the given ref
     baseline_bin = build_pruner_from_ref(baseline_ref, BASELINE_BIN_DIR)
