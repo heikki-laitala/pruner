@@ -6,7 +6,7 @@ Install flow is streamlined: `install.sh` + `pruner init` + `pruner index`.
 
 A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` flag, interleaved scheduling, `--baseline-branch` for feature impact measurement, and `--multi-turn` for interactive conversation scenarios.
 
-**One-shot results** on openclaw (9.8K files, opus, N=3, v0.2.4, 2026-04-02). Note: global pruner hook may have contaminated the "without" side.
+**One-shot results** on openclaw (9.8K files, opus, N=3, v0.2.4, 2026-04-02):
 
 | Task | Δ cost | Δ tools | Δ time |
 |------|--------|---------|--------|
