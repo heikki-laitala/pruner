@@ -296,19 +296,18 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 | Implement | "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there." | $0.66 / 48 tools | $0.70 / 23 tools | +6% | **-52%** | **-34%** |
 | Implement (large) | "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window. Integrate it into the message routing pipeline. Add configuration options and unit tests." | $0.98 / 69 tools | $0.64 / 28 tools | **-35%** | **-59%** | **-50%** |
 
-### Results (sonnet, one-shot, N=5-10)
+### Results (sonnet, one-shot, N=10) — cleanest data
 
-Higher-confidence one-shot results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. Hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n5.json`](tests/ab-tests/fast_oneshot_n5.json), [`tests/ab-tests/fast_implement_n10.json`](tests/ab-tests/fast_implement_n10.json).
+Highest-confidence results with no global hook contamination. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.6, 2026-04-06. Hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n10.json`](tests/ab-tests/fast_oneshot_n10.json).
 
-| Task | N | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
+| Task | N | Δ cost (mean ± spread) | Δ tools (mean ± spread) | Δ time (mean ± spread) |
 |------|--:|----------------------:|-----------------------:|----------------------:|
-| Understanding | 5 | **-64% ± 16pp** | **-86% ± 9pp** | **-63% ± 10pp** |
-| Implement | 10 | -14%† | -33%† | **-29% ± 17pp**‡ |
+| Understanding | 10 | **-59% ± 32pp** | **-87% ± 18pp** | **-67% ± 41pp** |
+| Implement | 10 | **-7% ± 91pp** | **-29% ± 100pp** | **-23% ± 118pp** |
 
-† Implement median. Mean is near zero (+2% cost, -23% tools) due to bimodal baseline behavior: without-pruner sometimes explores heavily (17-25 tools, pruner saves 20-37%) and sometimes is already efficient (9-10 tools, pruner adds slight overhead). Stdev is 52-57pp — too high for the mean to be meaningful. Median captures the typical case better.
-‡ Excluding 1 API rate-limiting outlier (560s vs normal 27-41s), N=9.
+Post-hoc analysis (20 sessions): 78% recall, 7% precision. Navigation calls reduced by 88%. Understanding recall 98%, implement recall 58%. Main gap: module registration files (`app.module.ts`) not in call graph.
 
-Understanding results are consistent with the opus/openclaw numbers above (-62% cost, -86% tools), confirming the benefit holds across models and repos. Cache rates are nearly identical (~92% both sides). See [cache analysis](#prompt-cache-note).
+Understanding results are consistent across all test configurations (-59% to -64% cost, -86% to -87% tools). Implement shows clear time improvement (-23%) but high cost variance due to bimodal baseline behavior — without-pruner sometimes explores heavily and sometimes is already efficient. Only 1 cache warning in 10 rounds. See [cache analysis](#prompt-cache-note).
 
 ### What the data shows
 
