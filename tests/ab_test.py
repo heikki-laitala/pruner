@@ -162,6 +162,14 @@ FAST_MULTI_TURN_TASKS = {
         "Make the header name configurable via an options object passed to the interceptor.",
         "Add a threshold option so the header is only added when response time exceeds it.",
     ],
+    "debug_clarify_resolve": [
+        "How does NestJS resolve circular dependencies between providers? "
+        "What error does it throw and where is the detection logic?",
+        "I mean specifically the forwardRef() mechanism — how does it defer resolution "
+        "and at what point does it resolve the actual reference?",
+        "Show me the exact code path from when @Inject(forwardRef(() => CatsService)) "
+        "is encountered to when CatsService is actually instantiated.",
+    ],
 }
 
 MULTI_TURN_TASKS = {
