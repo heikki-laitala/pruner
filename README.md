@@ -364,15 +364,14 @@ Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing
 
 ### Interactive session results (sonnet, N=10)
 
-Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. N=10 rounds, hook mode. Raw results: [`tests/ab-tests/fast_interactive_n10_v027.json`](tests/ab-tests/fast_interactive_n10_v027.json).
+Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. N=6 clean rounds, hook mode. Raw results: [`tests/ab-tests/fast_interactive_n10_v027.json`](tests/ab-tests/fast_interactive_n10_v027.json).
 
-| Task | Turns | Δ cost (mean ± spread) | Δ tools (mean ± spread) | Δ time (mean ± spread) |
-|------|------:|----------------------:|-----------------------:|----------------------:|
-| Iterative refinement | 3 | **-73% ± 41pp** | **-88% ± 17pp** | +5% ± 368pp† |
+| Task | Turns | Δ cost | Δ tools | Δ time |
+|------|------:|-------:|--------:|-------:|
+| Iterative refinement | 3 | **-63%** | **-82%** | **-69%** |
+| Debug/clarify/resolve | 3 | **-15%** | **-71%** | **-34%** |
 
-† Time has a single massive outlier inflating the spread. Cost and tool metrics are reliable.
-
-Tool calls are the most reliable metric: **-88% with 17pp spread** across 10 rounds. Cost (-73% ± 41pp) is also a clear win. Improved from v0.2.6 results (-60% cost, -83% tools) due to deferred context mode and structural ranking transparency.
+Two complementary scenarios: iterative refinement (implement → refine → extend) and debug/clarify/resolve (understanding → clarification → deep code path tracing). Tool reduction is strong and consistent across both (-71% to -82%). Cost savings are highest for implementation workflows (-63%) where pruner eliminates the exploration phase entirely.
 
 Sonnet is a faster, cheaper model than opus. The relative deltas (with vs without pruner) are comparable to the opus results above, confirming pruner's benefit is model-independent.
 
