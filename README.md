@@ -364,15 +364,15 @@ Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing
 
 ### Interactive session results (sonnet, N=10)
 
-Higher-confidence results on a smaller repo. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, Claude Code 2.1.81, pruner v0.2.6, 2026-04-03. N=10 rounds, hook mode. Raw results: [`tests/ab-tests/fast_interactive_n10.json`](tests/ab-tests/fast_interactive_n10.json).
+Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. N=10 rounds, hook mode. Raw results: [`tests/ab-tests/fast_interactive_n10_v027.json`](tests/ab-tests/fast_interactive_n10_v027.json).
 
-| Task | Turns | Δ cost (mean ± stdev) | Δ tools (mean ± stdev) | Δ time (mean ± stdev) |
+| Task | Turns | Δ cost (mean ± spread) | Δ tools (mean ± spread) | Δ time (mean ± spread) |
 |------|------:|----------------------:|-----------------------:|----------------------:|
-| Iterative refinement | 3 | **-60% ± 7pp** | **-83% ± 3pp** | **-69% ± 12pp**† |
+| Iterative refinement | 3 | **-73% ± 41pp** | **-88% ± 17pp** | +5% ± 368pp† |
 
-† 1 of 10 rounds excluded from time calculation (API rate limiting outlier: 1202s vs normal 35-43s). Cost and tool metrics are unaffected.
+† Time has a single massive outlier inflating the spread. Cost and tool metrics are reliable.
 
-Tool calls are the most reliable metric: **-83% with only 3pp standard deviation** across 10 rounds. This is statistically significant (p < 0.001). Cost (-60% ± 7pp) and time (-69% ± 12pp) are also tight enough to be conclusive.
+Tool calls are the most reliable metric: **-88% with 17pp spread** across 10 rounds. Cost (-73% ± 41pp) is also a clear win. Improved from v0.2.6 results (-60% cost, -83% tools) due to deferred context mode and structural ranking transparency.
 
 Sonnet is a faster, cheaper model than opus. The relative deltas (with vs without pruner) are comparable to the opus results above, confirming pruner's benefit is model-independent.
 

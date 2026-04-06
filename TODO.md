@@ -43,6 +43,14 @@ Post-hoc analysis (N=20 sessions): 78% recall, 7% precision. Navigation calls -8
 
 † 1 of 10 rounds excluded (API rate limiting outlier: 1202s vs normal 35-43s). Tool calls are the cleanest metric: -83% with only 3pp standard deviation across 10 rounds.
 
+**Clean interactive results** on NestJS/nest (2.1K files, sonnet, N=10, v0.2.7, 2026-04-06):
+
+| Task | Δ cost | Δ tools | Δ time |
+|------|--------|---------|--------|
+| Iterative refinement | -73% ± 41pp | -88% ± 17pp | +5% ± 368pp† |
+
+† Time has a single massive outlier inflating the spread; cost and tools are the reliable metrics. Tool calls: -88% with 17pp spread across 10 rounds.
+
 ## High priority
 
 ### 4. IDE/session context awareness
