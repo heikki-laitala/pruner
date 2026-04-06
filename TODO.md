@@ -6,16 +6,16 @@ Install flow is streamlined: `install.sh` + `pruner init` + `pruner index`.
 
 A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` flag, interleaved scheduling, `--baseline-branch` for feature impact measurement, and `--multi-turn` for interactive conversation scenarios.
 
-**One-shot results** on openclaw (9.8K files, opus, N=3, v0.2.4, 2026-04-02):
+**One-shot results** on openclaw (9.8K files, opus, N=3, v0.2.7, 2026-04-06):
 
-| Task | Δ cost | Δ tools | Δ time |
-|------|--------|---------|--------|
-| Understanding | -62% | -86% | -64% |
-| Cross-package | -49% | -80% | -56% |
-| Data flow | -41% | -80% | -52% |
-| Implement | -15% | -59% | -44% |
-| Narrow fix | -6% | -21% | -39% |
-| Implement large | -3% | -25% | +8% |
+| Task | Δ cost | Δ tools |
+|------|--------|---------|
+| Understanding | -38% | -74% |
+| Cross-package | -5% | -61% |
+| Implement | -21% | -63% |
+| Data flow | +21% | -36% |
+| Implement large | -12% | -31% |
+| Narrow fix | +45% | +7% |
 
 **Clean one-shot results** on NestJS/nest (2.1K files, sonnet, N=10, v0.2.7, 2026-04-06). No global hook contamination.
 
