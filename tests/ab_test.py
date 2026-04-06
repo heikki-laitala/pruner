@@ -300,11 +300,15 @@ def _clone_matches_repo(clone_path, repo):
         return False
 
 
+def _claude_project_dir(repo_path):
+    """Return the ~/.claude/projects/ directory Claude uses for a given repo path."""
+    sanitized = str(Path(repo_path).resolve()).replace("/", "-")
+    return Path.home() / ".claude" / "projects" / sanitized
+
+
 def clear_claude_project_state(clone_path):
     """Remove Claude's cached project state for a clone so each run starts fresh."""
-    resolved = str(clone_path.resolve())
-    folder_name = resolved.lstrip("/").replace("/", "-")
-    project_dir = Path.home() / ".claude" / "projects" / f"-{folder_name}"
+    project_dir = _claude_project_dir(clone_path)
     if project_dir.exists():
         shutil.rmtree(project_dir)
         print(f"  Cleared Claude project state: {project_dir}", file=sys.stderr)
@@ -915,10 +919,7 @@ def clear_sessions(repo_dir):
     Sessions are stored at ~/.claude/projects/{sanitized-cwd}/.
     We remove all .jsonl files there so -c doesn't resume a stale session.
     """
-    repo_path = Path(repo_dir).resolve()
-    # Claude sanitizes paths by replacing / with -
-    sanitized = str(repo_path).replace("/", "-").lstrip("-")
-    session_dir = Path.home() / ".claude" / "projects" / sanitized
+    session_dir = _claude_project_dir(repo_dir)
     if session_dir.exists():
         for f in session_dir.glob("*.jsonl"):
             f.unlink()
@@ -1327,11 +1328,11 @@ def main():
     assert shutil.which("claude"), "claude CLI not found"
     assert PRUNER_BIN.exists(), f"pruner not found at {PRUNER_BIN} — run cargo build --release"
 
-    # Check for global pruner hook that would contaminate results.
-    # In standard mode: contaminates the "without" side.
-    # In branch mode: overrides the per-clone pruner binary on both sides.
+    # Check for global pruner hook that would contaminate the "without" side.
+    # Only relevant when a "without" control side will actually run.
+    # In branch mode both sides have pruner, so a global hook isn't a risk.
     runs_without = not branch_mode and args.only not in ("with",)
-    if runs_without or branch_mode:
+    if runs_without:
         home = Path.home()
         global_settings = home / ".claude" / "settings.json"
         if global_settings.exists():
