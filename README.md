@@ -298,7 +298,7 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 ### Results (sonnet, one-shot, N=10) — cleanest data
 
-Highest-confidence results with no global hook contamination. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.6, 2026-04-06. Hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n10.json`](tests/ab-tests/fast_oneshot_n10.json).
+Highest-confidence results with no global hook contamination. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. Hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n10.json`](tests/ab-tests/fast_oneshot_n10.json).
 
 | Task | N | Δ cost (mean ± spread) | Δ tools (mean ± spread) | Δ time (mean ± spread) |
 |------|--:|----------------------:|-----------------------:|----------------------:|

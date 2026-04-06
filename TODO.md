@@ -17,7 +17,7 @@ A/B test infrastructure is solid: cache-aware warmup runs, `--validate-cache` fl
 | Narrow fix | -6% | -21% | -39% |
 | Implement large | -3% | -25% | +8% |
 
-**Clean one-shot results** on NestJS/nest (2.1K files, sonnet, N=10, v0.2.6, 2026-04-06). No global hook contamination.
+**Clean one-shot results** on NestJS/nest (2.1K files, sonnet, N=10, v0.2.7, 2026-04-06). No global hook contamination.
 
 | Task | Δ cost | Δ tools | Δ time |
 |------|--------|---------|--------|
