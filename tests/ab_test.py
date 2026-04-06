@@ -1322,14 +1322,22 @@ def main():
                 settings = json.loads(global_settings.read_text())
                 hooks = settings.get("hooks", {})
                 for event, hook_list in hooks.items():
-                    for hook in (hook_list if isinstance(hook_list, list) else []):
-                        cmd = hook.get("command", "") if isinstance(hook, dict) else ""
-                        if "pruner" in cmd.lower():
-                            print(f"ERROR: Global pruner hook found in {global_settings} "
-                                  f"(event={event}, command={cmd!r}). This would contaminate "
-                                  f"the 'without' side of the A/B test. Remove it first.",
-                                  file=sys.stderr)
-                            sys.exit(1)
+                    for entry in (hook_list if isinstance(hook_list, list) else []):
+                        if not isinstance(entry, dict):
+                            continue
+                        # Check command on outer entry (flat format)
+                        cmds = [entry.get("command", "")]
+                        # Check commands in nested hooks array
+                        for h in entry.get("hooks", []):
+                            if isinstance(h, dict):
+                                cmds.append(h.get("command", ""))
+                        for cmd in cmds:
+                            if cmd and "pruner" in cmd.lower():
+                                print(f"ERROR: Global pruner hook found in {global_settings} "
+                                      f"(event={event}, command={cmd!r}). This would contaminate "
+                                      f"the 'without' side of the A/B test. Remove it first.",
+                                      file=sys.stderr)
+                                sys.exit(1)
             except (json.JSONDecodeError, KeyError):
                 pass  # Settings file is malformed, not our problem
 
