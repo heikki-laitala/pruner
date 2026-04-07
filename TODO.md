@@ -89,6 +89,36 @@ Claude Code injects context from 40+ sources per turn: IDE selection, open files
 - Cap total pruner output at a percentage of the model's context window (e.g., 5% = 10K for 200K context)
 - In the hook script: check if CLAUDE.md or `.claude/rules/` exist and pass `--has-project-docs` flag
 
+### Keyword stemming / prefix matching
+
+Pruner extracts keywords from natural-language queries verbatim (`reconnection`, `authentication`, `validation`, `loading`), but code identifiers use base or abbreviated forms (`reconnect`, `auth`, `validate`, `load`). This causes complete misses on files that match semantically but not lexically.
+
+**Evidence from opus/openclaw N=3 posthoc (2026-04-07):**
+
+- `narrow_fix` query "WebSocket reconnection" → keyword `reconnection` → 0/7 ground truth files hit. Changing keyword to `reconnect` → 5/7 hits.
+- `data_flow` query extracts `authentication` but code uses `auth`. Extracts `validation` but code uses `validate`.
+- `cross_package` query extracts `received` but code uses `receive`.
+- Overall: 7% precision, 42% recall. narrow_fix is worst at 1% precision, 9% recall.
+
+**Root cause:** Keyword matching is exact. No stemming, no prefix/suffix stripping.
+
+**Files that need changing:**
+
+- Keyword extraction in query parsing (extract `reconnect` from `reconnection`, `auth` from `authentication`)
+- File/symbol matching (match keyword `reconnect` against identifier `reconnectPolicy` via prefix, not just substring of the keyword itself)
+
+**Fix options (pick one or combine):**
+
+1. **Lightweight stemming** at extraction time: strip common suffixes (`-tion`, `-ation`, `-ing`, `-ment`, `-ness`, `-ity`, `-able`, `-ible`, `-er`, `-ed`). E.g. `reconnection` → `reconnect`, `authentication` → `authentic` → also try `auth` (common code abbreviation). No NLP dependency needed — a suffix table covers 90% of cases.
+2. **Prefix matching** at search time: when matching keyword `reconnection` against identifiers, also check if the keyword starts with the identifier or vice versa. `reconnect` is a prefix of `reconnection` → match.
+3. **Both:** stem keywords + prefix-match against identifiers. This catches both `reconnection` → `reconnect` (stemming) and `auth` → `authentication` (prefix).
+
+Option 3 is likely best. Stemming alone misses abbreviations (`auth`), prefix alone may over-match.
+
+**Expected impact:** narrow_fix recall 9% → ~70%+. data_flow and cross_package should also improve significantly. Precision may drop slightly (more matches) but recall gain is worth it.
+
+**Validation:** Run posthoc against `opus_openclaw_oneshot_n3.json` before/after. Check narrow_fix recall specifically.
+
 ## Medium priority
 
 ### 9. Faster evaluation feedback loop
