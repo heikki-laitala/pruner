@@ -89,6 +89,36 @@ Claude Code injects context from 40+ sources per turn: IDE selection, open files
 - Cap total pruner output at a percentage of the model's context window (e.g., 5% = 10K for 200K context)
 - In the hook script: check if CLAUDE.md or `.claude/rules/` exist and pass `--has-project-docs` flag
 
+### Keyword IDF weighting
+
+All keywords currently contribute equally to file/symbol scoring. "handle" and "reconnection" both give FILE_STEM_CONTAINS=40. But "reconnection" matches 5 files while "handle" matches 500+. The specific keyword should contribute far more to ranking.
+
+**Evidence:** narrow_fix query "What files handle WebSocket reconnection" — keyword "handle" matches 25+ handler files that fill all result slots, drowning out files matching the specific keyword "reconnection". Same pattern across data_flow and cross_package tasks.
+
+**Implementation:** Compute IDF (inverse document frequency) per keyword from the index. Weight keyword match scores by IDF so rare keywords contribute more. `score += match_type_score * idf_weight`. This naturally pushes files matching specific keywords above files matching generic ones.
+
+**Validation:** Posthoc against `opus_openclaw_oneshot_n3_v027_20260406.json`. narrow_fix recall should improve significantly.
+
+### Tighter result set (precision improvement)
+
+Pruner suggests ~63 files on average but Claude only uses ~4-11. 6% precision means 94% of suggestions are noise the model must wade through.
+
+**Evidence:** openclaw posthoc shows mean 63.2 files suggested, 3.9 hits, 6.8 misses. The model is ignoring most of what pruner suggests.
+
+**Implementation:** Lower MAX_RESULT_FILES or make dynamic cutoff more aggressive. IDF weighting (#1 above) may naturally help by creating larger score gaps between relevant and irrelevant files.
+
+**Validation:** Posthoc precision should rise from 6% toward 15-20%+ without recall dropping.
+
+### Call graph depth for missed routing files
+
+The most common misses (`dispatch.ts`, `dispatch-from-config.ts`, `resolve-route.ts`, `inbound-worker.ts`) are in the message routing pipeline — connected to matched files via call chains but not reached by the execution path tracer.
+
+**Evidence:** These files appear as misses in 2-4 out of 3 rounds across multiple tasks. They're structurally related to matched symbols but apparently beyond the trace depth or time budget.
+
+**Implementation:** Check if these files are reachable in the call graph from top-matched symbols. If the tracer's depth limit (5) or time budget (10s) is cutting them off, consider increasing depth for high-IDF keyword matches or adding a second-hop file expansion.
+
+**Validation:** Posthoc on cross_package and data_flow tasks — these have the most routing misses.
+
 ## Medium priority
 
 ### 9. Faster evaluation feedback loop
