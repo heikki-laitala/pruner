@@ -129,13 +129,15 @@ Current A/B tests run full Claude sessions end-to-end (43 min to 4+ hours per N=
 
 ### 10. TypeScript/JS-specific improvements
 
-**Barrel file resolution:** `index.ts` re-export files are common. Pruner should follow re-exports to actual implementations rather than stopping at the barrel.
+~~**React component trees:** Ink/React `<Component>` usage in JSX creates an implicit call graph. Tree-sitter can capture JSX element names — weight these as call edges.~~ **Done.** Uppercase JSX elements (`<Header />`, `<Nav.Menu />`) extracted as call edges. HTML elements (`<div>`) excluded.
 
-**React component trees:** Ink/React `<Component>` usage in JSX creates an implicit call graph. Tree-sitter can capture JSX element names — weight these as call edges.
+~~**Dynamic imports:** `import()` calls are invisible to static call graphs. At minimum note "this module is dynamically imported by X".~~ **Done.** `import('./path')` expressions extracted as import entries.
 
-**Dynamic imports:** `import()` calls are invisible to static call graphs. At minimum note "this module is dynamically imported by X".
+~~**Re-export tracking:** `export { X } from './module'` and `export * from './module'` are common in barrel files. These should be captured so the call graph can follow re-export chains.~~ **Done.** Re-exports now captured as import entries with source module.
 
-**Compiled React output detection:** Claude-code contains React Compiler output (`_c()`, `$[0]` patterns). Detect `_c = require("react/compiler-runtime")` and deprioritize these files or note they're generated.
+**Barrel file resolution:** `index.ts` re-export files are common. Pruner should follow re-exports to actual implementations rather than stopping at the barrel. (Partially addressed by re-export tracking above — full resolution requires indexer-level cross-file re-export chain following.)
+
+**Compiled React output detection:** Claude-code contains React Compiler output (`_c()`, `$[0]` patterns). Detect `_c = require("react/compiler-runtime")` and deprioritize these files or note they're generated. (Requires content-based detection at index time — deferred.)
 
 ### 12. Prompt cache-friendly output
 

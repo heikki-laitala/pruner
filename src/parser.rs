@@ -287,6 +287,29 @@ fn extract_js_ts_node(
                 extract_js_ts_import(&child, src, result);
             }
             "export_statement" => {
+                // Re-exports: export { X } from './module' or export * from './module'
+                if let Some(source) = child.child_by_field_name("source") {
+                    let module = node_text(source, src)
+                        .trim_matches(|c| c == '\'' || c == '"')
+                        .to_string();
+                    let mut names = Vec::new();
+                    let mut c2 = child.walk();
+                    for inner in child.children(&mut c2) {
+                        if inner.kind() == "export_specifier"
+                            && let Some(n) = inner.child_by_field_name("name")
+                        {
+                            names.push(node_text(n, src).to_string());
+                        }
+                    }
+                    result.imports.push(Import {
+                        module,
+                        names: if names.is_empty() {
+                            None
+                        } else {
+                            Some(names.join(", "))
+                        },
+                    });
+                }
                 // Recurse into export to find declarations
                 extract_js_ts_node(child, src, result, parent_index);
             }
@@ -375,25 +398,91 @@ fn extract_js_ts_calls(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "call_expression"
-            && let Some(func) = child.child_by_field_name("function")
-        {
-            let name = match func.kind() {
-                "identifier" => node_text(func, src).to_string(),
-                "member_expression" => {
-                    if let Some(prop) = func.child_by_field_name("property") {
-                        node_text(prop, src).to_string()
-                    } else {
-                        continue;
+        match child.kind() {
+            "call_expression" => {
+                if let Some(func) = child.child_by_field_name("function") {
+                    match func.kind() {
+                        // Dynamic import: import('./path') → add as import entry
+                        "import" => {
+                            if let Some(args) = child.child_by_field_name("arguments")
+                                && let Some(arg) = args.named_child(0)
+                                && arg.kind() == "string"
+                            {
+                                let module = node_text(arg, src)
+                                    .trim_matches(|c| c == '\'' || c == '"')
+                                    .to_string();
+                                result.imports.push(Import {
+                                    module,
+                                    names: None,
+                                });
+                            }
+                        }
+                        "identifier" => {
+                            result.calls.push(Call {
+                                caller_index,
+                                callee_name: node_text(func, src).to_string(),
+                                line: child.start_position().row + 1,
+                            });
+                        }
+                        "member_expression" => {
+                            if let Some(prop) = func.child_by_field_name("property") {
+                                result.calls.push(Call {
+                                    caller_index,
+                                    callee_name: node_text(prop, src).to_string(),
+                                    line: child.start_position().row + 1,
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                _ => continue,
-            };
-            result.calls.push(Call {
-                caller_index,
-                callee_name: name,
-                line: child.start_position().row + 1,
-            });
+            }
+            // JSX: <Component /> and <Component>...</Component> as call edges.
+            // Only uppercase names (user components), not lowercase (HTML elements).
+            "jsx_self_closing_element" | "jsx_element" => {
+                let tag_node = if child.kind() == "jsx_self_closing_element" {
+                    child.child_by_field_name("name")
+                } else {
+                    // jsx_element has an open_tag child with the name
+                    child
+                        .children(&mut child.walk())
+                        .find(|c| c.kind() == "jsx_opening_element")
+                        .and_then(|open| open.child_by_field_name("name"))
+                };
+                if let Some(tag) = tag_node {
+                    let name = match tag.kind() {
+                        "identifier" => {
+                            let n = node_text(tag, src);
+                            // Skip lowercase HTML elements (div, span, etc.)
+                            if n.starts_with(|c: char| c.is_uppercase()) {
+                                n.to_string()
+                            } else {
+                                extract_js_ts_calls(&child, src, result, caller_index);
+                                continue;
+                            }
+                        }
+                        // <Foo.Bar /> → call to "Bar"
+                        "member_expression" => {
+                            if let Some(prop) = tag.child_by_field_name("property") {
+                                node_text(prop, src).to_string()
+                            } else {
+                                extract_js_ts_calls(&child, src, result, caller_index);
+                                continue;
+                            }
+                        }
+                        _ => {
+                            extract_js_ts_calls(&child, src, result, caller_index);
+                            continue;
+                        }
+                    };
+                    result.calls.push(Call {
+                        caller_index,
+                        callee_name: name,
+                        line: child.start_position().row + 1,
+                    });
+                }
+            }
+            _ => {}
         }
         extract_js_ts_calls(&child, src, result, caller_index);
     }
@@ -3064,6 +3153,77 @@ class User
         assert_eq!(props.len(), 2, "should find 2 properties");
         assert!(props.iter().any(|p| p.name == "Name"));
         assert!(props.iter().any(|p| p.name == "Age"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_jsx_component_as_call_edge() -> anyhow::Result<()> {
+        let src = r#"
+function App() {
+    return (
+        <div>
+            <Header title="Hello" />
+            <Sidebar items={items} />
+        </div>
+    );
+}
+"#;
+        let result = parse_source(src, Language::Tsx)?;
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "App");
+        // JSX elements with uppercase names should be call edges
+        assert!(result.calls.iter().any(|c| c.callee_name == "Header"));
+        assert!(result.calls.iter().any(|c| c.callee_name == "Sidebar"));
+        // Lowercase elements like <div> should NOT be call edges
+        assert!(!result.calls.iter().any(|c| c.callee_name == "div"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_jsx_nested_components() -> anyhow::Result<()> {
+        let src = r#"
+function Page() {
+    return (
+        <Layout>
+            <Nav.Menu />
+        </Layout>
+    );
+}
+"#;
+        let result = parse_source(src, Language::Tsx)?;
+        assert!(result.calls.iter().any(|c| c.callee_name == "Layout"));
+        // Member expression JSX: <Nav.Menu /> → call to "Menu"
+        assert!(result.calls.iter().any(|c| c.callee_name == "Menu"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_dynamic_import_as_call() -> anyhow::Result<()> {
+        let src = r#"
+async function loadModule() {
+    const mod = await import('./heavy-module');
+    return mod;
+}
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert_eq!(result.symbols.len(), 1);
+        // Dynamic import should create an import entry
+        assert!(result.imports.iter().any(|i| i.module == "./heavy-module"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_export_re_export_extracted() -> anyhow::Result<()> {
+        let src = r#"
+export { Router } from './router';
+export { default as Config } from './config';
+export * from './utils';
+"#;
+        let result = parse_source(src, Language::TypeScript)?;
+        // Re-exports should be captured as imports (tracking the source)
+        assert!(result.imports.iter().any(|i| i.module == "./router"));
+        assert!(result.imports.iter().any(|i| i.module == "./config"));
+        assert!(result.imports.iter().any(|i| i.module == "./utils"));
         Ok(())
     }
 }
