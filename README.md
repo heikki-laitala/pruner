@@ -268,7 +268,7 @@ pruner stats .
 
 All results below are from real **Claude Code** sessions using the **claude-opus-4-5-20250514** model. Tested on [openclaw/openclaw](https://github.com/openclaw/openclaw) (9,794 files, 30,695 symbols). Each task run N=3 times per side (with/without pruner). Runs are interleaved in randomized order (no same-scenario runs adjacent) to reduce Anthropic prompt-cache warming bias ([cache analysis](#prompt-cache-note) shows reported numbers are mostly conservative). It takes around 10 seconds to index the openclaw codebase. See also [Copilot CLI results](#ab-test-results-copilot-cli) below.
 
-**Test environment:** Claude Code v2.1.81, pruner v0.2.7. Hook-mode results last run 2026-04-06 (3 rounds). Raw results: [`tests/ab-tests/opus_openclaw_oneshot_n3.json`](tests/ab-tests/opus_openclaw_oneshot_n3.json).
+**Test environment:** Claude Code v2.1.81, pruner v0.2.7. Hook-mode results last run 2026-04-06 (3 rounds). Raw results: [`tests/ab-tests/opus_openclaw_oneshot_n3_v027_20260406.json`](tests/ab-tests/opus_openclaw_oneshot_n3_v027_20260406.json).
 
 ### Results (prompt-submit hook — recommended)
 
@@ -298,7 +298,7 @@ Skill mode where Claude calls `pruner context` as a tool. Works with any AI agen
 
 ### Results (sonnet, one-shot, N=10) — cleanest data
 
-Highest-confidence results with no global hook contamination. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. Hook mode. Raw results: [`tests/ab-tests/fast_oneshot_n10.json`](tests/ab-tests/fast_oneshot_n10.json).
+Highest-confidence results with no global hook contamination. Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. Hook mode. Raw results: [`tests/ab-tests/sonnet_nest_oneshot_n10_v027_20260406.json`](tests/ab-tests/sonnet_nest_oneshot_n10_v027_20260406.json).
 
 | Task | N | Δ cost (mean ± spread) | Δ tools (mean ± spread) | Δ time (mean ± spread) |
 |------|--:|----------------------:|-----------------------:|----------------------:|
@@ -343,7 +343,7 @@ Understanding results are consistent across all test configurations (-59% to -64
 
 ### Interactive session results
 
-Real 3-turn conversations on openclaw (9.8K files, claude-opus-4-6, Claude Code 2.1.81, 2026-04-03). Each scenario starts with an implementation prompt, then follow-up turns refine, correct, or extend the initial work. N=2 rounds, hook mode, pruner v0.2.6. Raw results: [`tests/ab-tests/multi_turn_run1.log`](tests/ab-tests/multi_turn_run1.log), [`tests/ab-tests/multi_turn_run2.log`](tests/ab-tests/multi_turn_run2.log).
+Real 3-turn conversations on openclaw (9.8K files, claude-opus-4-6, Claude Code 2.1.81, 2026-04-03). Each scenario starts with an implementation prompt, then follow-up turns refine, correct, or extend the initial work. N=2 rounds, hook mode, pruner v0.2.6. Raw results: [`tests/ab-tests/opus_openclaw_interactive_r1_v026_20260403.log`](tests/ab-tests/opus_openclaw_interactive_r1_v026_20260403.log), [`tests/ab-tests/opus_openclaw_interactive_r2_v026_20260403.log`](tests/ab-tests/opus_openclaw_interactive_r2_v026_20260403.log).
 
 | Task | Turns | Δ cost (R1 / R2) | Δ tools (R1 / R2) | Δ time (R1 / R2) |
 |------|------:|------------------:|-------------------:|-----------------:|
@@ -362,7 +362,7 @@ Cost savings apply to **Claude Code** (token-based pricing). **Copilot** pricing
 
 ### Interactive session results (sonnet, N=10)
 
-Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. N=6 clean rounds, hook mode. Raw results: [`tests/ab-tests/fast_interactive_n10_v027.json`](tests/ab-tests/fast_interactive_n10_v027.json).
+Tested on [nestjs/nest](https://github.com/nestjs/nest) (2,138 files), claude-sonnet-4-6, pruner v0.2.7, 2026-04-06. N=6 clean rounds, hook mode. Raw results: [`tests/ab-tests/sonnet_nest_interactive_n10_v027_20260406.json`](tests/ab-tests/sonnet_nest_interactive_n10_v027_20260406.json).
 
 | Task | Turns | Δ cost | Δ tools | Δ time |
 |------|------:|-------:|--------:|-------:|
