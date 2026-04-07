@@ -382,10 +382,11 @@ fn gather_candidates(keywords: &[String], db: &IndexDb) -> Result<(Vec<FileRow>,
         if seen_terms.insert(kw.clone()) {
             search_terms.push(kw.clone());
         }
-        if let Some(stemmed) = stem_keyword(kw) {
-            if !STOP_WORDS.contains(stemmed.as_str()) && seen_terms.insert(stemmed.clone()) {
-                search_terms.push(stemmed);
-            }
+        if let Some(stemmed) = stem_keyword(kw)
+            && !STOP_WORDS.contains(stemmed.as_str())
+            && seen_terms.insert(stemmed.clone())
+        {
+            search_terms.push(stemmed);
         }
     }
 
@@ -775,7 +776,7 @@ fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
     // Pre-stem the file stem parts for stem-based matching below.
     // File stems may be hyphenated (e.g., "reconnect-policy"), so stem each part.
     let stem_parts_stemmed: Vec<String> = stem
-        .split(|c: char| c == '-' || c == '_' || c == '.')
+        .split(['-', '_', '.'])
         .filter(|s| !s.is_empty())
         .map(|s| STEMMER.stem(s).into_owned())
         .collect();
