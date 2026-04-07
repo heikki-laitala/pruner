@@ -60,7 +60,8 @@ The test repos need to be cloned first (the A/B test harness does this automatic
 Always run lint and tests before creating commits or PRs:
 
 ```bash
-cargo clippy -- -D warnings   # lint (must pass clean)
+cargo fmt                      # format code
+cargo clippy -- -D warnings    # lint (must pass clean)
 cargo test --bin pruner --test integration  # unit + integration tests
 ```
 
