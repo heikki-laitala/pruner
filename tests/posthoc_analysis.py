@@ -342,11 +342,30 @@ def analyze_results_json(results_path, repo_path=None, pruner_bin="pruner", verb
 
                 # Hit rate for with-pruner side
                 if side_label == "with" and repo_path:
-                    task_queries = {
+                    # Queries for NestJS/nest (fast mode)
+                    nest_queries = {
                         "understanding": "How does the NestJS dependency injection system work? Trace how @Injectable() decorators and the injector resolve dependencies.",
                         "implement": "Add a request timing interceptor that measures how long each request takes and logs it. Find where interceptors are registered and add it there.",
                         "iterative_refinement": "Add a request timing interceptor that measures how long each request takes and adds an X-Response-Time header to the response.",
                     }
+                    # Queries for openclaw (standard mode)
+                    openclaw_queries = {
+                        "narrow_fix": "What files handle WebSocket reconnection in this repo? List the file paths and briefly explain what each does.",
+                        "cross_package": "How does a message flow from a webhook received by an extension to the core message handler in this repo? Trace the path through the key files.",
+                        "understanding": "How does the plugin/extension loading system work in this repo? What are the key files and entry points?",
+                        "data_flow": "How does authentication and token validation work in this repo? List the key files and describe the flow.",
+                        "implement": "Implement a health check endpoint that returns JSON with the server version and uptime. Find where HTTP routes are registered and add it there.",
+                        "implement_large": "Add a rate limiting system for incoming messages. Create a RateLimiter class that tracks per-channel message counts with a sliding window (default: 30 messages per 60 seconds). Integrate it into the message routing pipeline so that messages exceeding the limit are rejected with a user-friendly reply. Add configuration options to set custom limits per channel. Include unit tests.",
+                    }
+                    # Detect query set: openclaw has categories like narrow_fix/data_flow,
+                    # nest (fast mode) has iterative_refinement. Use openclaw if any
+                    # openclaw-only category is present, otherwise nest.
+                    all_categories = {t.get("category") for t in task_list}
+                    openclaw_only = {"narrow_fix", "cross_package", "data_flow", "implement_large"}
+                    if all_categories & openclaw_only:
+                        task_queries = openclaw_queries
+                    else:
+                        task_queries = nest_queries
                     query = task_queries.get(category)
                     if query:
                         key_files, all_suggested = get_pruner_suggestions(repo_path, query, pruner_bin)
