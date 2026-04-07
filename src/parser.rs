@@ -280,7 +280,7 @@ fn extract_js_ts_node(
                 }
             }
             "lexical_declaration" | "variable_declaration" => {
-                // Arrow functions: const foo = () => ...
+                extract_top_level_dynamic_imports(&child, src, result);
                 extract_js_ts_arrow_functions(&child, src, result, parent_index);
             }
             "import_statement" => {
@@ -292,15 +292,7 @@ fn extract_js_ts_node(
                     let module = node_text(source, src)
                         .trim_matches(|c| c == '\'' || c == '"')
                         .to_string();
-                    let mut names = Vec::new();
-                    let mut c2 = child.walk();
-                    for inner in child.children(&mut c2) {
-                        if inner.kind() == "export_specifier"
-                            && let Some(n) = inner.child_by_field_name("name")
-                        {
-                            names.push(node_text(n, src).to_string());
-                        }
-                    }
+                    let names = collect_export_names(&child, src);
                     result.imports.push(Import {
                         module,
                         names: if names.is_empty() {
@@ -313,9 +305,65 @@ fn extract_js_ts_node(
                 // Recurse into export to find declarations
                 extract_js_ts_node(child, src, result, parent_index);
             }
+            "expression_statement" => {
+                extract_top_level_dynamic_imports(&child, src, result);
+                extract_js_ts_node(child, src, result, parent_index);
+            }
             _ => {
                 extract_js_ts_node(child, src, result, parent_index);
             }
+        }
+    }
+}
+
+/// Collect named export specifiers, descending into `export_clause`.
+/// `export { Router, Config } from './module'` → ["Router", "Config"]
+fn collect_export_names(node: &tree_sitter::Node, src: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "export_clause" {
+            let mut c2 = child.walk();
+            for spec in child.children(&mut c2) {
+                if spec.kind() == "export_specifier" {
+                    // Prefer alias: `export { default as Config }` → "Config"
+                    let name_node = spec
+                        .child_by_field_name("alias")
+                        .or_else(|| spec.child_by_field_name("name"));
+                    if let Some(n) = name_node {
+                        names.push(node_text(n, src).to_string());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Extract dynamic `import()` calls from top-level statements.
+fn extract_top_level_dynamic_imports(
+    node: &tree_sitter::Node,
+    src: &[u8],
+    result: &mut ParseResult,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression"
+            && let Some(func) = child.child_by_field_name("function")
+            && func.kind() == "import"
+            && let Some(args) = child.child_by_field_name("arguments")
+            && let Some(arg) = args.named_child(0)
+            && arg.kind() == "string"
+        {
+            let module = node_text(arg, src)
+                .trim_matches(|c| c == '\'' || c == '"')
+                .to_string();
+            result.imports.push(Import {
+                module,
+                names: None,
+            });
+        } else {
+            extract_top_level_dynamic_imports(&child, src, result);
         }
     }
 }
@@ -3198,7 +3246,7 @@ function Page() {
     }
 
     #[test]
-    fn test_dynamic_import_as_call() -> anyhow::Result<()> {
+    fn test_dynamic_import_in_function() -> anyhow::Result<()> {
         let src = r#"
 async function loadModule() {
     const mod = await import('./heavy-module');
@@ -3207,8 +3255,21 @@ async function loadModule() {
 "#;
         let result = parse_source(src, Language::JavaScript)?;
         assert_eq!(result.symbols.len(), 1);
-        // Dynamic import should create an import entry
         assert!(result.imports.iter().any(|i| i.module == "./heavy-module"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_dynamic_import_top_level() -> anyhow::Result<()> {
+        let src = r#"
+const mod = await import('./plugin');
+"#;
+        let result = parse_source(src, Language::JavaScript)?;
+        assert!(
+            result.imports.iter().any(|i| i.module == "./plugin"),
+            "top-level dynamic import should be captured, got: {:?}",
+            result.imports
+        );
         Ok(())
     }
 
@@ -3221,8 +3282,26 @@ export * from './utils';
 "#;
         let result = parse_source(src, Language::TypeScript)?;
         // Re-exports should be captured as imports (tracking the source)
-        assert!(result.imports.iter().any(|i| i.module == "./router"));
-        assert!(result.imports.iter().any(|i| i.module == "./config"));
+        let router_import = result
+            .imports
+            .iter()
+            .find(|i| i.module == "./router")
+            .unwrap();
+        assert!(
+            router_import.names.as_ref().unwrap().contains("Router"),
+            "expected Router in names, got: {:?}",
+            router_import.names
+        );
+        let config_import = result
+            .imports
+            .iter()
+            .find(|i| i.module == "./config")
+            .unwrap();
+        assert!(
+            config_import.names.as_ref().unwrap().contains("Config"),
+            "expected Config in names, got: {:?}",
+            config_import.names
+        );
         assert!(result.imports.iter().any(|i| i.module == "./utils"));
         Ok(())
     }
