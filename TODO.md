@@ -89,16 +89,6 @@ Claude Code injects context from 40+ sources per turn: IDE selection, open files
 - Cap total pruner output at a percentage of the model's context window (e.g., 5% = 10K for 200K context)
 - In the hook script: check if CLAUDE.md or `.claude/rules/` exist and pass `--has-project-docs` flag
 
-### Keyword IDF weighting
-
-All keywords currently contribute equally to file/symbol scoring. "handle" and "reconnection" both give FILE_STEM_CONTAINS=40. But "reconnection" matches 5 files while "handle" matches 500+. The specific keyword should contribute far more to ranking.
-
-**Evidence:** narrow_fix query "What files handle WebSocket reconnection" — keyword "handle" matches 25+ handler files that fill all result slots, drowning out files matching the specific keyword "reconnection". Same pattern across data_flow and cross_package tasks.
-
-**Implementation:** Compute IDF (inverse document frequency) per keyword from the index. Weight keyword match scores by IDF so rare keywords contribute more. `score += match_type_score * idf_weight`. This naturally pushes files matching specific keywords above files matching generic ones.
-
-**Validation:** Posthoc against `opus_openclaw_oneshot_n3_v027_20260406.json`. narrow_fix recall should improve significantly.
-
 ### Tighter result set (precision improvement)
 
 Pruner suggests ~63 files on average but Claude only uses ~4-11. 6% precision means 94% of suggestions are noise the model must wade through.
@@ -243,6 +233,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Structural ranking transparency: authority header with index stats, per-file reasons (symbol/keyword hit counts), ranking note. A/B tested: neutral on cost/tools (N=3), no regression
 - [x] Prompt cache-friendly output: deterministic sort ordering via alphabetical tiebreakers on all sort sites. Output hashing and skip already implemented via budget system. No timestamps or non-deterministic content
 - [x] Keyword stemming + bidirectional prefix matching (`rust-stemmers` Snowball English). Stem-based candidate gathering and scoring fallback. No posthoc recall change yet — narrow_fix bottleneck is keyword quality ("handle" drowning out "reconnection"), not stemming
+- [x] Keyword IDF weighting: `idf = min(file_idf, sym_idf)` with stem-aware hit counts. Rare keywords contribute more to scoring. Posthoc: openclaw recall 40% → 43%, implement 79% → 83%, narrow_fix 0% → 40%
 
 ## Explored but rejected
 
