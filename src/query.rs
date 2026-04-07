@@ -5,6 +5,10 @@ use crate::db::{FileRow, IndexDb, SymbolRow, TraceRow};
 use anyhow::Result;
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::{HashMap, HashSet};
+
+/// Per-keyword IDF (inverse document frequency) weights.
+/// Rare keywords get higher weights, common ones get lower weights.
+pub type IdfWeights = HashMap<String, f64>;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -181,7 +185,7 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let raw_keywords = extract_keywords(ask);
     // Check test intent BEFORE filtering, so "test" isn't lost as a stop-word
     let query_about_testing = is_query_about_testing(&raw_keywords);
-    let (keywords, has_specific) = filter_low_specificity_keywords(&raw_keywords, db)?;
+    let (keywords, has_specific, idf) = filter_low_specificity_keywords(&raw_keywords, db)?;
 
     // If no keyword is specific enough, return empty result
     if keywords.is_empty() || !has_specific {
@@ -205,12 +209,13 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         &matching_files,
         &matching_symbols,
         &keywords,
+        &idf,
         db,
         query_about_testing,
     )?;
 
     let (matching_symbols, top_symbols) =
-        rank_and_filter_symbols(&matching_symbols, &keywords, &file_scores);
+        rank_and_filter_symbols(&matching_symbols, &keywords, &idf, &file_scores);
     let execution_paths = trace_paths(&top_symbols, db)?;
 
     // Graph expansion: add files discovered through execution paths that
@@ -232,6 +237,7 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let matching_files = rank_and_filter_files(
         &matching_files,
         &keywords,
+        &idf,
         &symbol_file_counts,
         query_about_testing,
     );
@@ -318,16 +324,17 @@ const MIN_FILES_FOR_SPECIFICITY: i64 = 10;
 fn filter_low_specificity_keywords(
     keywords: &[String],
     db: &IndexDb,
-) -> Result<(Vec<String>, bool)> {
+) -> Result<(Vec<String>, bool, IdfWeights)> {
     let total_files = db.file_count()?;
     if total_files < MIN_FILES_FOR_SPECIFICITY {
-        return Ok((keywords.to_vec(), true));
+        return Ok((keywords.to_vec(), true, IdfWeights::new()));
     }
 
     let total_symbols = db.symbol_count()?.max(1);
 
     let mut filtered = Vec::new();
     let mut has_specific = false;
+    let mut weights = IdfWeights::new();
 
     for kw in keywords {
         let file_hits = db.count_files_matching(kw)?;
@@ -340,6 +347,18 @@ fn filter_low_specificity_keywords(
             continue;
         }
 
+        // IDF: log(total / hits), clamped to [1.0, 10.0].
+        // A keyword matching 1 file out of 10,000 gets weight ~9.2.
+        // A keyword matching 1,000 files out of 10,000 gets weight ~2.3.
+        let idf = if file_hits > 0 {
+            (total_files as f64 / file_hits as f64)
+                .ln()
+                .clamp(1.0, 10.0)
+        } else {
+            10.0 // not found in any file path → maximally specific
+        };
+        weights.insert(kw.clone(), idf);
+
         filtered.push(kw.clone());
 
         // Check if this keyword is specific enough
@@ -347,18 +366,18 @@ fn filter_low_specificity_keywords(
             has_specific = true;
         }
     }
-    Ok((filtered, has_specific))
+    Ok((filtered, has_specific, weights))
 }
 
 // Keep individual functions for unit test access
 #[cfg(test)]
 fn filter_keywords_only(keywords: &[String], db: &IndexDb) -> Result<Vec<String>> {
-    filter_low_specificity_keywords(keywords, db).map(|(kw, _)| kw)
+    filter_low_specificity_keywords(keywords, db).map(|(kw, _, _)| kw)
 }
 
 #[cfg(test)]
 fn has_specific_keyword(keywords: &[String], db: &IndexDb) -> Result<bool> {
-    filter_low_specificity_keywords(keywords, db).map(|(_, has)| has)
+    filter_low_specificity_keywords(keywords, db).map(|(_, has, _)| has)
 }
 
 // ---------------------------------------------------------------------------
@@ -473,11 +492,12 @@ fn build_file_scores(
     files: &[FileRow],
     symbols: &[SymbolRow],
     keywords: &[String],
+    idf: &IdfWeights,
     db: &IndexDb,
     query_about_testing: bool,
 ) -> Result<HashMap<i64, i32>> {
     let no_counts = HashMap::new();
-    let scored = score_and_rank_files(files, keywords, &no_counts, query_about_testing);
+    let scored = score_and_rank_files(files, keywords, idf, &no_counts, query_about_testing);
     let mut map: HashMap<i64, i32> = scored.iter().map(|(f, s)| (f.id, *s)).collect();
 
     // Score files that host matched symbols but weren't in the file results.
@@ -485,7 +505,7 @@ fn build_file_scores(
         if !map.contains_key(&sym.file_id)
             && let Some(f) = db.get_file_by_path_id(sym.file_id)?
         {
-            map.insert(f.id, score_file(&f, keywords));
+            map.insert(f.id, score_file(&f, keywords, idf));
         }
     }
     Ok(map)
@@ -495,9 +515,10 @@ fn build_file_scores(
 fn rank_and_filter_symbols(
     symbols: &[SymbolRow],
     keywords: &[String],
+    idf: &IdfWeights,
     file_scores: &HashMap<i64, i32>,
 ) -> (Vec<SymbolRow>, Vec<SymbolRow>) {
-    let scored = score_and_rank_symbols(symbols, keywords, file_scores);
+    let scored = score_and_rank_symbols(symbols, keywords, idf, file_scores);
     let cutoff = dynamic_cutoff(&scored, MIN_SYMBOL_SCORE);
 
     let top: Vec<SymbolRow> = scored
@@ -530,10 +551,11 @@ fn count_symbols_per_file(symbols: &[SymbolRow]) -> HashMap<i64, usize> {
 fn rank_and_filter_files(
     files: &[FileRow],
     keywords: &[String],
+    idf: &IdfWeights,
     symbol_counts: &HashMap<i64, usize>,
     query_about_testing: bool,
 ) -> Vec<FileRow> {
-    let scored = score_and_rank_files(files, keywords, symbol_counts, query_about_testing);
+    let scored = score_and_rank_files(files, keywords, idf, symbol_counts, query_about_testing);
     let cutoff = dynamic_cutoff(&scored, MIN_FILE_SCORE);
 
     scored
@@ -701,25 +723,34 @@ fn split_identifier(s: &str) -> Vec<String> {
 // Symbol scoring
 // ---------------------------------------------------------------------------
 
-fn score_symbol(sym: &SymbolRow, keywords: &[String], file_scores: &HashMap<i64, i32>) -> i32 {
+fn score_symbol(
+    sym: &SymbolRow,
+    keywords: &[String],
+    idf: &IdfWeights,
+    file_scores: &HashMap<i64, i32>,
+) -> i32 {
     let name_lower = sym.name.to_lowercase();
     let name_stem = STEMMER.stem(&name_lower);
     let mut score: i32 = 0;
 
     for kw in keywords {
+        let w = idf.get(kw).copied().unwrap_or(1.0);
         let kw_stem = STEMMER.stem(kw);
-        if name_lower == *kw {
-            score += EXACT_MATCH;
+        let base = if name_lower == *kw {
+            EXACT_MATCH
         } else if name_lower.starts_with(kw) || kw.starts_with(&name_lower) {
             // Bidirectional prefix: "reconnect" matches "reconnectPolicy" (forward)
             // and "auth" matches keyword "authent" (reverse — abbreviation in code)
-            score += PREFIX_MATCH;
+            PREFIX_MATCH
         } else if name_lower.contains(kw.as_str()) {
-            score += SUBSTRING_MATCH;
+            SUBSTRING_MATCH
         } else if *name_stem == *kw_stem && kw_stem.len() >= MIN_STEM_LEN {
             // Stem match: "reconnection" and "reconnect" both stem to "reconnect"
-            score += PREFIX_MATCH;
-        }
+            PREFIX_MATCH
+        } else {
+            0
+        };
+        score += (base as f64 * w) as i32;
     }
 
     match sym.kind.as_str() {
@@ -741,11 +772,12 @@ fn score_symbol(sym: &SymbolRow, keywords: &[String], file_scores: &HashMap<i64,
 fn score_and_rank_symbols<'a>(
     symbols: &'a [SymbolRow],
     keywords: &[String],
+    idf: &IdfWeights,
     file_scores: &HashMap<i64, i32>,
 ) -> Vec<(&'a SymbolRow, i32)> {
     let mut scored: Vec<_> = symbols
         .iter()
-        .map(|s| (s, score_symbol(s, keywords, file_scores)))
+        .map(|s| (s, score_symbol(s, keywords, idf, file_scores)))
         .collect();
     scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name.cmp(&b.0.name)));
     scored
@@ -755,17 +787,17 @@ fn score_and_rank_symbols<'a>(
 // File scoring
 // ---------------------------------------------------------------------------
 
-fn score_file(file: &FileRow, keywords: &[String]) -> i32 {
+fn score_file(file: &FileRow, keywords: &[String], idf: &IdfWeights) -> i32 {
     let path_lower = file.path.to_lowercase();
 
-    let keyword_score = score_file_keywords(&path_lower, keywords);
+    let keyword_score = score_file_keywords(&path_lower, keywords, idf);
     let quality_score = score_file_quality(&path_lower, file);
 
     keyword_score + quality_score
 }
 
 /// Score how well keywords match the file path/name.
-fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
+fn score_file_keywords(path_lower: &str, keywords: &[String], idf: &IdfWeights) -> i32 {
     let filename = path_lower.rsplit('/').next().unwrap_or(path_lower);
     let stem = filename
         .rsplit_once('.')
@@ -784,13 +816,14 @@ fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
         .collect();
 
     for kw in keywords {
+        let w = idf.get(kw).copied().unwrap_or(1.0);
         let kw_stemmed = STEMMER.stem(kw);
-        if stem == *kw {
-            score += FILE_EXACT_STEM;
+        let base = if stem == *kw {
             filename_hits += 1;
+            FILE_EXACT_STEM
         } else if stem.contains(kw.as_str()) {
-            score += FILE_STEM_CONTAINS;
             filename_hits += 1;
+            FILE_STEM_CONTAINS
         } else if kw_stemmed.len() >= MIN_STEM_LEN
             && stem_parts_stemmed
                 .iter()
@@ -798,11 +831,14 @@ fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
         {
             // Stem match: keyword "reconnection" stems to "reconnect",
             // file stem part "reconnect" also stems to "reconnect" → match
-            score += FILE_STEM_CONTAINS;
             filename_hits += 1;
+            FILE_STEM_CONTAINS
         } else if path_lower.contains(kw.as_str()) {
-            score += FILE_DIR_CONTAINS;
-        }
+            FILE_DIR_CONTAINS
+        } else {
+            0
+        };
+        score += (base as f64 * w) as i32;
     }
 
     if filename_hits >= 2 {
@@ -863,13 +899,14 @@ fn score_file_quality(path_lower: &str, file: &FileRow) -> i32 {
 fn score_and_rank_files<'a>(
     files: &'a [FileRow],
     keywords: &[String],
+    idf: &IdfWeights,
     symbol_counts: &HashMap<i64, usize>,
     query_about_testing: bool,
 ) -> Vec<(&'a FileRow, i32)> {
     let mut scored: Vec<_> = files
         .iter()
         .map(|f| {
-            let base = score_file(f, keywords);
+            let base = score_file(f, keywords, idf);
             let sym_boost =
                 symbol_counts.get(&f.id).copied().unwrap_or(0) as i32 * FILE_SYMBOL_BOOST;
             let mut score = base + sym_boost;
@@ -1113,6 +1150,10 @@ mod tests {
         HashMap::new()
     }
 
+    fn default_idf() -> IdfWeights {
+        HashMap::new()
+    }
+
     #[test]
     fn test_extract_keywords_basic() {
         let kws = extract_keywords("why is login broken?");
@@ -1170,7 +1211,12 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["login".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(score, EXACT_MATCH + SYM_FUNCTION_BONUS);
     }
 
@@ -1186,7 +1232,12 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["login".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
     }
 
@@ -1202,7 +1253,12 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["login".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(score, SUBSTRING_MATCH + SYM_TYPE_BONUS);
     }
 
@@ -1240,7 +1296,12 @@ mod tests {
                 file_path: "a.rs".into(),
             },
         ];
-        let ranked = score_and_rank_symbols(&symbols, &["timeout".to_string()], &no_file_scores());
+        let ranked = score_and_rank_symbols(
+            &symbols,
+            &["timeout".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(ranked[0].0.id, 2); // exact match first
         assert_eq!(ranked[1].0.id, 3); // prefix match second
         assert_eq!(ranked[2].0.id, 1); // substring match last
@@ -1296,7 +1357,12 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["login".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(score, SYM_FUNCTION_BONUS);
     }
 
@@ -1315,6 +1381,7 @@ mod tests {
         let score = score_symbol(
             &sym,
             &["login".to_string(), "handler".to_string()],
+            &default_idf(),
             &no_file_scores(),
         );
         // login: prefix 50, handler: substring 10 => 60 + 20 method bonus
@@ -1333,13 +1400,23 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["login".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["login".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(score, EXACT_MATCH);
     }
 
     #[test]
     fn test_score_and_rank_empty() {
-        let ranked = score_and_rank_symbols(&[], &["login".to_string()], &no_file_scores());
+        let ranked = score_and_rank_symbols(
+            &[],
+            &["login".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert!(ranked.is_empty());
     }
 
@@ -1425,7 +1502,7 @@ mod tests {
             line_count: 50,
             is_test: false,
         };
-        let score = score_file(&file, &["websocket".to_string()]);
+        let score = score_file(&file, &["websocket".to_string()], &default_idf());
         assert_eq!(score, FILE_EXACT_STEM + FILE_LANGUAGE_BONUS);
     }
 
@@ -1439,7 +1516,7 @@ mod tests {
             line_count: 100,
             is_test: false,
         };
-        let score = score_file(&file, &["websocket".to_string()]);
+        let score = score_file(&file, &["websocket".to_string()], &default_idf());
         assert_eq!(score, FILE_EXACT_STEM + DIR_DOCS_PENALTY);
     }
 
@@ -1453,7 +1530,7 @@ mod tests {
             line_count: 100,
             is_test: false,
         };
-        let score = score_file(&file, &["websocket".to_string()]);
+        let score = score_file(&file, &["websocket".to_string()], &default_idf());
         assert_eq!(
             score,
             FILE_EXACT_STEM + DIR_DOCS_PENALTY + DIR_LOCALE_PENALTY
@@ -1478,8 +1555,8 @@ mod tests {
             line_count: 100,
             is_test: false,
         };
-        let src_score = score_file(&src, &["websocket".to_string()]);
-        let doc_score = score_file(&doc, &["websocket".to_string()]);
+        let src_score = score_file(&src, &["websocket".to_string()], &default_idf());
+        let doc_score = score_file(&doc, &["websocket".to_string()], &default_idf());
         assert!(
             src_score > doc_score,
             "source ({src_score}) should beat doc ({doc_score})"
@@ -1503,6 +1580,7 @@ mod tests {
                 "token".to_string(),
                 "validator".to_string(),
             ],
+            &default_idf(),
         );
         // stem "token_validator" contains "token" (40) + "validator" (40) → 2 hits → +30 multi bonus
         // "auth" dir only (5) + language (20)
@@ -1523,9 +1601,9 @@ mod tests {
             line_count: 20,
             is_test: false,
         };
-        let score = score_file(&file, &["auth".to_string()]);
+        let score = score_file(&file, &["auth".to_string()], &default_idf());
         assert_eq!(score, FILE_DIR_CONTAINS + FILE_LANGUAGE_BONUS);
-        let score2 = score_file(&file, &["handler".to_string()]);
+        let score2 = score_file(&file, &["handler".to_string()], &default_idf());
         assert_eq!(score2, FILE_LANGUAGE_BONUS);
     }
 
@@ -1558,7 +1636,13 @@ mod tests {
             },
         ];
         let no_counts = HashMap::new();
-        let ranked = score_and_rank_files(&files, &["websocket".to_string()], &no_counts, false);
+        let ranked = score_and_rank_files(
+            &files,
+            &["websocket".to_string()],
+            &default_idf(),
+            &no_counts,
+            false,
+        );
         assert_eq!(ranked[0].0.id, 2, "source file should rank first");
         assert_eq!(ranked[1].0.id, 3, "docs should rank second");
         assert_eq!(ranked[2].0.id, 1, "zh-CN docs should rank last");
@@ -2003,7 +2087,7 @@ mod tests {
         let keywords = vec!["auth".to_string()];
         let no_counts = HashMap::new();
         let files = [test_file, src_file];
-        let ranked = score_and_rank_files(&files, &keywords, &no_counts, false);
+        let ranked = score_and_rank_files(&files, &keywords, &default_idf(), &no_counts, false);
         // Source file should rank higher than test file for non-test query
         assert_eq!(ranked[0].0.path, "src/auth.rs");
     }
@@ -2030,7 +2114,7 @@ mod tests {
         let keywords = vec!["test".to_string(), "auth".to_string()];
         let no_counts = HashMap::new();
         let files = [test_file, src_file];
-        let ranked = score_and_rank_files(&files, &keywords, &no_counts, true);
+        let ranked = score_and_rank_files(&files, &keywords, &default_idf(), &no_counts, true);
         // Test file should not be heavily penalized when query is about testing
         let test_score = ranked.iter().find(|(f, _)| f.is_test).unwrap().1;
         let src_score = ranked.iter().find(|(f, _)| !f.is_test).unwrap().1;
@@ -2059,7 +2143,7 @@ mod tests {
         let keywords = vec!["types".to_string()];
         let no_counts = HashMap::new();
         let files = [gen_file, src_file];
-        let ranked = score_and_rank_files(&files, &keywords, &no_counts, false);
+        let ranked = score_and_rank_files(&files, &keywords, &default_idf(), &no_counts, false);
         // Source file should rank higher than generated file
         assert_eq!(ranked[0].0.path, "src/types.ts");
     }
@@ -2109,7 +2193,13 @@ mod tests {
             },
         ];
         // Both files have no keyword match → equal scores
-        let ranked = score_and_rank_files(&files, &["unrelated".into()], &HashMap::new(), false);
+        let ranked = score_and_rank_files(
+            &files,
+            &["unrelated".into()],
+            &default_idf(),
+            &HashMap::new(),
+            false,
+        );
         assert_eq!(ranked.len(), 2);
         // Alphabetical tiebreaker: alpha before zebra
         assert!(ranked[0].0.path < ranked[1].0.path);
@@ -2140,7 +2230,12 @@ mod tests {
             },
         ];
         // Neither matches "unrelated" → equal scores
-        let ranked = score_and_rank_symbols(&symbols, &["unrelated".into()], &no_file_scores());
+        let ranked = score_and_rank_symbols(
+            &symbols,
+            &["unrelated".into()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(ranked.len(), 2);
         // Alphabetical tiebreaker: alpha before zebra
         assert_eq!(ranked[0].0.name, "alpha");
@@ -2187,7 +2282,12 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["reconnection".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["reconnection".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
     }
 
@@ -2207,7 +2307,12 @@ mod tests {
         // "routes" contains "rout" which is a substring of "router", so it matches
         // via substring, not stem. Stem match would be: stem("routes")="rout",
         // stem("router")="router" — different, so no stem match.
-        let score = score_symbol(&sym, &["routes".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["routes".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         // "router" contains "rout" (from kw "routes"? No — "routes" is the kw,
         // check: "router".contains("routes") = false. starts_with? No.
         // Stem check: stem("routes")="rout", stem("router")="router" — different.
@@ -2226,7 +2331,7 @@ mod tests {
             line_count: 50,
             is_test: false,
         };
-        let score = score_file(&file, &["reconnection".to_string()]);
+        let score = score_file(&file, &["reconnection".to_string()], &default_idf());
         assert_eq!(score, FILE_STEM_CONTAINS + FILE_LANGUAGE_BONUS);
     }
 
@@ -2241,7 +2346,7 @@ mod tests {
             line_count: 60,
             is_test: false,
         };
-        let score = score_file(&file, &["reconnection".to_string()]);
+        let score = score_file(&file, &["reconnection".to_string()], &default_idf());
         assert_eq!(score, FILE_STEM_CONTAINS + FILE_LANGUAGE_BONUS);
     }
 
@@ -2258,7 +2363,12 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        let score = score_symbol(&sym, &["authentication".to_string()], &no_file_scores());
+        let score = score_symbol(
+            &sym,
+            &["authentication".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
         // "authentication".starts_with("auth") → true → PREFIX_MATCH
         assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
     }
