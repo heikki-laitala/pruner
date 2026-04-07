@@ -347,16 +347,25 @@ fn filter_low_specificity_keywords(
             continue;
         }
 
+        // Also count stem hits so inflected forms ("reconnections") get
+        // the frequency of their stem ("reconnect") instead of idf=10.0.
+        let (eff_file_hits, eff_sym_hits) = if let Some(stemmed) = stem_keyword(kw) {
+            let sf = db.count_files_matching(&stemmed)?;
+            let ss = db.count_symbols_matching(&stemmed)?;
+            (file_hits.max(sf), symbol_hits.max(ss))
+        } else {
+            (file_hits, symbol_hits)
+        };
+
         // IDF: min of file-based and symbol-based IDF, clamped to [1.0, 10.0].
         // Uses the minimum so keywords common in *either* dimension get low weight.
-        // "handle" matching 0 file paths but 500 symbols → symbol IDF is low → low weight.
-        let file_idf = if file_hits > 0 {
-            (total_files as f64 / file_hits as f64).ln()
+        let file_idf = if eff_file_hits > 0 {
+            (total_files as f64 / eff_file_hits as f64).ln()
         } else {
             10.0
         };
-        let sym_idf = if symbol_hits > 0 {
-            (total_symbols as f64 / symbol_hits as f64).ln()
+        let sym_idf = if eff_sym_hits > 0 {
+            (total_symbols as f64 / eff_sym_hits as f64).ln()
         } else {
             10.0
         };
