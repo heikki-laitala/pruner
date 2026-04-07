@@ -391,7 +391,9 @@ fn gather_candidates(keywords: &[String], db: &IndexDb) -> Result<(Vec<FileRow>,
     }
 
     for term in &search_terms {
-        collect_dedup(&mut files, &mut seen_files, db.search_files(term)?, |f| f.id);
+        collect_dedup(&mut files, &mut seen_files, db.search_files(term)?, |f| {
+            f.id
+        });
 
         collect_dedup(
             &mut symbols,
