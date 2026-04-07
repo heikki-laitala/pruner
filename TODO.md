@@ -236,6 +236,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Prompt cache-friendly output: deterministic sort ordering via alphabetical tiebreakers on all sort sites. Output hashing and skip already implemented via budget system. No timestamps or non-deterministic content
 - [x] Keyword stemming + bidirectional prefix matching (`rust-stemmers` Snowball English). Stem-based candidate gathering and scoring fallback. No posthoc recall change yet — narrow_fix bottleneck is keyword quality ("handle" drowning out "reconnection"), not stemming
 - [x] Keyword IDF weighting: `idf = min(file_idf, sym_idf)` with stem-aware hit counts. Rare keywords contribute more to scoring. Posthoc: openclaw recall 40% → 43%, implement 79% → 83%, narrow_fix 0% → 40%
+- [x] TS/JS parser: JSX components as call edges, dynamic `import()` as imports, re-export tracking (`export { X } from './module'`). Barrel file full resolution and React Compiler detection deferred
 
 ## Explored but rejected
 
