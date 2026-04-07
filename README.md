@@ -520,6 +520,7 @@ Basic indexing (files, metadata):
 - Import resolution is heuristic (module name -> file path mapping)
 - Relevance scoring can miss results when keywords don't appear in file paths or symbol names (e.g., a function that handles authentication but is named `validateRequest`)
 - On very large repos (10K+ files), full mode produces ~55-70K tokens — the default auto mode caps output at ~10-15K tokens
+- Keyword stemming uses an English stemmer — queries in other languages won't benefit from stem-based matching, though exact and substring matching still work. Code identifiers are typically English regardless of query language
 
 ## Development
 

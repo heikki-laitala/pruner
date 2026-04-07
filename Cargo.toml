@@ -32,6 +32,7 @@ rayon = "1.11.0"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
 tree-sitter-c-sharp = "0.23"
+rust-stemmers = "1.2.0"
 
 [dev-dependencies]
 assert_cmd = "2"

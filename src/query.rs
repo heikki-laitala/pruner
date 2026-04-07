@@ -3,6 +3,7 @@
 
 use crate::db::{FileRow, IndexDb, SymbolRow, TraceRow};
 use anyhow::Result;
+use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -77,6 +78,15 @@ const SYM_TYPE_BONUS: i32 = 5;
 /// Minimum length for sub-keywords split from compound identifiers.
 /// Short fragments like "web" from "WebSocket" cause overly broad matches.
 const MIN_SUB_KEYWORD_LEN: usize = 4;
+
+/// Minimum length for a stemmed keyword to be useful.
+/// Stems shorter than this (e.g., "us" from "use") are too broad for LIKE matching.
+const MIN_STEM_LEN: usize = 4;
+
+/// Snowball English stemmer, used to normalize query keywords so that
+/// natural-language forms like "reconnection" match code identifiers like
+/// "reconnect" and "reconnectPolicy".
+static STEMMER: LazyLock<Stemmer> = LazyLock::new(|| Stemmer::create(Algorithm::English));
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -356,39 +366,56 @@ fn has_specific_keyword(keywords: &[String], db: &IndexDb) -> Result<bool> {
 // ---------------------------------------------------------------------------
 
 /// Search files and symbols across all keyword-matching strategies.
+/// Also searches with stemmed keyword variants to find candidates that
+/// the original form would miss (e.g., "reconnection" → "reconnect"
+/// finds reconnect.ts).
 fn gather_candidates(keywords: &[String], db: &IndexDb) -> Result<(Vec<FileRow>, Vec<SymbolRow>)> {
     let mut files = Vec::new();
     let mut symbols = Vec::new();
     let mut seen_files = HashSet::new();
     let mut seen_symbols = HashSet::new();
 
+    // Build search terms: original keywords + their stems (deduplicated)
+    let mut search_terms: Vec<String> = Vec::new();
+    let mut seen_terms = HashSet::new();
     for kw in keywords {
-        collect_dedup(&mut files, &mut seen_files, db.search_files(kw)?, |f| f.id);
+        if seen_terms.insert(kw.clone()) {
+            search_terms.push(kw.clone());
+        }
+        if let Some(stemmed) = stem_keyword(kw) {
+            if !STOP_WORDS.contains(stemmed.as_str()) && seen_terms.insert(stemmed.clone()) {
+                search_terms.push(stemmed);
+            }
+        }
+    }
+
+    for term in &search_terms {
+        collect_dedup(&mut files, &mut seen_files, db.search_files(term)?, |f| f.id);
 
         collect_dedup(
             &mut symbols,
             &mut seen_symbols,
-            db.search_symbols(kw)?,
+            db.search_symbols(term)?,
             |s| s.id,
         );
         // Skip expensive cross-reference searches for short keywords — they
         // produce too many false positives (e.g. "web" matching thousands).
-        if kw.len() >= MIN_SUB_KEYWORD_LEN {
+        if term.len() >= MIN_SUB_KEYWORD_LEN {
             collect_dedup(
                 &mut symbols,
                 &mut seen_symbols,
-                db.search_symbols_by_signature(kw)?,
+                db.search_symbols_by_signature(term)?,
                 |s| s.id,
             );
             collect_dedup(
                 &mut symbols,
                 &mut seen_symbols,
-                db.search_callers_of(kw)?,
+                db.search_callers_of(term)?,
                 |s| s.id,
             );
         }
 
-        for file_id in db.search_importing_files(kw)? {
+        for file_id in db.search_importing_files(term)? {
             if seen_files.insert(file_id)
                 && let Some(file) = db.get_file_by_path_id(file_id)?
             {
@@ -627,6 +654,19 @@ fn extract_quoted_phrases(ask: &str) -> Vec<String> {
     phrases
 }
 
+/// Stem a keyword using the Snowball English stemmer.
+/// Returns the stemmed form if it differs from the original and is long enough
+/// to be useful in LIKE queries. Returns `None` if stemming produced no change
+/// or the stem is too short.
+fn stem_keyword(kw: &str) -> Option<String> {
+    let stemmed = STEMMER.stem(kw);
+    let s = stemmed.as_ref();
+    if s == kw || s.len() < MIN_STEM_LEN {
+        return None;
+    }
+    Some(s.to_string())
+}
+
 /// Split a camelCase or snake_case identifier into parts.
 fn split_identifier(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
@@ -660,15 +700,22 @@ fn split_identifier(s: &str) -> Vec<String> {
 
 fn score_symbol(sym: &SymbolRow, keywords: &[String], file_scores: &HashMap<i64, i32>) -> i32 {
     let name_lower = sym.name.to_lowercase();
+    let name_stem = STEMMER.stem(&name_lower);
     let mut score: i32 = 0;
 
     for kw in keywords {
+        let kw_stem = STEMMER.stem(kw);
         if name_lower == *kw {
             score += EXACT_MATCH;
-        } else if name_lower.starts_with(kw) {
+        } else if name_lower.starts_with(kw) || kw.starts_with(&name_lower) {
+            // Bidirectional prefix: "reconnect" matches "reconnectPolicy" (forward)
+            // and "auth" matches keyword "authent" (reverse — abbreviation in code)
             score += PREFIX_MATCH;
-        } else if name_lower.contains(kw) {
+        } else if name_lower.contains(kw.as_str()) {
             score += SUBSTRING_MATCH;
+        } else if *name_stem == *kw_stem && kw_stem.len() >= MIN_STEM_LEN {
+            // Stem match: "reconnection" and "reconnect" both stem to "reconnect"
+            score += PREFIX_MATCH;
         }
     }
 
@@ -725,11 +772,29 @@ fn score_file_keywords(path_lower: &str, keywords: &[String]) -> i32 {
     let mut score: i32 = 0;
     let mut filename_hits = 0;
 
+    // Pre-stem the file stem parts for stem-based matching below.
+    // File stems may be hyphenated (e.g., "reconnect-policy"), so stem each part.
+    let stem_parts_stemmed: Vec<String> = stem
+        .split(|c: char| c == '-' || c == '_' || c == '.')
+        .filter(|s| !s.is_empty())
+        .map(|s| STEMMER.stem(s).into_owned())
+        .collect();
+
     for kw in keywords {
+        let kw_stemmed = STEMMER.stem(kw);
         if stem == *kw {
             score += FILE_EXACT_STEM;
             filename_hits += 1;
         } else if stem.contains(kw.as_str()) {
+            score += FILE_STEM_CONTAINS;
+            filename_hits += 1;
+        } else if kw_stemmed.len() >= MIN_STEM_LEN
+            && stem_parts_stemmed
+                .iter()
+                .any(|sp| *sp == *kw_stemmed && sp.len() >= MIN_STEM_LEN)
+        {
+            // Stem match: keyword "reconnection" stems to "reconnect",
+            // file stem part "reconnect" also stems to "reconnect" → match
             score += FILE_STEM_CONTAINS;
             filename_hits += 1;
         } else if path_lower.contains(kw.as_str()) {
@@ -2077,5 +2142,121 @@ mod tests {
         // Alphabetical tiebreaker: alpha before zebra
         assert_eq!(ranked[0].0.name, "alpha");
         assert_eq!(ranked[1].0.name, "zebra");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stemming tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stem_keyword_basic() {
+        // Natural language → code form
+        assert_eq!(stem_keyword("reconnection"), Some("reconnect".into()));
+        assert_eq!(stem_keyword("authentication"), Some("authent".into()));
+        assert_eq!(stem_keyword("validation"), Some("valid".into()));
+        assert_eq!(stem_keyword("loading"), Some("load".into()));
+    }
+
+    #[test]
+    fn test_stem_keyword_no_change() {
+        // Already a root form or too short to stem
+        assert_eq!(stem_keyword("reconnect"), None);
+        assert_eq!(stem_keyword("auth"), None);
+        assert_eq!(stem_keyword("load"), None);
+    }
+
+    #[test]
+    fn test_stem_keyword_too_short() {
+        // Stem shorter than MIN_STEM_LEN should return None
+        assert_eq!(stem_keyword("use"), None); // would stem to "us" (2 chars)
+    }
+
+    #[test]
+    fn test_score_symbol_stem_match() {
+        // keyword "reconnection" should match symbol "reconnect" via stem
+        let sym = SymbolRow {
+            id: 1,
+            file_id: 1,
+            name: "reconnect".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["reconnection".to_string()], &no_file_scores());
+        assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
+    }
+
+    #[test]
+    fn test_score_symbol_stem_no_false_positive() {
+        // "routes" stems to "rout", "router" stems to "router" — different stems
+        let sym = SymbolRow {
+            id: 1,
+            file_id: 1,
+            name: "router".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
+        };
+        // "routes" contains "rout" which is a substring of "router", so it matches
+        // via substring, not stem. Stem match would be: stem("routes")="rout",
+        // stem("router")="router" — different, so no stem match.
+        let score = score_symbol(&sym, &["routes".to_string()], &no_file_scores());
+        // "router" contains "rout" (from kw "routes"? No — "routes" is the kw,
+        // check: "router".contains("routes") = false. starts_with? No.
+        // Stem check: stem("routes")="rout", stem("router")="router" — different.
+        // So no keyword match at all, just function bonus.
+        assert_eq!(score, SYM_FUNCTION_BONUS);
+    }
+
+    #[test]
+    fn test_score_file_stem_match() {
+        // keyword "reconnection" should match file "reconnect.ts" via stem
+        let file = FileRow {
+            id: 1,
+            path: "extensions/whatsapp/src/reconnect.ts".into(),
+            language: Some("typescript".into()),
+            size: 1500,
+            line_count: 50,
+            is_test: false,
+        };
+        let score = score_file(&file, &["reconnection".to_string()]);
+        assert_eq!(score, FILE_STEM_CONTAINS + FILE_LANGUAGE_BONUS);
+    }
+
+    #[test]
+    fn test_score_file_stem_hyphenated() {
+        // keyword "reconnection" should match "reconnect-policy.ts" via stem
+        let file = FileRow {
+            id: 1,
+            path: "extensions/slack/src/monitor/reconnect-policy.ts".into(),
+            language: Some("typescript".into()),
+            size: 2000,
+            line_count: 60,
+            is_test: false,
+        };
+        let score = score_file(&file, &["reconnection".to_string()]);
+        assert_eq!(score, FILE_STEM_CONTAINS + FILE_LANGUAGE_BONUS);
+    }
+
+    #[test]
+    fn test_score_symbol_bidirectional_prefix() {
+        // "auth" in code should match keyword "authentication" via reverse prefix
+        let sym = SymbolRow {
+            id: 1,
+            file_id: 1,
+            name: "auth".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
+        };
+        let score = score_symbol(&sym, &["authentication".to_string()], &no_file_scores());
+        // "authentication".starts_with("auth") → true → PREFIX_MATCH
+        assert_eq!(score, PREFIX_MATCH + SYM_FUNCTION_BONUS);
     }
 }
