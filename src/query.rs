@@ -347,16 +347,20 @@ fn filter_low_specificity_keywords(
             continue;
         }
 
-        // IDF: log(total / hits), clamped to [1.0, 10.0].
-        // A keyword matching 1 file out of 10,000 gets weight ~9.2.
-        // A keyword matching 1,000 files out of 10,000 gets weight ~2.3.
-        let idf = if file_hits > 0 {
-            (total_files as f64 / file_hits as f64)
-                .ln()
-                .clamp(1.0, 10.0)
+        // IDF: min of file-based and symbol-based IDF, clamped to [1.0, 10.0].
+        // Uses the minimum so keywords common in *either* dimension get low weight.
+        // "handle" matching 0 file paths but 500 symbols → symbol IDF is low → low weight.
+        let file_idf = if file_hits > 0 {
+            (total_files as f64 / file_hits as f64).ln()
         } else {
-            10.0 // not found in any file path → maximally specific
+            10.0
         };
+        let sym_idf = if symbol_hits > 0 {
+            (total_symbols as f64 / symbol_hits as f64).ln()
+        } else {
+            10.0
+        };
+        let idf = file_idf.min(sym_idf).clamp(1.0, 10.0);
         weights.insert(kw.clone(), idf);
 
         filtered.push(kw.clone());
