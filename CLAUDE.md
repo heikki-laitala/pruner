@@ -55,6 +55,15 @@ Step 1 replaces a 20+ min A/B test with a 5-second offline check. Only proceed t
 
 The test repos need to be cloned first (the A/B test harness does this automatically, or manually: `git clone https://github.com/nestjs/nest.git /tmp/pruner-bench/nest`).
 
+## Before Committing
+
+Always run lint and tests before creating commits or PRs:
+
+```bash
+cargo clippy -- -D warnings   # lint (must pass clean)
+cargo test --bin pruner --test integration  # unit + integration tests
+```
+
 ## Conventions
 
 - **Git**: Conventional commits (`feat:`, `fix:`, `chore:`, `refactor:`, `test:`, `ci:`). No Co-Authored-By trailer. No "Generated with Claude Code" footer in PR descriptions.
