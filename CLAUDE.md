@@ -32,7 +32,7 @@ When changing scoring, ranking, context output, or anything that affects pruner'
 
    ```bash
    cargo build --release
-   python3 tests/posthoc_analysis.py tests/ab-tests/fast_implement_n10.json --repo /tmp/pruner-bench/nest --pruner ./target/release/pruner
+   python3 tests/posthoc_analysis.py tests/ab-tests/sonnet_nest_oneshot_n10_v027_20260406.json --repo /tmp/pruner-bench/nest --pruner ./target/release/pruner
    ```
 
    Check: did recall improve? Did precision change? Which files are still missed?

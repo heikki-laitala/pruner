@@ -117,7 +117,7 @@ Option 3 is likely best. Stemming alone misses abbreviations (`auth`), prefix al
 
 **Expected impact:** narrow_fix recall 9% → ~70%+. data_flow and cross_package should also improve significantly. Precision may drop slightly (more matches) but recall gain is worth it.
 
-**Validation:** Run posthoc against `opus_openclaw_oneshot_n3.json` before/after. Check narrow_fix recall specifically.
+**Validation:** Run posthoc against `opus_openclaw_oneshot_n3_v027_20260406.json` before/after. Check narrow_fix recall specifically.
 
 ## Medium priority
 
