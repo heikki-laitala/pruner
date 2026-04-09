@@ -1,3 +1,8 @@
+---
+name: pruner
+description: Uses the local pruner indexer to gather relevant code context before making changes, debugging, refactoring, or answering questions about this repository.
+---
+
 # Pruner — automatic code context
 
 Pruner is a tree-sitter-based code indexer that pre-analyzes the entire codebase. It builds a call graph, symbol index, and file dependency map at index time, then uses your prompt keywords to find the most relevant execution paths, files, and code snippets. The output is equivalent to you running dozens of search and file-read calls, but computed in seconds from a pre-built index.
