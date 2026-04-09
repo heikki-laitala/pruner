@@ -56,8 +56,8 @@ fn clean_codex_hooks_json(path: &Path) {
         if remove_file {
             let _ = fs::remove_file(path);
             println!("  Removed {} (was pruner-only)", path.display());
-        } else {
-            let _ = fs::write(path, serde_json::to_string_pretty(&config).unwrap());
+        } else if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = fs::write(path, json);
             println!("  Cleaned pruner hook from {}", path.display());
         }
     }
@@ -89,8 +89,8 @@ fn clean_codex_config_toml(path: &Path) {
         if config.as_table().is_some_and(|t| t.is_empty()) {
             let _ = fs::remove_file(path);
             println!("  Removed {} (was pruner-only)", path.display());
-        } else {
-            let _ = fs::write(path, toml::to_string_pretty(&config).unwrap());
+        } else if let Ok(toml_str) = toml::to_string_pretty(&config) {
+            let _ = fs::write(path, toml_str);
             println!("  Cleaned pruner hook flag from {}", path.display());
         }
     }

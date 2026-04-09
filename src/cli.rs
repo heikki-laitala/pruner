@@ -96,6 +96,28 @@ struct InitOptions {
     no_root: bool,
 }
 
+impl InitOptions {
+    fn has_non_claude_flag(&self) -> bool {
+        self.copilot_skill
+            || self.copilot_global
+            || self.copilot_hook
+            || self.codex
+            || self.codex_hook
+            || self.codex_global
+    }
+
+    fn has_any_flag(&self) -> bool {
+        self.hook
+            || self.global
+            || self.copilot_skill
+            || self.copilot_global
+            || self.copilot_hook
+            || self.codex
+            || self.codex_hook
+            || self.codex_global
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Index a repository
@@ -482,6 +504,8 @@ const CODEX_HOOK_SCRIPT: &str = include_str!("../.codex/hooks/pruner-context.sh"
 const AGENTS_TEMPLATE: &str = include_str!("../AGENTS.template.md");
 
 fn cmd_init(repo: &Path, opts: InitOptions) -> Result<()> {
+    let has_non_claude = opts.has_non_claude_flag();
+    let has_any = opts.has_any_flag();
     let InitOptions {
         hook,
         global,
@@ -501,6 +525,10 @@ fn cmd_init(repo: &Path, opts: InitOptions) -> Result<()> {
     if codex_global && !codex && !codex_hook {
         anyhow::bail!("--codex-global requires --codex and/or --codex-hook");
     }
+    #[cfg(windows)]
+    if codex_hook {
+        eprintln!("Warning: Codex hooks are experimental and currently disabled on Windows");
+    }
 
     // Detect existing global install — skip project-level files if global hook is set up.
     // Hook injects context directly, so project-level skill/CLAUDE.md is redundant.
@@ -508,25 +536,11 @@ fn cmd_init(repo: &Path, opts: InitOptions) -> Result<()> {
     let existing = crate::upgrade::detect_installed_integrations();
     let has_global_hook = existing.hook;
 
-    let install_claude = (!copilot_skill
-        && !copilot_global
-        && !copilot_hook
-        && !codex
-        && !codex_hook
-        && !codex_global)
-        || hook
-        || global;
+    let install_claude = !has_non_claude || hook || global;
 
     // If running bare `pruner init` (no flags) and global hook is already installed,
     // skip project-level skill/CLAUDE.md — just do .gitignore + index.
-    let bare_init = !hook
-        && !global
-        && !copilot_skill
-        && !copilot_global
-        && !copilot_hook
-        && !codex
-        && !codex_hook
-        && !codex_global;
+    let bare_init = !has_any;
     let skip_claude_project = bare_init && has_global_hook;
 
     if skip_claude_project {
@@ -974,7 +988,14 @@ fn has_codex_hooks_enabled(path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(path) else {
         return false;
     };
-    content.contains("codex_hooks = true")
+    let Ok(value) = content.parse::<toml::Value>() else {
+        return false;
+    };
+    value
+        .get("features")
+        .and_then(|f| f.get("codex_hooks"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 fn enable_codex_hooks(path: &Path) -> Result<()> {
