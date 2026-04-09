@@ -7,9 +7,12 @@ INPUT=$(cat)
 if command -v jq >/dev/null 2>&1; then
   PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
   CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+elif command -v python3 >/dev/null 2>&1; then
+  PROMPT=$(echo "$INPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("prompt",""))' 2>/dev/null)
+  CWD=$(echo "$INPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("cwd","."))' 2>/dev/null)
 else
-  PROMPT=$(echo "$INPUT" | sed -n 's/.*"prompt" *: *"\(.*\)"/\1/p' | sed 's/",".*//; s/",.*//')
-  CWD=$(pwd)
+  # No jq or python3 — cannot safely parse JSON
+  exit 0
 fi
 
 if [ -z "$PROMPT" ]; then
