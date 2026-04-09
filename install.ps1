@@ -13,6 +13,9 @@
 #   PRUNER_GLOBAL       Set to "1" to install globally (~/.claude/)
 #   PRUNER_COPILOT_SKILL  Set to "1" for Copilot CLI skill
 #   PRUNER_COPILOT_GLOBAL Set to "1" for global Copilot skill
+#   PRUNER_CODEX          Set to "1" for Codex skill
+#   PRUNER_CODEX_HOOK     Set to "1" for Codex hook
+#   PRUNER_CODEX_GLOBAL   Set to "1" for global Codex integration
 #   PRUNER_NO_INTERACTIVE Set to "1" to skip prompts
 
 $ErrorActionPreference = "Stop"
@@ -24,8 +27,11 @@ $Hook = $env:PRUNER_HOOK -eq "1"
 $Global = $env:PRUNER_GLOBAL -eq "1"
 $CopilotSkill = $env:PRUNER_COPILOT_SKILL -eq "1"
 $CopilotGlobal = $env:PRUNER_COPILOT_GLOBAL -eq "1"
+$Codex = $env:PRUNER_CODEX -eq "1"
+$CodexHook = $env:PRUNER_CODEX_HOOK -eq "1"
+$CodexGlobal = $env:PRUNER_CODEX_GLOBAL -eq "1"
 $NoInteractive = $env:PRUNER_NO_INTERACTIVE -eq "1"
-$HasSetupFlags = $Hook -or $Global -or $CopilotSkill -or $CopilotGlobal
+$HasSetupFlags = $Hook -or $Global -or $CopilotSkill -or $CopilotGlobal -or $Codex -or $CodexHook -or $CodexGlobal
 
 # Resolve version
 if (-not $Version -or $Version -eq "latest") {
@@ -94,7 +100,8 @@ if (-not $HasSetupFlags -and -not $NoInteractive) {
     Write-Host "  1) Claude Code  (global - works in every repo)"
     Write-Host "  2) Copilot CLI  (global - works in every repo)"
     Write-Host "  3) Both Claude Code + Copilot CLI (global)"
-    Write-Host "  4) Skip - I'll set up later with 'pruner init'"
+    Write-Host "  4) Codex (global)"
+    Write-Host "  5) Skip - I'll set up later with 'pruner init'"
     Write-Host ""
     $Choice = Read-Host "Choice [1]"
     if ([string]::IsNullOrWhiteSpace($Choice)) { $Choice = "1" }
@@ -129,10 +136,29 @@ if (-not $HasSetupFlags -and -not $NoInteractive) {
             if ($Mode -eq "1") { $Hook = $true }
         }
         "4" {
+            $CodexGlobal = $true
+            Write-Host ""
+            Write-Host "Codex mode:"
+            Write-Host "  1) Skill - Codex calls pruner as a tool"
+            Write-Host "  2) Hook - UserPromptSubmit hook injects context (experimental)"
+            Write-Host "  3) Both"
+            Write-Host ""
+            $Mode = Read-Host "Choice [1]"
+            if ([string]::IsNullOrWhiteSpace($Mode)) { $Mode = "1" }
+            switch ($Mode) {
+                "1" { $Codex = $true }
+                "2" { $CodexHook = $true }
+                "3" { $Codex = $true; $CodexHook = $true }
+                default { $Codex = $true }
+            }
+        }
+        "5" {
             Write-Host ""
             Write-Host "To set up later:"
             Write-Host "  pruner init --global --hook          # Claude Code (recommended)"
             Write-Host "  pruner init --copilot-skill --copilot-global  # Copilot CLI"
+            Write-Host "  pruner init --codex --codex-global   # Codex skill"
+            Write-Host "  pruner init --codex-hook --codex-global  # Codex hook (experimental)"
             Write-Host "  pruner init C:\path\to\project --hook  # per-project"
             Write-Host ""
             Write-Host "Done."
@@ -155,8 +181,11 @@ if ($Hook) { $InitArgs += "--hook" }
 if ($Global) { $InitArgs += "--global" }
 if ($CopilotSkill) { $InitArgs += "--copilot-skill" }
 if ($CopilotGlobal) { $InitArgs += "--copilot-global" }
+if ($Codex) { $InitArgs += "--codex" }
+if ($CodexHook) { $InitArgs += "--codex-hook" }
+if ($CodexGlobal) { $InitArgs += "--codex-global" }
 
-if ($Global -or $CopilotGlobal) {
+if ($Global -or $CopilotGlobal -or $CodexGlobal) {
     Write-Host "Setting up global integration..."
     & $ExePath init @InitArgs
     Write-Host ""
@@ -175,6 +204,12 @@ if ($Global -or $CopilotGlobal) {
     }
     if ($CopilotSkill) {
         Write-Host "  pruner init C:\path\to\project --copilot-skill   # Copilot CLI skill files"
+    }
+    if ($Codex) {
+        Write-Host "  pruner init C:\path\to\project --codex           # Codex skill files"
+    }
+    if ($CodexHook) {
+        Write-Host "  pruner init C:\path\to\project --codex-hook      # Codex prompt hook files"
     }
 }
 

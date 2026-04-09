@@ -7,6 +7,7 @@
 # Non-interactive (flags skip the prompts):
 #   curl -sSf ... | bash -s -- --hook --global
 #   curl -sSf ... | bash -s -- --copilot-skill --copilot-global
+#   curl -sSf ... | bash -s -- --codex --codex-global
 #
 # Options (pass after --):
 #   --hook           Install Claude Code prompt-submit hook (better performance)
@@ -14,6 +15,9 @@
 #   --copilot-skill  Install Copilot CLI skill and instructions
 #   --copilot-hook   Install Copilot userPromptSubmitted hook files
 #   --copilot-global Install Copilot CLI skill globally (~/.copilot/)
+#   --codex          Install Codex skill and AGENTS.md guidance
+#   --codex-hook     Install Codex UserPromptSubmit hook
+#   --codex-global   Install Codex integration globally (~/.codex/)
 #   --dir DIR        Install binary to DIR instead of ~/.local/bin
 #   --version V      Install specific version (default: latest)
 #   --no-interactive Skip interactive prompts (just install binary)
@@ -28,6 +32,9 @@ GLOBAL=false
 COPILOT_SKILL=false
 COPILOT_HOOK=false
 COPILOT_GLOBAL=false
+CODEX=false
+CODEX_HOOK=false
+CODEX_GLOBAL=false
 NO_INTERACTIVE=false
 HAS_SETUP_FLAGS=false
 
@@ -39,17 +46,23 @@ while [ $# -gt 0 ]; do
         --copilot-skill) COPILOT_SKILL=true; HAS_SETUP_FLAGS=true ;;
         --copilot-hook) COPILOT_HOOK=true; HAS_SETUP_FLAGS=true ;;
         --copilot-global) COPILOT_GLOBAL=true; HAS_SETUP_FLAGS=true ;;
+        --codex) CODEX=true; HAS_SETUP_FLAGS=true ;;
+        --codex-hook) CODEX_HOOK=true; HAS_SETUP_FLAGS=true ;;
+        --codex-global) CODEX_GLOBAL=true; HAS_SETUP_FLAGS=true ;;
         --no-interactive) NO_INTERACTIVE=true ;;
         --dir) INSTALL_DIR="$2"; shift ;;
         --version) VERSION="$2"; shift ;;
         --help|-h)
-            echo "Usage: install.sh [--hook] [--global] [--copilot-skill] [--copilot-hook] [--copilot-global] [--dir DIR] [--version VERSION] [--no-interactive]"
+            echo "Usage: install.sh [--hook] [--global] [--copilot-skill] [--copilot-hook] [--copilot-global] [--codex] [--codex-hook] [--codex-global] [--dir DIR] [--version VERSION] [--no-interactive]"
             echo ""
             echo "  --hook           Install Claude Code prompt-submit hook (better performance)"
             echo "  --global         Install skill/hook globally (~/.claude/)"
             echo "  --copilot-skill  Install Copilot CLI skill and instructions"
             echo "  --copilot-hook   Install Copilot userPromptSubmitted hook files"
             echo "  --copilot-global Install Copilot CLI skill globally (~/.copilot/)"
+            echo "  --codex          Install Codex skill and AGENTS.md guidance"
+            echo "  --codex-hook     Install Codex UserPromptSubmit hook"
+            echo "  --codex-global   Install Codex integration globally (~/.codex/)"
             echo "  --dir DIR        Install binary to DIR (default: ~/.local/bin)"
             echo "  --version V      Install specific version (default: latest)"
             echo "  --no-interactive Skip interactive prompts (just install binary)"
@@ -153,7 +166,8 @@ if [ "$HAS_SETUP_FLAGS" = false ] && [ "$NO_INTERACTIVE" = false ] && [ -r /dev/
     echo "  1) Claude Code  (global — works in every repo)"
     echo "  2) Copilot CLI  (global — works in every repo)"
     echo "  3) Both Claude Code + Copilot CLI (global)"
-    echo "  4) Skip — I'll set up later with 'pruner init'"
+    echo "  4) Codex (global)"
+    echo "  5) Skip — I'll set up later with 'pruner init'"
     echo ""
     CHOICE=$(ask "Choice [1]:" "1")
 
@@ -189,10 +203,28 @@ if [ "$HAS_SETUP_FLAGS" = false ] && [ "$NO_INTERACTIVE" = false ] && [ -r /dev/
             fi
             ;;
         4)
+            CODEX_GLOBAL=true
+            echo ""
+            echo "Codex mode:"
+            echo "  1) Skill — Codex calls pruner as a tool"
+            echo "  2) Hook — UserPromptSubmit hook injects context (experimental)"
+            echo "  3) Both"
+            echo ""
+            MODE=$(ask "Choice [1]:" "1")
+            case "$MODE" in
+                1) CODEX=true ;;
+                2) CODEX_HOOK=true ;;
+                3) CODEX=true; CODEX_HOOK=true ;;
+                *) CODEX=true ;;
+            esac
+            ;;
+        5)
             echo ""
             echo "To set up later:"
             echo "  pruner init --global --hook          # Claude Code (recommended)"
             echo "  pruner init --copilot-skill --copilot-global  # Copilot CLI"
+            echo "  pruner init --codex --codex-global   # Codex skill"
+            echo "  pruner init --codex-hook --codex-global  # Codex hook (experimental)"
             echo "  pruner init /path/to/project --hook  # per-project"
             echo ""
             echo "Done."
@@ -226,8 +258,17 @@ fi
 if [ "$COPILOT_GLOBAL" = true ]; then
     INIT_ARGS="${INIT_ARGS} --copilot-global"
 fi
+if [ "$CODEX" = true ]; then
+    INIT_ARGS="${INIT_ARGS} --codex"
+fi
+if [ "$CODEX_HOOK" = true ]; then
+    INIT_ARGS="${INIT_ARGS} --codex-hook"
+fi
+if [ "$CODEX_GLOBAL" = true ]; then
+    INIT_ARGS="${INIT_ARGS} --codex-global"
+fi
 
-if [ "$GLOBAL" = true ] || [ "$COPILOT_GLOBAL" = true ]; then
+if [ "$GLOBAL" = true ] || [ "$COPILOT_GLOBAL" = true ] || [ "$CODEX_GLOBAL" = true ]; then
     echo "Setting up global integration..."
     "${INSTALL_DIR}/pruner" init ${INIT_ARGS}
     echo ""
@@ -249,6 +290,12 @@ elif [ "$HAS_SETUP_FLAGS" = true ]; then
     fi
     if [ "$COPILOT_HOOK" = true ]; then
         echo "  pruner init /path/to/project --copilot-hook    # Copilot prompt hook files"
+    fi
+    if [ "$CODEX" = true ]; then
+        echo "  pruner init /path/to/project --codex           # Codex skill files"
+    fi
+    if [ "$CODEX_HOOK" = true ]; then
+        echo "  pruner init /path/to/project --codex-hook      # Codex prompt hook files"
     fi
 fi
 

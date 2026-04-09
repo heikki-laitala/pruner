@@ -163,11 +163,14 @@ pub(crate) struct DetectedIntegrations {
     pub(crate) hook: bool,
     pub(crate) copilot_global: bool,
     pub(crate) copilot_skill: bool,
+    pub(crate) codex_global: bool,
+    pub(crate) codex_skill: bool,
+    pub(crate) codex_hook: bool,
 }
 
 impl DetectedIntegrations {
     fn has_any(&self) -> bool {
-        self.global || self.copilot_global
+        self.global || self.copilot_global || self.codex_global
     }
 }
 
@@ -177,12 +180,18 @@ pub(crate) fn detect_installed_integrations() -> DetectedIntegrations {
     let claude_hook = home.join(".claude/hooks/pruner-context.sh").exists();
     let claude_skill = home.join(".claude/skills/pruner/SKILL.md").exists();
     let copilot_skill = home.join(".copilot/skills/pruner/SKILL.md").exists();
+    let codex_skill = home.join(".codex/skills/pruner/SKILL.md").exists();
+    let codex_hook = home.join(".codex/hooks/pruner-context.sh").exists()
+        || crate::cli::has_codex_hook(&home.join(".codex/hooks.json"));
 
     DetectedIntegrations {
         global: claude_hook || claude_skill,
         hook: claude_hook,
         copilot_global: copilot_skill,
         copilot_skill,
+        codex_global: codex_skill || codex_hook,
+        codex_skill,
+        codex_hook,
     }
 }
 
@@ -202,6 +211,15 @@ fn reinit_integrations(integrations: &DetectedIntegrations) -> Result<()> {
     }
     if integrations.copilot_skill && !integrations.copilot_global {
         args.push("--copilot-skill".to_string());
+    }
+    if integrations.codex_global {
+        args.push("--codex-global".to_string());
+    }
+    if integrations.codex_skill {
+        args.push("--codex".to_string());
+    }
+    if integrations.codex_hook {
+        args.push("--codex-hook".to_string());
     }
 
     eprintln!(
@@ -329,6 +347,9 @@ mod tests {
             hook: false,
             copilot_global: false,
             copilot_skill: false,
+            codex_global: false,
+            codex_skill: false,
+            codex_hook: false,
         };
         assert!(!d.has_any());
     }
@@ -340,6 +361,9 @@ mod tests {
             hook: true,
             copilot_global: false,
             copilot_skill: false,
+            codex_global: false,
+            codex_skill: false,
+            codex_hook: false,
         };
         assert!(d.has_any());
     }
@@ -351,6 +375,9 @@ mod tests {
             hook: false,
             copilot_global: true,
             copilot_skill: true,
+            codex_global: false,
+            codex_skill: false,
+            codex_hook: false,
         };
         assert!(d.has_any());
     }
