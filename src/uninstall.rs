@@ -6,6 +6,96 @@ use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+fn clean_codex_hooks_json(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+
+    let mut changed = false;
+    if let Some(hooks) = config.get_mut("hooks").and_then(|h| h.as_object_mut())
+        && let Some(submit) = hooks
+            .get_mut("UserPromptSubmit")
+            .and_then(|s| s.as_array_mut())
+    {
+        for entry in submit.iter_mut() {
+            if let Some(hook_arr) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) {
+                let before = hook_arr.len();
+                hook_arr.retain(|h| {
+                    !h.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c.contains("pruner-context"))
+                });
+                if hook_arr.len() < before {
+                    changed = true;
+                }
+            }
+        }
+        submit.retain(|entry| {
+            entry
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .is_none_or(|a| !a.is_empty())
+        });
+        if submit.is_empty() {
+            hooks.remove("UserPromptSubmit");
+        }
+    }
+
+    if changed {
+        let remove_file = config
+            .as_object()
+            .and_then(|o| o.get("hooks"))
+            .and_then(|h| h.as_object())
+            .is_none_or(|h| h.is_empty());
+        if remove_file {
+            let _ = fs::remove_file(path);
+            println!("  Removed {} (was pruner-only)", path.display());
+        } else if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = fs::write(path, json);
+            println!("  Cleaned pruner hook from {}", path.display());
+        }
+    }
+}
+
+fn clean_codex_config_toml(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(mut config) = content.parse::<toml::Value>() else {
+        return;
+    };
+
+    let mut changed = false;
+    if let Some(root) = config.as_table_mut()
+        && let Some(features) = root.get_mut("features").and_then(|f| f.as_table_mut())
+        && features.remove("codex_hooks").is_some()
+    {
+        changed = true;
+        if features.is_empty() {
+            root.remove("features");
+        }
+    }
+
+    if changed {
+        if config.as_table().is_some_and(|t| t.is_empty()) {
+            let _ = fs::remove_file(path);
+            println!("  Removed {} (was pruner-only)", path.display());
+        } else if let Ok(toml_str) = toml::to_string_pretty(&config) {
+            let _ = fs::write(path, toml_str);
+            println!("  Cleaned pruner hook flag from {}", path.display());
+        }
+    }
+}
+
 /// Remove a file if it exists, printing what was removed.
 fn remove_file(path: &Path) {
     if path.exists() {
@@ -184,6 +274,15 @@ fn uninstall_copilot_global(home: &Path) {
     remove_file(&copilot.join("hooks/pruner-context.ps1"));
 }
 
+/// Remove global Codex integrations from ~/.codex/
+fn uninstall_codex_global(home: &Path) {
+    let codex = home.join(".codex");
+    remove_dir(&codex.join("skills/pruner"));
+    remove_file(&codex.join("hooks/pruner-context.sh"));
+    clean_codex_hooks_json(&codex.join("hooks.json"));
+    clean_codex_config_toml(&codex.join("config.toml"));
+}
+
 /// Remove per-project Claude integrations
 fn uninstall_claude_project(repo: &Path) {
     let claude = repo.join(".claude");
@@ -202,6 +301,15 @@ fn uninstall_copilot_project(repo: &Path) {
     remove_file(&repo.join(".github/hooks/pruner-context.ps1"));
 }
 
+/// Remove per-project Codex integrations
+fn uninstall_codex_project(repo: &Path) {
+    remove_dir(&repo.join(".codex/skills/pruner"));
+    remove_file(&repo.join(".codex/hooks/pruner-context.sh"));
+    clean_codex_hooks_json(&repo.join(".codex/hooks.json"));
+    clean_codex_config_toml(&repo.join(".codex/config.toml"));
+    remove_pruner_section(&repo.join("AGENTS.md"));
+}
+
 // ---------------------------------------------------------------------------
 // Scan: find leftover pruner traces across the filesystem
 // ---------------------------------------------------------------------------
@@ -212,8 +320,10 @@ pub(crate) enum TraceKind {
     PrunerDir,
     ClaudeSkillDir,
     CopilotSkillDir,
+    CodexSkillDir,
     PrunerSection,
     SettingsHook,
+    CodexHookConfig,
     HookFile,
     GitignoreEntry,
 }
@@ -224,8 +334,10 @@ impl fmt::Display for TraceKind {
             TraceKind::PrunerDir => write!(f, ".pruner/ index"),
             TraceKind::ClaudeSkillDir => write!(f, "Claude skill"),
             TraceKind::CopilotSkillDir => write!(f, "Copilot skill"),
+            TraceKind::CodexSkillDir => write!(f, "Codex skill"),
             TraceKind::PrunerSection => write!(f, "pruner section"),
             TraceKind::SettingsHook => write!(f, "settings hook"),
+            TraceKind::CodexHookConfig => write!(f, "Codex hook config"),
             TraceKind::HookFile => write!(f, "hook file"),
             TraceKind::GitignoreEntry => write!(f, ".gitignore entry"),
         }
@@ -250,7 +362,10 @@ impl FoundTrace {
     /// Remove this trace using the appropriate cleanup method.
     fn remove(&self) {
         match self.kind {
-            TraceKind::PrunerDir | TraceKind::ClaudeSkillDir | TraceKind::CopilotSkillDir => {
+            TraceKind::PrunerDir
+            | TraceKind::ClaudeSkillDir
+            | TraceKind::CopilotSkillDir
+            | TraceKind::CodexSkillDir => {
                 remove_dir(&self.path);
             }
             TraceKind::HookFile => {
@@ -262,6 +377,13 @@ impl FoundTrace {
             TraceKind::SettingsHook => {
                 clean_settings_json(&self.path);
             }
+            TraceKind::CodexHookConfig => {
+                if self.path.file_name().is_some_and(|n| n == "hooks.json") {
+                    clean_codex_hooks_json(&self.path);
+                } else {
+                    clean_codex_config_toml(&self.path);
+                }
+            }
             TraceKind::GitignoreEntry => {
                 clean_gitignore(&self.path);
             }
@@ -272,7 +394,7 @@ impl FoundTrace {
 /// Infer the project root from a trace path by stripping known integration subdirs.
 /// e.g. `/home/user/myproject/.claude/skills/pruner` -> `/home/user/myproject`
 fn infer_project(path: &Path) -> PathBuf {
-    const MARKERS: &[&str] = &[".claude", ".copilot", ".github", ".pruner"];
+    const MARKERS: &[&str] = &[".claude", ".copilot", ".codex", ".github", ".pruner"];
     // Walk ancestors; the project root is the parent of the first known marker dir.
     for ancestor in path.ancestors() {
         if let Some(name) = ancestor.file_name()
@@ -341,6 +463,7 @@ fn match_dir_trace(path: &Path, name: &str) -> Option<TraceKind> {
             match parent.parent()?.file_name()?.to_str()? {
                 ".claude" => Some(TraceKind::ClaudeSkillDir),
                 ".copilot" => Some(TraceKind::CopilotSkillDir),
+                ".codex" => Some(TraceKind::CodexSkillDir),
                 _ => None,
             }
         }
@@ -358,11 +481,12 @@ fn match_file_trace(path: &Path, name: &str) -> Option<TraceKind> {
                 .and_then(|p| p.file_name())
                 .is_some_and(|n| n == "hooks");
             let parent_of_hooks = path.ancestors().nth(2).and_then(|p| p.file_name());
-            let in_integration_dir = parent_of_hooks
-                .is_some_and(|n| n == ".claude" || n == ".copilot" || n == ".github");
+            let in_integration_dir = parent_of_hooks.is_some_and(|n| {
+                n == ".claude" || n == ".copilot" || n == ".codex" || n == ".github"
+            });
             (in_hooks_dir && in_integration_dir).then_some(TraceKind::HookFile)
         }
-        "CLAUDE.md" | "copilot-instructions.md" => {
+        "CLAUDE.md" | "AGENTS.md" | "copilot-instructions.md" => {
             crate::cli::has_pruner_section(path).then_some(TraceKind::PrunerSection)
         }
         "settings.json" => {
@@ -371,6 +495,21 @@ fn match_file_trace(path: &Path, name: &str) -> Option<TraceKind> {
                 .and_then(|p| p.file_name())
                 .is_some_and(|n| n == ".claude");
             (in_claude && has_pruner_hook_entry(path)).then_some(TraceKind::SettingsHook)
+        }
+        "hooks.json" => {
+            let in_codex = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == ".codex");
+            (in_codex && crate::cli::has_codex_hook(path)).then_some(TraceKind::CodexHookConfig)
+        }
+        "config.toml" => {
+            let in_codex = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .is_some_and(|n| n == ".codex");
+            (in_codex && fs::read_to_string(path).is_ok_and(|c| c.contains("codex_hooks = true")))
+                .then_some(TraceKind::CodexHookConfig)
         }
         ".gitignore" => {
             let content = fs::read_to_string(path).ok()?;
@@ -508,6 +647,7 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
 
         uninstall_claude_project(repo);
         uninstall_copilot_project(repo);
+        uninstall_codex_project(repo);
         clean_gitignore(&repo.join(".gitignore"));
 
         if purge {
@@ -526,6 +666,7 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
 
         uninstall_claude_global(&home);
         uninstall_copilot_global(&home);
+        uninstall_codex_global(&home);
 
         // Scan for project-level traces
         println!("\nScanning for project-level pruner traces...");

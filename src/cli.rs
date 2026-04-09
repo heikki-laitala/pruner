@@ -84,6 +84,40 @@ struct Cli {
     command: Commands,
 }
 
+struct InitOptions {
+    hook: bool,
+    global: bool,
+    copilot_skill: bool,
+    copilot_hook: bool,
+    copilot_global: bool,
+    codex: bool,
+    codex_hook: bool,
+    codex_global: bool,
+    no_root: bool,
+}
+
+impl InitOptions {
+    fn has_non_claude_flag(&self) -> bool {
+        self.copilot_skill
+            || self.copilot_global
+            || self.copilot_hook
+            || self.codex
+            || self.codex_hook
+            || self.codex_global
+    }
+
+    fn has_any_flag(&self) -> bool {
+        self.hook
+            || self.global
+            || self.copilot_skill
+            || self.copilot_global
+            || self.copilot_hook
+            || self.codex
+            || self.codex_hook
+            || self.codex_global
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Index a repository
@@ -153,7 +187,7 @@ enum Commands {
         #[arg(default_value = ".")]
         repo: PathBuf,
     },
-    /// Set up pruner in a project (Claude/Copilot skills, hook, instructions)
+    /// Set up pruner in a project (Claude/Copilot/Codex skills, hooks, instructions)
     Init {
         /// Path to the project
         #[arg(default_value = ".")]
@@ -173,6 +207,15 @@ enum Commands {
         /// Install Copilot CLI skill globally (~/.copilot/)
         #[arg(long)]
         copilot_global: bool,
+        /// Install Codex skill and AGENTS.md guidance
+        #[arg(long)]
+        codex: bool,
+        /// Install Codex UserPromptSubmit hook
+        #[arg(long)]
+        codex_hook: bool,
+        /// Install Codex integration globally (~/.codex/)
+        #[arg(long)]
+        codex_global: bool,
         /// In meta-repo mode, skip indexing root directory files (only index sub-repos)
         #[arg(long)]
         no_root: bool,
@@ -229,15 +272,23 @@ pub fn run() -> Result<()> {
             copilot_skill,
             copilot_hook,
             copilot_global,
+            codex,
+            codex_hook,
+            codex_global,
             no_root,
         } => cmd_init(
             &repo,
-            hook,
-            global,
-            copilot_skill,
-            copilot_hook,
-            copilot_global,
-            no_root,
+            InitOptions {
+                hook,
+                global,
+                copilot_skill,
+                copilot_hook,
+                copilot_global,
+                codex,
+                codex_hook,
+                codex_global,
+                no_root,
+            },
         ),
         Commands::Index {
             repo,
@@ -448,20 +499,35 @@ const COPILOT_TEMPLATE_HOOK: &str = include_str!("../COPILOT.template.hook.md");
 const COPILOT_HOOK_JSON: &str = include_str!("../.copilot/hooks/pruner-context.json");
 const COPILOT_HOOK_BASH: &str = include_str!("../.copilot/hooks/pruner-context.sh");
 const COPILOT_HOOK_PS1: &str = include_str!("../.copilot/hooks/pruner-context.ps1");
+const CODEX_SKILL_MD: &str = include_str!("../.codex/skills/pruner/SKILL.md");
+const CODEX_HOOK_SCRIPT: &str = include_str!("../.codex/hooks/pruner-context.sh");
+const AGENTS_TEMPLATE: &str = include_str!("../AGENTS.template.md");
 
-fn cmd_init(
-    repo: &Path,
-    hook: bool,
-    global: bool,
-    copilot_skill: bool,
-    copilot_hook: bool,
-    copilot_global: bool,
-    no_root: bool,
-) -> Result<()> {
+fn cmd_init(repo: &Path, opts: InitOptions) -> Result<()> {
+    let has_non_claude = opts.has_non_claude_flag();
+    let has_any = opts.has_any_flag();
+    let InitOptions {
+        hook,
+        global,
+        copilot_skill,
+        copilot_hook,
+        copilot_global,
+        codex,
+        codex_hook,
+        codex_global,
+        no_root,
+    } = opts;
     if copilot_hook && copilot_global {
         anyhow::bail!(
             "--copilot-hook is repository-local; do not combine it with --copilot-global"
         );
+    }
+    if codex_global && !codex && !codex_hook {
+        anyhow::bail!("--codex-global requires --codex and/or --codex-hook");
+    }
+    #[cfg(windows)]
+    if codex_hook {
+        eprintln!("Warning: Codex hooks are experimental and currently disabled on Windows");
     }
 
     // Detect existing global install — skip project-level files if global hook is set up.
@@ -470,11 +536,11 @@ fn cmd_init(
     let existing = crate::upgrade::detect_installed_integrations();
     let has_global_hook = existing.hook;
 
-    let install_claude = (!copilot_skill && !copilot_global && !copilot_hook) || hook || global;
+    let install_claude = !has_non_claude || hook || global;
 
     // If running bare `pruner init` (no flags) and global hook is already installed,
     // skip project-level skill/CLAUDE.md — just do .gitignore + index.
-    let bare_init = !hook && !global && !copilot_skill && !copilot_global && !copilot_hook;
+    let bare_init = !has_any;
     let skip_claude_project = bare_init && has_global_hook;
 
     if skip_claude_project {
@@ -535,7 +601,7 @@ fn cmd_init(
         }
     }
 
-    if !global && !copilot_global {
+    if !global && !copilot_global && !codex_global {
         // Add .pruner/ to .gitignore
         let gitignore = repo.join(".gitignore");
         let gitignore_content = if gitignore.exists() {
@@ -630,7 +696,58 @@ fn cmd_init(
         }
     }
 
-    if (!global && install_claude) || ((copilot_skill || copilot_hook) && !copilot_global) {
+    if codex || codex_hook || codex_global {
+        let codex_base = if codex_global {
+            dirs::home_dir()
+                .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+                .join(".codex")
+        } else {
+            repo.join(".codex")
+        };
+
+        if codex {
+            let codex_skill_dir = codex_base.join("skills").join("pruner");
+            fs::create_dir_all(&codex_skill_dir)?;
+            fs::write(codex_skill_dir.join("SKILL.md"), CODEX_SKILL_MD)?;
+            println!(
+                "Installed Codex skill -> {}",
+                codex_skill_dir.join("SKILL.md").display()
+            );
+        }
+
+        if codex_hook {
+            let hook_dir = codex_base.join("hooks");
+            fs::create_dir_all(&hook_dir)?;
+            let hook_path = hook_dir.join("pruner-context.sh");
+            fs::write(&hook_path, CODEX_HOOK_SCRIPT)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
+            }
+            println!("Installed Codex hook -> {}", hook_path.display());
+
+            let hooks_path = codex_base.join("hooks.json");
+            let hook_command = codex_hook_command(&hook_path, codex_global);
+            upsert_codex_hook(&hooks_path, &hook_command)?;
+            println!("Updated Codex hooks -> {}", hooks_path.display());
+
+            let config_path = codex_base.join("config.toml");
+            enable_codex_hooks(&config_path)?;
+            println!("Updated Codex config -> {}", config_path.display());
+        }
+
+        if !codex_global {
+            let agents_md = repo.join("AGENTS.md");
+            upsert_pruner_section(&agents_md, AGENTS_TEMPLATE)?;
+            println!("Updated AGENTS.md -> {}", agents_md.display());
+        }
+    }
+
+    if (!global && install_claude)
+        || ((copilot_skill || copilot_hook) && !copilot_global)
+        || ((codex || codex_hook) && !codex_global)
+    {
         println!("\nIndexing {}...", repo.display());
         cmd_index(repo, false, no_root)?;
     }
@@ -687,6 +804,30 @@ fn cmd_status(repo: Option<&Path>) -> Result<()> {
         println!("  Copilot:     not installed");
     }
 
+    let codex_dir = home.join(".codex");
+    let codex_skill = codex_dir.join("skills/pruner/SKILL.md").exists();
+    let codex_hook_file = codex_dir.join("hooks/pruner-context.sh").exists();
+    let codex_hooks_json = has_codex_hook(&codex_dir.join("hooks.json"));
+    let codex_hooks_enabled = has_codex_hooks_enabled(&codex_dir.join("config.toml"));
+
+    if codex_skill || codex_hook_file || codex_hooks_json {
+        print!("  Codex:       ");
+        let mut parts = Vec::new();
+        if codex_skill {
+            parts.push("skill");
+        }
+        if codex_hook_file || codex_hooks_json {
+            parts.push("hook");
+        }
+        print!("{}", parts.join(" + "));
+        if (codex_hook_file || codex_hooks_json) && !codex_hooks_enabled {
+            print!(" (feature flag missing)");
+        }
+        println!("  (~/.codex/)");
+    } else {
+        println!("  Codex:       not installed");
+    }
+
     // --- Per-project integrations ---
     if let Some(repo) = repo {
         println!();
@@ -735,6 +876,32 @@ fn cmd_status(repo: Option<&Path>) -> Result<()> {
             println!("  Copilot:     {}", parts.join(" + "));
         } else {
             println!("  Copilot:     not installed");
+        }
+
+        let proj_codex_skill = repo.join(".codex/skills/pruner/SKILL.md").exists();
+        let proj_codex_hook_file = repo.join(".codex/hooks/pruner-context.sh").exists();
+        let proj_codex_hooks_json = has_codex_hook(&repo.join(".codex/hooks.json"));
+        let proj_codex_hooks_enabled = has_codex_hooks_enabled(&repo.join(".codex/config.toml"));
+        let proj_agents_md = has_pruner_section(&repo.join("AGENTS.md"));
+
+        if proj_codex_skill || proj_codex_hook_file || proj_codex_hooks_json || proj_agents_md {
+            let mut parts = Vec::new();
+            if proj_codex_skill {
+                parts.push("skill");
+            }
+            if proj_codex_hook_file || proj_codex_hooks_json {
+                parts.push("hook");
+            }
+            if proj_agents_md {
+                parts.push("AGENTS.md");
+            }
+            let mut suffix = String::new();
+            if (proj_codex_hook_file || proj_codex_hooks_json) && !proj_codex_hooks_enabled {
+                suffix.push_str(" (feature flag missing)");
+            }
+            println!("  Codex:       {}{}", parts.join(" + "), suffix);
+        } else {
+            println!("  Codex:       not installed");
         }
 
         // Index status
@@ -807,6 +974,121 @@ pub(crate) fn has_pruner_section(path: &Path) -> bool {
         return false;
     };
     content.contains("## Pruner")
+}
+
+/// Check if a Codex hooks.json file contains a pruner hook entry.
+pub(crate) fn has_codex_hook(path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    content.contains("pruner-context")
+}
+
+fn has_codex_hooks_enabled(path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = content.parse::<toml::Value>() else {
+        return false;
+    };
+    value
+        .get("features")
+        .and_then(|f| f.get("codex_hooks"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn enable_codex_hooks(path: &Path) -> Result<()> {
+    let current = if path.exists() {
+        fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    let mut value = if current.trim().is_empty() {
+        toml::Value::Table(toml::map::Map::new())
+    } else {
+        current.parse::<toml::Value>()?
+    };
+
+    let root = value
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex config must be a TOML table"))?;
+    let features = root
+        .entry("features")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let features = features
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex features config must be a TOML table"))?;
+    features.insert("codex_hooks".into(), toml::Value::Boolean(true));
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, toml::to_string_pretty(&value)?)?;
+    Ok(())
+}
+
+fn upsert_codex_hook(path: &Path, command: &str) -> Result<()> {
+    let mut config: serde_json::Value = if path.exists() {
+        serde_json::from_str(&fs::read_to_string(path)?)?
+    } else {
+        serde_json::json!({})
+    };
+
+    let root = config
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex hooks.json must be a JSON object"))?;
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex hooks field must be an object"))?;
+    let submit = hooks
+        .entry("UserPromptSubmit")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex UserPromptSubmit hooks must be an array"))?;
+
+    let mut replaced = false;
+    for entry in submit.iter_mut() {
+        let Some(entry_hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
+            continue;
+        };
+        if entry_hooks.iter().any(|hook| {
+            hook.get("command")
+                .and_then(|c| c.as_str())
+                .is_some_and(|c| c.contains("pruner-context"))
+        }) {
+            *entry = serde_json::json!({
+                "hooks": [{
+                    "type": "command",
+                    "command": command,
+                    "timeout": 60,
+                    "statusMessage": "Loading pruner context"
+                }]
+            });
+            replaced = true;
+            break;
+        }
+    }
+
+    if !replaced {
+        submit.push(serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "command": command,
+                "timeout": 60,
+                "statusMessage": "Loading pruner context"
+            }]
+        }));
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&config)?)?;
+    Ok(())
 }
 
 fn cmd_index(repo: &Path, verbose: bool, no_root: bool) -> Result<()> {
@@ -1564,6 +1846,14 @@ fn path_to_hook_command(path: &std::path::Path) -> String {
     path.to_str().unwrap().replace('\\', "/")
 }
 
+fn codex_hook_command(path: &std::path::Path, global: bool) -> String {
+    if global {
+        format!("bash \"{}\"", path_to_hook_command(path))
+    } else {
+        "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pruner-context.sh\"".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1581,5 +1871,25 @@ mod tests {
             "hook command path must use forward slashes for bash compatibility, got: {command}"
         );
         assert_eq!(command, "C:/Users/testuser/.claude/hooks/pruner-context.sh");
+    }
+
+    #[test]
+    fn test_codex_global_hook_command_uses_absolute_path() {
+        let hook_path = Path::new(r"C:\Users\testuser\.codex\hooks\pruner-context.sh");
+        let command = codex_hook_command(hook_path, true);
+        assert_eq!(
+            command,
+            "bash \"C:/Users/testuser/.codex/hooks/pruner-context.sh\""
+        );
+    }
+
+    #[test]
+    fn test_codex_project_hook_command_uses_git_root() {
+        let hook_path = Path::new("/tmp/repo/.codex/hooks/pruner-context.sh");
+        let command = codex_hook_command(hook_path, false);
+        assert_eq!(
+            command,
+            "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pruner-context.sh\""
+        );
     }
 }
