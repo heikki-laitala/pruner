@@ -17,7 +17,7 @@ Pruner eliminates this. It pre-indexes your entire repository using plain struct
 | Implementation (small) | **15%** | **44%** | **59%** |
 | Narrow fix | **6%** | **39%** | **21%** |
 
-Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command. Claude Code users save on both cost and time. Copilot users save time ([Copilot results](#ab-test-results-copilot-cli)) — Copilot pricing is per premium request regardless of tool calls, so pruner speeds up tasks without affecting cost.
+Works with **Claude Code** (recommended, via prompt-submit hook), **Codex**, **Copilot**, or any agent that can run a CLI command. Claude Code users save on both cost and time. Codex supports both **skills** and a **UserPromptSubmit hook**. Copilot users save time ([Copilot results](#ab-test-results-copilot-cli)) — Copilot pricing is per premium request regardless of tool calls, so pruner speeds up tasks without affecting cost.
 
 ## Install
 
@@ -41,6 +41,12 @@ curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.s
 
 # Copilot CLI skill, global
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --copilot-skill --copilot-global
+
+# Codex skill, global
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --codex --codex-global
+
+# Codex hook, global (experimental; non-Windows)
+curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --codex-hook --codex-global
 
 # Just install the binary, no setup
 curl -sSf https://raw.githubusercontent.com/heikki-laitala/pruner/main/install.sh | bash -s -- --no-interactive
@@ -85,6 +91,8 @@ Install once — pruner works automatically in every git repository:
 pruner init --global --hook   # Claude Code hook mode (best for one-shot tasks)
 pruner init --global          # Claude Code skill mode
 pruner init --copilot-skill --copilot-global  # Copilot CLI skill mode
+pruner init --codex --codex-global            # Codex skill mode
+pruner init --codex-hook --codex-global       # Codex hook mode (experimental)
 ```
 
 This writes config files to `~/.claude/` or `~/.copilot/`. The repository is **not indexed at install time**. On your first prompt in a repo, pruner auto-indexes it, creating a `.pruner/` directory inside the repo (add it to `.gitignore`). For large repositories (10K+ files), this first-run indexing takes ~10 seconds. To avoid waiting, pre-index repos you use often:
@@ -108,6 +116,8 @@ pruner init /path/to/project --hook          # Claude Code hook mode
 pruner init /path/to/project                 # Claude Code skill mode
 pruner init /path/to/project --copilot-skill # Copilot CLI skill mode
 pruner init /path/to/project --copilot-hook  # Copilot CLI hook mode
+pruner init /path/to/project --codex         # Codex skill mode
+pruner init /path/to/project --codex-hook    # Codex hook mode (experimental)
 ```
 
 This creates config files inside the repo (`.claude/` or `.copilot/`), updates `.gitignore` to exclude `.pruner/`, and auto-indexes the project.
@@ -169,6 +179,28 @@ Then in Copilot CLI:
 Requires `--experimental` flag in Copilot CLI 1.0.x. The hook runs on `userPromptSubmitted` and writes `.pruner/copilot-context.md`.
 
 **Note:** Copilot's `userPromptSubmitted` hook is observational — the model doesn't wait for it to complete before starting. On large repos, the model may start exploring before the context file is written. For reliable results, use **skill mode**.
+
+### Codex integration
+
+| Mode | How it works | Setup |
+|------|-------------|-------|
+| **Skill** | Codex runs `pruner context` as a tool | `pruner init --codex --codex-global` |
+| **Hook** (experimental) | Codex `UserPromptSubmit` hook injects pruner output as extra developer context | `pruner init --codex-hook --codex-global` |
+
+**Skill mode** creates:
+- `.codex/skills/pruner/SKILL.md` (global: `~/.codex/skills/pruner/SKILL.md`)
+- `AGENTS.md` guidance for per-project installs
+
+**Hook mode** creates:
+- `.codex/hooks/pruner-context.sh` (global: `~/.codex/hooks/pruner-context.sh`)
+- `.codex/hooks.json`
+- `.codex/config.toml` with `[features] codex_hooks = true`
+- `AGENTS.md` guidance for per-project installs
+
+**Notes:**
+- Codex hooks are experimental and disabled on Windows in current Codex docs.
+- Repo-local Codex hook config lives in `.codex/hooks.json` and is discovered by Codex automatically.
+- The hook injects the output of `pruner context` as extra developer context before the prompt is sent.
 
 ### What happens automatically
 
