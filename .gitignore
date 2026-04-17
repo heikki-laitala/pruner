@@ -21,3 +21,6 @@ __pycache__/
 
 # Benchmark results (regenerated each run, baseline is tracked)
 tests/bench_results.json
+
+# Claude Code session state
+.claude/scheduled_tasks.lock
