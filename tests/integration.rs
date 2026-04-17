@@ -1597,7 +1597,7 @@ mod go_service {
             .args(["query", &path, "HandleLogin authentication"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Matching symbols: 3"));
+            .stdout(predicate::str::contains("Matching symbols: 4"));
     }
 
     #[test]
