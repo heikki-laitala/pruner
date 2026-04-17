@@ -1435,7 +1435,7 @@ fn cmd_context_multi(
     });
 
     // Phase 3: sort by score descending (most relevant first)
-    scored.sort_by(|a, b| b.2.cmp(&a.2));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.2));
 
     // Phase 4: generate context output with multi-repo header
     let mut combined_text = String::new();
