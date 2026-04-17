@@ -1264,6 +1264,26 @@ fn cmd_context(
         None
     };
 
+    // Restrictive injection: in auto mode (hook path), bail silently when the
+    // query produced zero matches. Emitting the authority header with empty
+    // lists would mislead the model into thinking analysis was done.
+    if mode == ContextMode::Auto
+        && result.matching_files.is_empty()
+        && result.matching_symbols.is_empty()
+        && result.execution_paths.is_empty()
+    {
+        eprintln!("Skipped: no matching context for prompt");
+        let _ = budget::save_last_query(
+            &pruner_dir,
+            &budget::LastQuery {
+                keywords: result.keywords,
+                subsystems: result.subsystems,
+                output_hash: None,
+            },
+        );
+        return Ok(());
+    }
+
     // Resolve auto mode: always brief (deferred context — model can request --detail)
     let resolved = if mode == ContextMode::Auto {
         eprintln!("Mode: auto → brief (deferred context; use --detail for full output)");
@@ -1289,18 +1309,31 @@ fn cmd_context(
     // incorrectly trigger the skip path.
     let output_hash = budget::hash_output(&format_context_text(&ctx));
 
-    // Skip entirely if output is identical to previous (auto mode only)
-    if prev_query.as_ref().and_then(|p| p.output_hash.as_deref()) == Some(output_hash.as_str()) {
-        eprintln!("Budget: skip (identical output to previous query)");
-        let _ = budget::save_last_query(
-            &pruner_dir,
-            &budget::LastQuery {
-                keywords: result.keywords,
-                subsystems: result.subsystems,
-                output_hash: Some(output_hash),
-            },
+    // Auto mode: ask the budget module whether this query is a same-topic
+    // follow-up (Brief), an identical-output repeat (Skip), or a fresh topic
+    // (Full). Brief/Full both proceed through the current always-brief
+    // resolution; Skip short-circuits.
+    if mode == ContextMode::Auto
+        && let Some(prev) = prev_query.as_ref()
+    {
+        let decision = budget::decide_budget(
+            &result.keywords,
+            &result.subsystems,
+            prev,
+            Some(output_hash.as_str()),
         );
-        return Ok(());
+        if decision == budget::Budget::Skip {
+            eprintln!("Budget: skip (identical output to previous query)");
+            let _ = budget::save_last_query(
+                &pruner_dir,
+                &budget::LastQuery {
+                    keywords: result.keywords,
+                    subsystems: result.subsystems,
+                    output_hash: Some(output_hash),
+                },
+            );
+            return Ok(());
+        }
     }
 
     if resolved == ContextMode::Brief {

@@ -317,6 +317,53 @@ mod unsupported {
 }
 
 // ============================================================================
+// Interactive-use restrictiveness: skip injection when pruner has no match
+// ============================================================================
+
+mod restrictive_injection {
+    use super::*;
+
+    #[test]
+    fn junk_prompt_with_no_matches_emits_empty_stdout() {
+        // A prompt that has no chance of matching any indexed symbol must not
+        // inject the authority header + empty scaffolding. Hooks read stdout
+        // directly, so empty stdout == no injection.
+        let dir = setup_fixture("ts_package");
+        let path = index_fixture(&dir);
+
+        let output = pruner()
+            .args(["context", &path, "thanks"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success(), "pruner should exit 0");
+        assert!(
+            output.stdout.is_empty(),
+            "stdout must be empty when no files/symbols/paths match, got:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn real_prompt_still_produces_output() {
+        // Sanity check: the empty-match bail must not swallow legit queries.
+        let dir = setup_fixture("ts_package");
+        let path = index_fixture(&dir);
+
+        let output = pruner()
+            .args(["context", &path, "handleLogin"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert!(
+            !output.stdout.is_empty(),
+            "legit query must still produce output"
+        );
+    }
+}
+
+// ============================================================================
 // Multi-repo (meta-repo pattern)
 // ============================================================================
 
