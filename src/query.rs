@@ -2,6 +2,7 @@
 //!
 
 use crate::db::{FileRow, IndexDb, SymbolRow, TraceRow};
+use crate::synonyms;
 use anyhow::Result;
 use rust_stemmers::{Algorithm, Stemmer};
 use std::collections::{HashMap, HashSet};
@@ -191,7 +192,9 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     let raw_keywords = extract_keywords(ask);
     // Check test intent BEFORE filtering, so "test" isn't lost as a stop-word
     let query_about_testing = is_query_about_testing(&raw_keywords);
-    let (keywords, has_specific, idf) = filter_low_specificity_keywords(&raw_keywords, db)?;
+    let (expanded, synonym_set) = synonyms::expand_with_synonyms(&raw_keywords);
+    let (keywords, has_specific, idf) =
+        filter_low_specificity_keywords(&expanded, &synonym_set, db)?;
 
     // If no keyword is specific enough, return empty result
     if keywords.is_empty() || !has_specific {
@@ -329,6 +332,7 @@ const MIN_FILES_FOR_SPECIFICITY: i64 = 10;
 /// - Skipped for small repos (<10 files) where frequency analysis isn't meaningful
 fn filter_low_specificity_keywords(
     keywords: &[String],
+    synonym_set: &HashSet<String>,
     db: &IndexDb,
 ) -> Result<(Vec<String>, bool, IdfWeights)> {
     let total_files = db.file_count()?;
@@ -375,13 +379,20 @@ fn filter_low_specificity_keywords(
         } else {
             10.0
         };
-        let idf = file_idf.min(sym_idf).clamp(1.0, 10.0);
+        let mut idf = file_idf.min(sym_idf).clamp(1.0, 10.0);
+        let is_synonym = synonym_set.contains(kw);
+        if is_synonym {
+            idf *= synonyms::SYNONYM_IDF_FACTOR;
+        }
         weights.insert(kw.clone(), idf);
 
         filtered.push(kw.clone());
 
-        // Check if this keyword is specific enough
-        if file_ratio < MIN_SPECIFICITY_THRESHOLD || symbol_ratio < MIN_SPECIFICITY_THRESHOLD {
+        // Only originals count toward has_specific — a synonym alone shouldn't
+        // unlock results for a prompt whose own keywords were all too common.
+        if !is_synonym
+            && (file_ratio < MIN_SPECIFICITY_THRESHOLD || symbol_ratio < MIN_SPECIFICITY_THRESHOLD)
+        {
             has_specific = true;
         }
     }
@@ -391,12 +402,12 @@ fn filter_low_specificity_keywords(
 // Keep individual functions for unit test access
 #[cfg(test)]
 fn filter_keywords_only(keywords: &[String], db: &IndexDb) -> Result<Vec<String>> {
-    filter_low_specificity_keywords(keywords, db).map(|(kw, _, _)| kw)
+    filter_low_specificity_keywords(keywords, &HashSet::new(), db).map(|(kw, _, _)| kw)
 }
 
 #[cfg(test)]
 fn has_specific_keyword(keywords: &[String], db: &IndexDb) -> Result<bool> {
-    filter_low_specificity_keywords(keywords, db).map(|(_, has, _)| has)
+    filter_low_specificity_keywords(keywords, &HashSet::new(), db).map(|(_, has, _)| has)
 }
 
 // ---------------------------------------------------------------------------
@@ -1855,6 +1866,38 @@ mod tests {
     }
 
     #[test]
+    fn test_analyze_query_expands_synonym_to_find_symbol() -> anyhow::Result<()> {
+        // Insert enough unrelated files so specificity gate passes for a
+        // keyword that only matches via synonym expansion.
+        let db = IndexDb::open_memory()?;
+        let auth_file =
+            db.insert_file("src/core/authenticate.rs", Some("rust"), 100, 20, false, 0)?;
+        db.insert_symbol(auth_file, "authenticate", "function", 1, 10, None, None)?;
+        for i in 0..50 {
+            db.insert_file(
+                &format!("src/pad/unrelated_{i}.rs"),
+                Some("rust"),
+                10,
+                5,
+                false,
+                0,
+            )?;
+        }
+
+        // User asks about "login"; repo has no "login" — only "authenticate".
+        // Synonym expansion should surface it.
+        let result = analyze_query("login", &db)?;
+        assert!(
+            result
+                .matching_symbols
+                .iter()
+                .any(|s| s.name == "authenticate"),
+            "synonym expansion should find 'authenticate' via 'login'"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_analyze_query_deduplicates() -> anyhow::Result<()> {
         let db = IndexDb::open_memory()?;
         let fid = db.insert_file("src/login.rs", Some("rust"), 100, 20, false, 0)?;
@@ -1923,13 +1966,16 @@ mod tests {
 
     #[test]
     fn test_analyze_query_infers_subsystems() -> anyhow::Result<()> {
+        // Use directory + keyword names that are NOT in any synonym cluster,
+        // so two distinct files survive scoring with comparable weights and
+        // infer_subsystems sees both subsystems in matching_files.
         let db = IndexDb::open_memory()?;
-        db.insert_file("src/auth/login.rs", Some("rust"), 100, 20, false, 0)?;
-        db.insert_file("src/api/handler.rs", Some("rust"), 200, 40, false, 0)?;
+        db.insert_file("src/billing/invoice.rs", Some("rust"), 100, 20, false, 0)?;
+        db.insert_file("src/orders/checkout.rs", Some("rust"), 200, 40, false, 0)?;
 
-        let result = analyze_query("auth api", &db)?;
-        assert!(result.subsystems.contains(&"auth".to_string()));
-        assert!(result.subsystems.contains(&"api".to_string()));
+        let result = analyze_query("invoice checkout", &db)?;
+        assert!(result.subsystems.contains(&"billing".to_string()));
+        assert!(result.subsystems.contains(&"orders".to_string()));
         Ok(())
     }
 
