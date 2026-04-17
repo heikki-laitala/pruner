@@ -1029,6 +1029,21 @@ fn enable_codex_hooks(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn pruner_hook_value(command: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "command",
+        "command": command,
+        "timeout": 60,
+        "statusMessage": "Loading pruner context"
+    })
+}
+
+fn is_pruner_hook(hook: &serde_json::Value) -> bool {
+    hook.get("command")
+        .and_then(|c| c.as_str())
+        .is_some_and(|c| c.contains("pruner-context"))
+}
+
 fn upsert_codex_hook(path: &Path, command: &str) -> Result<()> {
     let mut config: serde_json::Value = if path.exists() {
         serde_json::from_str(&fs::read_to_string(path)?)?
@@ -1050,38 +1065,23 @@ fn upsert_codex_hook(path: &Path, command: &str) -> Result<()> {
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("Codex UserPromptSubmit hooks must be an array"))?;
 
+    // Replace the pruner hook in-place within whichever entry contains it,
+    // leaving any sibling hooks from other tools untouched.
+    let new_hook = pruner_hook_value(command);
     let mut replaced = false;
     for entry in submit.iter_mut() {
         let Some(entry_hooks) = entry.get_mut("hooks").and_then(|h| h.as_array_mut()) else {
             continue;
         };
-        if entry_hooks.iter().any(|hook| {
-            hook.get("command")
-                .and_then(|c| c.as_str())
-                .is_some_and(|c| c.contains("pruner-context"))
-        }) {
-            *entry = serde_json::json!({
-                "hooks": [{
-                    "type": "command",
-                    "command": command,
-                    "timeout": 60,
-                    "statusMessage": "Loading pruner context"
-                }]
-            });
+        if let Some(existing) = entry_hooks.iter_mut().find(|h| is_pruner_hook(h)) {
+            *existing = new_hook.clone();
             replaced = true;
             break;
         }
     }
 
     if !replaced {
-        submit.push(serde_json::json!({
-            "hooks": [{
-                "type": "command",
-                "command": command,
-                "timeout": 60,
-                "statusMessage": "Loading pruner context"
-            }]
-        }));
+        submit.push(serde_json::json!({ "hooks": [new_hook] }));
     }
 
     if let Some(parent) = path.parent() {
@@ -1891,5 +1891,108 @@ mod tests {
             command,
             "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pruner-context.sh\""
         );
+    }
+
+    #[test]
+    fn test_upsert_codex_hook_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        upsert_codex_hook(&path, "bash /tmp/pruner-context.sh").unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let submit = config["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(submit.len(), 1);
+        let hooks = submit[0]["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks[0]["command"], "bash /tmp/pruner-context.sh");
+        assert_eq!(hooks[0]["timeout"], 60);
+    }
+
+    #[test]
+    fn test_upsert_codex_hook_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        upsert_codex_hook(&path, "bash /tmp/pruner-context.sh").unwrap();
+        upsert_codex_hook(&path, "bash /tmp/pruner-context.sh").unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let submit = config["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(
+            submit.len(),
+            1,
+            "repeated upsert must not duplicate entries"
+        );
+    }
+
+    #[test]
+    fn test_upsert_codex_hook_preserves_sibling_hooks() {
+        // A prior entry with a sibling hook from another tool must not be clobbered
+        // when we replace the pruner hook in the same entry.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let initial = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "bash /old/pruner-context.sh",
+                            "timeout": 30
+                        },
+                        {
+                            "type": "command",
+                            "command": "bash /opt/other-tool.sh",
+                            "timeout": 10
+                        }
+                    ]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&initial).unwrap()).unwrap();
+
+        upsert_codex_hook(&path, "bash /new/pruner-context.sh").unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let hooks = config["hooks"]["UserPromptSubmit"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(hooks.len(), 2, "sibling hook must be preserved");
+        let commands: Vec<&str> = hooks
+            .iter()
+            .map(|h| h["command"].as_str().unwrap())
+            .collect();
+        assert!(commands.contains(&"bash /new/pruner-context.sh"));
+        assert!(commands.contains(&"bash /opt/other-tool.sh"));
+    }
+
+    #[test]
+    fn test_enable_codex_hooks_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        enable_codex_hooks(&path).unwrap();
+
+        assert!(has_codex_hooks_enabled(&path));
+    }
+
+    #[test]
+    fn test_enable_codex_hooks_preserves_existing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "model = \"gpt-5\"\n\n[features]\nsome_other_flag = true\n",
+        )
+        .unwrap();
+
+        enable_codex_hooks(&path).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        let parsed: toml::Value = content.parse().unwrap();
+        assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+        assert_eq!(parsed["features"]["some_other_flag"].as_bool(), Some(true));
+        assert_eq!(parsed["features"]["codex_hooks"].as_bool(), Some(true));
     }
 }

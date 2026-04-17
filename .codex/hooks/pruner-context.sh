@@ -55,12 +55,14 @@ if [ -e "$REPO/.git" ] || [ -d "$REPO/.pruner" ]; then
   HAS_INDEX=true
 fi
 if [ "$HAS_INDEX" = false ]; then
+  shopt -s nullglob 2>/dev/null || true
   for d in "$REPO"/*/; do
     if [ -e "${d}.git" ] || [ -f "${d}.pruner/index.db" ]; then
       HAS_INDEX=true
       break
     fi
   done
+  shopt -u nullglob 2>/dev/null || true
 fi
 if [ "$HAS_INDEX" = false ]; then
   exit 0
