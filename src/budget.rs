@@ -20,7 +20,6 @@ pub struct LastQuery {
 }
 
 /// Budget decision: how much context to inject.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Budget {
     /// New topic or first query — use normal auto-detection (brief/focused).
@@ -33,7 +32,6 @@ pub enum Budget {
 
 /// Check if two keywords are similar enough to count as a match.
 /// Matches exactly, or if one is a prefix of the other (≥4 chars).
-#[cfg(test)]
 fn keywords_match(a: &str, b: &str) -> bool {
     if a == b {
         return true;
@@ -45,7 +43,6 @@ fn keywords_match(a: &str, b: &str) -> bool {
 /// Compute fuzzy Jaccard similarity between two keyword sets.
 /// Uses prefix matching (≥4 chars) so "auth" matches "authentication".
 /// Returns 0.0 when both are empty (no overlap signal).
-#[cfg(test)]
 pub fn jaccard(a: &[String], b: &[String]) -> f64 {
     if a.is_empty() && b.is_empty() {
         return 0.0;
@@ -72,11 +69,9 @@ pub fn jaccard(a: &[String], b: &[String]) -> f64 {
 /// Thresholds for budget decisions.
 /// Set at 0.35 to catch follow-up queries that share 2-3 keywords with the
 /// previous query but add noise words like "handle", "case", "also".
-#[cfg(test)]
 const SAME_TOPIC_THRESHOLD: f64 = 0.35;
 
 /// Decide the context budget by comparing current query against previous.
-#[cfg(test)]
 pub fn decide_budget(
     current_keywords: &[String],
     current_subsystems: &[String],
