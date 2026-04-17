@@ -187,10 +187,14 @@ jobs:
         run: grep -q "\.pruner/" ${{ runner.temp }}/test-repo/.gitignore
 
       # --- Run pruner context ---
+      # Prompts below target symbols that actually exist in protonmail-cli
+      # (login, pmail). Since v0.2.8 pruner skips emission when the rule ladder
+      # finds no symbol/path anchors, so generic prompts like "authentication"
+      # no longer produce output against this repo.
       - name: Run pruner context (Unix)
         if: runner.os != 'Windows'
         run: |
-          pruner context "${{ runner.temp }}/test-repo" "How does authentication work?" > "${{ runner.temp }}/context-output.md"
+          pruner context "${{ runner.temp }}/test-repo" "How does login work?" > "${{ runner.temp }}/context-output.md"
           test -s "${{ runner.temp }}/context-output.md"
           echo "--- Context output ---"
           cat "${{ runner.temp }}/context-output.md"
@@ -199,7 +203,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          pruner context "${{ runner.temp }}\test-repo" "How does authentication work?" > "${{ runner.temp }}\context-output.md"
+          pruner context "${{ runner.temp }}\test-repo" "How does login work?" > "${{ runner.temp }}\context-output.md"
           if ((Get-Item "${{ runner.temp }}\context-output.md").Length -eq 0) { throw "context output is empty" }
           Write-Host "--- Context output ---"
           Get-Content "${{ runner.temp }}\context-output.md"
@@ -210,7 +214,7 @@ jobs:
       - name: Test hook script produces output
         if: runner.os != 'Windows'
         run: |
-          echo '{"prompt": "How does the CLI argument parsing work?"}' | \
+          echo '{"prompt": "How does pmail send mail?"}' | \
             CLAUDE_PROJECT_DIR="${{ runner.temp }}/test-repo" \
             bash "${{ runner.temp }}/test-repo/.claude/hooks/pruner-context.sh" | \
             grep -q "Pruner context"
