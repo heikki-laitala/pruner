@@ -1464,4 +1464,99 @@ mod tests {
         assert_eq!(hooks.len(), 1);
         assert!(hooks[0]["command"].as_str().unwrap().contains("other-tool"));
     }
+
+    #[test]
+    fn test_clean_codex_hooks_json_pruner_only_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let hooks = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "bash /home/u/.codex/hooks/pruner-context.sh"
+                    }]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+
+        clean_codex_hooks_json(&path);
+
+        assert!(
+            !path.exists(),
+            "pruner-only hooks.json should be removed entirely"
+        );
+    }
+
+    #[test]
+    fn test_clean_codex_hooks_json_preserves_sibling_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hooks.json");
+        let hooks = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "bash /home/u/.codex/hooks/pruner-context.sh"
+                        },
+                        {
+                            "type": "command",
+                            "command": "bash /home/u/.codex/hooks/other.sh"
+                        }
+                    ]
+                }]
+            }
+        });
+        fs::write(&path, serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
+
+        clean_codex_hooks_json(&path);
+
+        let content = fs::read_to_string(&path).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let remaining = result["hooks"]["UserPromptSubmit"][0]["hooks"]
+            .as_array()
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert!(
+            remaining[0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("other.sh")
+        );
+    }
+
+    #[test]
+    fn test_clean_codex_config_toml_pruner_only_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[features]\ncodex_hooks = true\n").unwrap();
+
+        clean_codex_config_toml(&path);
+
+        assert!(
+            !path.exists(),
+            "pruner-only config.toml should be removed entirely"
+        );
+    }
+
+    #[test]
+    fn test_clean_codex_config_toml_preserves_other_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "model = \"gpt-5\"\n\n[features]\ncodex_hooks = true\nother_flag = true\n",
+        )
+        .unwrap();
+
+        clean_codex_config_toml(&path);
+
+        let content = fs::read_to_string(&path).unwrap();
+        let parsed: toml::Value = content.parse().unwrap();
+        assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+        assert_eq!(parsed["features"]["other_flag"].as_bool(), Some(true));
+        assert!(parsed["features"].get("codex_hooks").is_none());
+    }
 }
