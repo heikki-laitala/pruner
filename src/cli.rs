@@ -6,6 +6,7 @@ use crate::context::{
     self, ContextMode, brief_guidance, format_context_json, format_context_summary,
     format_context_text,
 };
+use crate::db;
 use crate::db::IndexDb;
 use crate::indexer;
 use crate::query;
@@ -1264,15 +1265,16 @@ fn cmd_context(
         None
     };
 
-    // Restrictive injection: in auto mode (hook path), bail silently when the
-    // query produced zero matches. Emitting the authority header with empty
-    // lists would mislead the model into thinking analysis was done.
+    // Restrictive injection: on the hook path (auto mode + text format), run
+    // the rule ladder against the raw query result. A weak or empty match
+    // would just mislead the model, so we bail silently and save last-query
+    // metadata so the budget module can still dedupe the next turn. JSON and
+    // summary formats are used for tooling/debugging and always get raw data.
     if mode == ContextMode::Auto
-        && result.matching_files.is_empty()
-        && result.matching_symbols.is_empty()
-        && result.execution_paths.is_empty()
+        && fmt == "text"
+        && let Some(reason) = apply_rule_ladder(&result, ask)
     {
-        eprintln!("Skipped: no matching context for prompt");
+        eprintln!("Skipped: {}", reason.message());
         let _ = budget::save_last_query(
             &pruner_dir,
             &budget::LastQuery {
@@ -1887,6 +1889,73 @@ fn codex_hook_command(path: &std::path::Path, global: bool) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Restrictive injection rule ladder (auto mode gate)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SkipReason {
+    /// Rule 1: no matches at all — the prompt had nothing pruner could anchor on.
+    AllEmpty,
+    /// Rule 2: only file-path/content matches survived; no symbol and no call
+    /// chain. File-only hits are usually "the word appeared in a comment."
+    FilesWithoutSymbols,
+    /// Rule 3: a single weak symbol with no call chain and no mention of that
+    /// symbol's name in the prompt itself — probably a coincidence.
+    WeakSingleSymbol,
+}
+
+impl SkipReason {
+    fn message(self) -> &'static str {
+        match self {
+            Self::AllEmpty => "rule 1 — no matching files, symbols, or execution paths",
+            Self::FilesWithoutSymbols => {
+                "rule 2 — file-only matches (keyword appeared in content, no symbol hit)"
+            }
+            Self::WeakSingleSymbol => {
+                "rule 3 — one weak symbol, no call chain, prompt has no exact-name anchor"
+            }
+        }
+    }
+}
+
+/// Restrictive ladder. First rung that matches returns `Some(reason)`; if
+/// nothing matches, the result is considered strong enough to inject.
+fn apply_rule_ladder(result: &query::QueryResult, prompt: &str) -> Option<SkipReason> {
+    let files = result.matching_files.len();
+    let symbols = result.matching_symbols.len();
+    let paths = result.execution_paths.len();
+
+    if files == 0 && symbols == 0 && paths == 0 {
+        return Some(SkipReason::AllEmpty);
+    }
+    if symbols == 0 && paths == 0 {
+        return Some(SkipReason::FilesWithoutSymbols);
+    }
+    if paths == 0 && symbols <= 1 && !any_symbol_name_in_prompt(&result.matching_symbols, prompt) {
+        return Some(SkipReason::WeakSingleSymbol);
+    }
+    None
+}
+
+/// Case-insensitive check: does the prompt contain an exact-token occurrence
+/// of any matched symbol's name? Tokens split on non-alphanumeric (keeping
+/// underscores so `snake_case` names stay intact).
+fn any_symbol_name_in_prompt(symbols: &[db::SymbolRow], prompt: &str) -> bool {
+    if symbols.is_empty() {
+        return false;
+    }
+    let prompt_lower = prompt.to_lowercase();
+    let tokens: std::collections::HashSet<&str> = prompt_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect();
+    symbols.iter().any(|s| {
+        let lower = s.name.to_lowercase();
+        tokens.contains(lower.as_str())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2027,5 +2096,127 @@ mod tests {
         assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
         assert_eq!(parsed["features"]["some_other_flag"].as_bool(), Some(true));
         assert_eq!(parsed["features"]["codex_hooks"].as_bool(), Some(true));
+    }
+
+    // --- rule ladder ---
+
+    fn make_file(id: i64, path: &str) -> db::FileRow {
+        db::FileRow {
+            id,
+            path: path.into(),
+            language: Some("rust".into()),
+            size: 100,
+            line_count: 10,
+            is_test: false,
+        }
+    }
+
+    fn make_symbol(id: i64, name: &str) -> db::SymbolRow {
+        db::SymbolRow {
+            id,
+            file_id: 1,
+            name: name.into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "src/foo.rs".into(),
+        }
+    }
+
+    fn empty_result() -> query::QueryResult {
+        query::QueryResult {
+            ask: "".into(),
+            keywords: vec![],
+            matching_files: vec![],
+            matching_symbols: vec![],
+            related_tests: vec![],
+            execution_paths: vec![],
+            subsystems: vec![],
+        }
+    }
+
+    #[test]
+    fn ladder_rule1_all_empty() {
+        let result = empty_result();
+        assert_eq!(
+            apply_rule_ladder(&result, "thanks"),
+            Some(SkipReason::AllEmpty)
+        );
+    }
+
+    #[test]
+    fn ladder_rule2_files_only_no_symbols_no_paths() {
+        let mut result = empty_result();
+        result.matching_files = vec![make_file(1, "src/auth.rs")];
+        assert_eq!(
+            apply_rule_ladder(&result, "auth stuff"),
+            Some(SkipReason::FilesWithoutSymbols)
+        );
+    }
+
+    #[test]
+    fn ladder_rule3_single_symbol_no_anchor_skips() {
+        // 1 symbol, no paths, symbol name NOT in prompt → weak hit, skip.
+        let mut result = empty_result();
+        result.matching_symbols = vec![make_symbol(1, "validateToken")];
+        assert_eq!(
+            apply_rule_ladder(&result, "fix the bug please"),
+            Some(SkipReason::WeakSingleSymbol)
+        );
+    }
+
+    #[test]
+    fn ladder_rule3_single_symbol_with_anchor_passes() {
+        // 1 symbol, no paths, but prompt mentions the symbol name → strong enough.
+        let mut result = empty_result();
+        result.matching_symbols = vec![make_symbol(1, "validateToken")];
+        assert_eq!(apply_rule_ladder(&result, "fix validateToken please"), None);
+    }
+
+    #[test]
+    fn ladder_two_symbols_passes_without_anchor() {
+        // 2 symbols without a call chain is still better than 1 weak hit.
+        let mut result = empty_result();
+        result.matching_symbols = vec![
+            make_symbol(1, "validateToken"),
+            make_symbol(2, "createSession"),
+        ];
+        assert_eq!(apply_rule_ladder(&result, "auth code"), None);
+    }
+
+    #[test]
+    fn ladder_execution_path_bypasses_all_rules() {
+        // Having any execution path means pruner found a real call chain —
+        // that's the strongest signal we have, so always emit.
+        let mut result = empty_result();
+        result.matching_symbols = vec![make_symbol(1, "validateToken")];
+        result.execution_paths = vec![vec![]];
+        assert_eq!(apply_rule_ladder(&result, "anything"), None);
+    }
+
+    #[test]
+    fn symbol_name_match_is_case_insensitive() {
+        let symbols = vec![make_symbol(1, "ValidateToken")];
+        assert!(any_symbol_name_in_prompt(&symbols, "fix validatetoken now"));
+    }
+
+    #[test]
+    fn symbol_name_match_requires_whole_token() {
+        // "validate" alone should NOT match "validateToken" — only full tokens count.
+        let symbols = vec![make_symbol(1, "validateToken")];
+        assert!(!any_symbol_name_in_prompt(
+            &symbols,
+            "please validate everything"
+        ));
+    }
+
+    #[test]
+    fn symbol_name_match_handles_punctuation() {
+        let symbols = vec![make_symbol(1, "handleLogin")];
+        assert!(any_symbol_name_in_prompt(
+            &symbols,
+            "what does `handleLogin` do?"
+        ));
     }
 }
