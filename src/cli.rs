@@ -1938,10 +1938,18 @@ fn apply_rule_ladder(result: &query::QueryResult, prompt: &str) -> Option<SkipRe
     None
 }
 
+/// Minimum token length before fuzzy anchor matching engages. Must stay in
+/// sync with `query::FUZZY_MIN_LEN` — below this, one edit collapses too
+/// many unrelated short words.
+const ANCHOR_FUZZY_MIN_LEN: usize = 5;
+
 /// Case-insensitive check: does the prompt contain an exact-token occurrence
-/// of any matched symbol's name? Tokens split on non-identifier characters
-/// (keeping `_` and `$` so `snake_case` and JS identifiers like `$fetch`
-/// stay intact).
+/// (or single-character typo) of any matched symbol's name? Tokens split on
+/// non-identifier characters (keeping `_` and `$` so `snake_case` and JS
+/// identifiers like `$fetch` stay intact). Fuzzy tolerance is edit distance
+/// 1 with both tokens ≥ `ANCHOR_FUZZY_MIN_LEN` — tight enough that "user"
+/// won't anchor on "used", loose enough that "autenticate" anchors on
+/// "authenticate".
 fn any_symbol_name_in_prompt(symbols: &[db::SymbolRow], prompt: &str) -> bool {
     if symbols.is_empty() {
         return false;
@@ -1953,7 +1961,16 @@ fn any_symbol_name_in_prompt(symbols: &[db::SymbolRow], prompt: &str) -> bool {
         .collect();
     symbols.iter().any(|s| {
         let lower = s.name.to_lowercase();
-        tokens.contains(lower.as_str())
+        if tokens.contains(lower.as_str()) {
+            return true;
+        }
+        if lower.len() < ANCHOR_FUZZY_MIN_LEN {
+            return false;
+        }
+        tokens.iter().any(|tok| {
+            tok.len() >= ANCHOR_FUZZY_MIN_LEN
+                && strsim::damerau_levenshtein(tok, lower.as_str()) == 1
+        })
     })
 }
 
@@ -2230,6 +2247,40 @@ mod tests {
         assert!(any_symbol_name_in_prompt(
             &symbols,
             "why does $fetch hang here?"
+        ));
+    }
+
+    #[test]
+    fn symbol_name_match_tolerates_single_typo() {
+        // A one-character typo in a long symbol name should still anchor
+        // rule 3 — losing context on typos is worse than gaining it on
+        // near-miss coincidences.
+        let symbols = vec![make_symbol(1, "authenticate")];
+        assert!(any_symbol_name_in_prompt(
+            &symbols,
+            "why does autenticate fail?"
+        ));
+    }
+
+    #[test]
+    fn symbol_name_match_rejects_two_char_typos() {
+        // Two-character edit distance must not anchor — at that distance
+        // we start matching unrelated words by coincidence.
+        let symbols = vec![make_symbol(1, "authenticate")];
+        assert!(!any_symbol_name_in_prompt(
+            &symbols,
+            "why does autentikate fail?"
+        ));
+    }
+
+    #[test]
+    fn symbol_name_match_rejects_short_token_fuzzy() {
+        // Short tokens (≤4 chars) must not fuzzy-match — "user" vs "used"
+        // would otherwise anchor on any prompt containing "used".
+        let symbols = vec![make_symbol(1, "user")];
+        assert!(!any_symbol_name_in_prompt(
+            &symbols,
+            "files i used yesterday"
         ));
     }
 }

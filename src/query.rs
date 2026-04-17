@@ -38,6 +38,12 @@ const MIN_SPECIFICITY_THRESHOLD: f64 = 0.05;
 const EXACT_MATCH: i32 = 100;
 const PREFIX_MATCH: i32 = 50;
 const SUBSTRING_MATCH: i32 = 10;
+/// Fuzzy match (edit distance 1, both tokens ≥ FUZZY_MIN_LEN). Scored below
+/// SUBSTRING so typo hits never outrank real matches — they're rescue wins.
+const FUZZY_MATCH: i32 = 5;
+/// Minimum token length before fuzzy matching kicks in. Below this, a single
+/// edit moves "api"/"apt"/"app" etc. all into the same bucket.
+const FUZZY_MIN_LEN: usize = 5;
 
 // ---------------------------------------------------------------------------
 // Scoring weights — file
@@ -736,6 +742,16 @@ fn split_identifier(s: &str) -> Vec<String> {
 // Symbol scoring
 // ---------------------------------------------------------------------------
 
+/// True when `a` and `b` differ by exactly one Damerau-Levenshtein edit and
+/// both are at least `FUZZY_MIN_LEN` long. The length gate prevents short
+/// tokens like "api"/"apt" from collapsing into each other.
+fn fuzzy_one_edit(a: &str, b: &str) -> bool {
+    if a.len() < FUZZY_MIN_LEN || b.len() < FUZZY_MIN_LEN {
+        return false;
+    }
+    strsim::damerau_levenshtein(a, b) == 1
+}
+
 fn score_symbol(
     sym: &SymbolRow,
     keywords: &[String],
@@ -760,6 +776,9 @@ fn score_symbol(
         } else if *name_stem == *kw_stem && kw_stem.len() >= MIN_STEM_LEN {
             // Stem match: "reconnection" and "reconnect" both stem to "reconnect"
             PREFIX_MATCH
+        } else if fuzzy_one_edit(&name_lower, kw) {
+            // Typo rescue: "autenticate" finds "authenticate".
+            FUZZY_MATCH
         } else {
             0
         };
@@ -848,6 +867,11 @@ fn score_file_keywords(path_lower: &str, keywords: &[String], idf: &IdfWeights) 
             FILE_STEM_CONTAINS
         } else if path_lower.contains(kw.as_str()) {
             FILE_DIR_CONTAINS
+        } else if fuzzy_one_edit(stem, kw)
+            || stem_parts_stemmed.iter().any(|sp| fuzzy_one_edit(sp, kw))
+        {
+            // Typo rescue on the filename stem or any stem part.
+            FUZZY_MATCH
         } else {
             0
         };
@@ -1276,6 +1300,74 @@ mod tests {
     }
 
     #[test]
+    fn test_score_symbol_fuzzy_typo_one_char_edit() {
+        // Typo in prompt ("autenticate" vs "authenticate") — one substitution,
+        // both ≥ 5 chars. Should match via FUZZY_MATCH, below SUBSTRING.
+        let sym = SymbolRow {
+            id: 1,
+            file_id: 1,
+            name: "authenticate".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
+        };
+        let score = score_symbol(
+            &sym,
+            &["autenticate".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
+        assert_eq!(score, FUZZY_MATCH + SYM_FUNCTION_BONUS);
+    }
+
+    #[test]
+    fn test_score_symbol_fuzzy_rejects_short_tokens() {
+        // "api" and "apt" differ by 1 char but both are < 5 chars — must not
+        // fuzzy-match or we'd flood results with unrelated hits.
+        let sym = SymbolRow {
+            id: 1,
+            file_id: 1,
+            name: "apt".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
+        };
+        let score = score_symbol(
+            &sym,
+            &["api".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
+        assert_eq!(score, SYM_FUNCTION_BONUS); // no keyword match component
+    }
+
+    #[test]
+    fn test_score_symbol_fuzzy_rejects_edit_distance_two() {
+        // "handleLogin" vs "handleLagom" — edit distance 2, must not match.
+        let sym = SymbolRow {
+            id: 1,
+            file_id: 1,
+            name: "handlelogin".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 10,
+            signature: None,
+            file_path: "a.rs".into(),
+        };
+        let score = score_symbol(
+            &sym,
+            &["handlelagom".to_string()],
+            &default_idf(),
+            &no_file_scores(),
+        );
+        assert_eq!(score, SYM_FUNCTION_BONUS);
+    }
+
+    #[test]
     fn test_score_and_rank_symbols() {
         let symbols = vec![
             SymbolRow {
@@ -1503,6 +1595,22 @@ mod tests {
         };
         let ids = result.all_relevant_file_ids();
         assert_eq!(ids.len(), 1);
+    }
+
+    #[test]
+    fn test_score_file_fuzzy_stem_typo() {
+        // Typo "webscoket" should still match file "websocket.rs" via fuzzy.
+        let file = FileRow {
+            id: 1,
+            path: "src/auth/websocket.rs".into(),
+            language: Some("rust".into()),
+            size: 200,
+            line_count: 50,
+            is_test: false,
+        };
+        let score = score_file(&file, &["webscoket".to_string()], &default_idf());
+        // FUZZY_MATCH keyword component + language bonus.
+        assert_eq!(score, FUZZY_MATCH + FILE_LANGUAGE_BONUS);
     }
 
     #[test]
@@ -2305,8 +2413,12 @@ mod tests {
     }
 
     #[test]
-    fn test_score_symbol_stem_no_false_positive() {
-        // "routes" stems to "rout", "router" stems to "router" — different stems
+    fn test_score_symbol_routes_router_fuzzy_rescue() {
+        // "routes" and "router" have different Snowball stems ("rout" vs
+        // "router") and neither is a prefix/substring of the other, so the
+        // exact/prefix/stem branches all miss. Fuzzy (edit distance 1, both
+        // ≥ 5 chars) rescues this as a weak hit — intentional: someone
+        // asking about "routes" likely wants the "router" symbol too.
         let sym = SymbolRow {
             id: 1,
             file_id: 1,
@@ -2317,20 +2429,13 @@ mod tests {
             signature: None,
             file_path: "a.rs".into(),
         };
-        // "routes" contains "rout" which is a substring of "router", so it matches
-        // via substring, not stem. Stem match would be: stem("routes")="rout",
-        // stem("router")="router" — different, so no stem match.
         let score = score_symbol(
             &sym,
             &["routes".to_string()],
             &default_idf(),
             &no_file_scores(),
         );
-        // "router" contains "rout" (from kw "routes"? No — "routes" is the kw,
-        // check: "router".contains("routes") = false. starts_with? No.
-        // Stem check: stem("routes")="rout", stem("router")="router" — different.
-        // So no keyword match at all, just function bonus.
-        assert_eq!(score, SYM_FUNCTION_BONUS);
+        assert_eq!(score, FUZZY_MATCH + SYM_FUNCTION_BONUS);
     }
 
     #[test]
