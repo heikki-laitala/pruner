@@ -1939,15 +1939,16 @@ fn apply_rule_ladder(result: &query::QueryResult, prompt: &str) -> Option<SkipRe
 }
 
 /// Case-insensitive check: does the prompt contain an exact-token occurrence
-/// of any matched symbol's name? Tokens split on non-alphanumeric (keeping
-/// underscores so `snake_case` names stay intact).
+/// of any matched symbol's name? Tokens split on non-identifier characters
+/// (keeping `_` and `$` so `snake_case` and JS identifiers like `$fetch`
+/// stay intact).
 fn any_symbol_name_in_prompt(symbols: &[db::SymbolRow], prompt: &str) -> bool {
     if symbols.is_empty() {
         return false;
     }
     let prompt_lower = prompt.to_lowercase();
     let tokens: std::collections::HashSet<&str> = prompt_lower
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
         .filter(|s| !s.is_empty())
         .collect();
     symbols.iter().any(|s| {
@@ -2217,6 +2218,18 @@ mod tests {
         assert!(any_symbol_name_in_prompt(
             &symbols,
             "what does `handleLogin` do?"
+        ));
+    }
+
+    #[test]
+    fn symbol_name_match_keeps_dollar_in_js_identifiers() {
+        // `$fetch`, `$scope`, jQuery's `$` — `$` is a valid JS/TS identifier
+        // character and must stay part of the token so a prompt that names the
+        // symbol anchors rule 3 instead of being skipped.
+        let symbols = vec![make_symbol(1, "$fetch")];
+        assert!(any_symbol_name_in_prompt(
+            &symbols,
+            "why does $fetch hang here?"
         ));
     }
 }
