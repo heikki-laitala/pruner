@@ -151,6 +151,102 @@ Claude Code uses Anthropic's prompt cache (up to 1-hour TTL for eligible users, 
 - **Output hashing**: Already implemented via budget system (`hash_output` + `last-query.json`)
 - **Deterministic formatting**: Already clean — no timestamps, run IDs, or non-deterministic content
 
+## Code quality / refactor
+
+Code-level improvements surfaced from a 2026-04-19 audit. Unlike the product items above (which affect what pruner suggests), these affect how the codebase evolves: refactor opportunities, dev-loop velocity, and a couple of latent bugs.
+
+### 19. Split `parser.rs` (3308 lines) via a `LanguageAdapter` trait
+
+Each of `extract_python_node`, `extract_js_ts_node`, `extract_rust_node`, `extract_go_node`, `extract_java_node`, `extract_csharp_node`, `extract_c_node`, `extract_cpp_node` reimplements the same skeleton: cursor walk → dispatch by node kind → append to `ParseResult`. The divergences (e.g. whether `parent_index` is threaded correctly) are hard to spot in one 3.3K-line file.
+
+**Why this matters:**
+
+- Adding language #10 today means grepping for patterns and copy-pasting another extractor
+- Subtle bugs hide in the duplication (a missing `parent_index` assignment in one language goes unnoticed)
+- Related pieces (imports/calls/signatures for one language) are scattered hundreds of lines apart
+
+**Implementation:**
+
+- `parser/mod.rs` with `trait LanguageAdapter { fn extract_symbols(..); fn extract_imports(..); fn extract_calls(..); fn build_signature(..) }`
+- One file per language: `parser/python.rs`, `parser/javascript.rs`, etc.
+- `parse_source` becomes a dispatch to the adapter for the detected language
+- Keep `node_text` and other shared helpers in `parser/common.rs`
+
+### 20. Split `query.rs` (2830 lines) and centralize scoring weights
+
+Natural seams exist at: keyword extraction/stemming/fuzzy (~lines 776–889), symbol/file scoring (`score_symbol`/`score_file*`, ~891–1144), trace paths (`trace_paths`/`trace_execution_path_cte`, ~734–774), subsystems (`infer_subsystems`, 156 lines at 1181). Scoring constants (`EXACT_MATCH=100`, `FILE_TEST_PENALTY=-25`, fuzzy/substring/prefix weights, ~16 total) are scattered magic numbers.
+
+**Why this matters:**
+
+- TODO #4 (IDE/session context awareness) and TODO #7 (context-rich environments) both need to vary scoring based on runtime signals; today there's no single place to plug that in
+- A/B tuning scoring requires a code edit + rebuild every time
+- The file is past the point where it fits in one mental model
+
+**Implementation:**
+
+- `query/mod.rs`, `query/keywords.rs`, `query/scoring.rs`, `query/trace.rs`, `query/subsystems.rs`
+- `struct ScoringWeights { exact_match: i32, fuzzy_match: i32, ... }` with `Default` impl holding current constants
+- Pass `&ScoringWeights` through `score_symbol`/`score_file`; optionally load overrides from env or `.pruner/weights.toml`
+
+### 21. Extract per-tool integrations from `cli.rs` (2286 lines)
+
+`cmd_init` (~260 lines) and `cmd_status` (~220 lines) mix filesystem ops, JSON/TOML mutation, and CLI presentation for Claude Code, Copilot, and Codex. The Codex-specific helpers (`has_codex_hooks_enabled`, `enable_codex_hooks`, `upsert_codex_hook`, `codex_hook_command`) are duplicated in shape in `uninstall.rs` (1562 lines).
+
+**Why this matters:**
+
+- Each tool has install/uninstall/status logic split across two giant files
+- Adding a new tool target (Cursor, Aider, etc.) requires touching both files in multiple places
+- Hard to unit-test integration logic — cli.rs has only 8 tests for ~45 functions vs. 58 in uninstall.rs
+
+**Implementation:**
+
+- `integrations/mod.rs` with `trait Integration { fn name(..); fn is_installed(..); fn install(..); fn uninstall(..); fn status(..) }`
+- `integrations/claude_code.rs`, `integrations/copilot.rs`, `integrations/codex.rs`
+- `cmd_init`/`cmd_status`/uninstall command iterate over `&[Box<dyn Integration>]`
+
+### 22. Surface cleanup errors in `uninstall.rs`
+
+13 `let _ = fs::…` swallows plus 109 `unwrap`s. The user sees a success message even when cleanup partially fails (e.g. permissions error, missing config file, JSON parse failure on a user-edited settings.json).
+
+**Implementation:**
+
+- Collect into `Vec<UninstallWarning { path, reason }>` instead of discarding
+- Print a "Cleanup completed with warnings:" block at end of command when non-empty
+- Keep best-effort semantics (don't abort on first error), just report
+
+### 23. Offline query replay subcommand (unblock scoring iteration)
+
+TODO #9 already flags evaluation as the bottleneck for iterating on scoring. The posthoc script exists but runs against saved Claude sessions — it doesn't let you compare "files pruner would suggest at HEAD vs. branch" directly.
+
+**Implementation:**
+
+- `pruner replay <session.jsonl>` reads user prompts from a saved session and runs `analyze_query` against the current index
+- Emits the suggested file list + scores per query
+- Paired with a diff tool: `pruner replay session.jsonl --baseline-ref main` runs replay against both revisions (via git worktree, already used by `--baseline-branch` in A/B tests) and diffs the results
+- Unblocks fast iteration on #20's `ScoringWeights`
+
+### 24. `infer_subsystems` O(n·m) path parsing (query.rs:1181, 156 lines)
+
+Iterates every file, splits each path on `/`, checks each component against a scaffold-dirs set, allocates `String`s freely. Runs per-query, scales with index size.
+
+**Implementation:**
+
+- Precompute the scaffold-dirs as `&'static HashSet<&str>` (not `Vec`)
+- Work on `&str` path components without allocating
+- Cache the subsystem result on `FileRow` at index time instead of recomputing per query (bigger change but right long-term fix)
+
+### 25. Parallelize scoring with rayon on large candidate pools
+
+`score_and_rank_files` and `score_and_rank_symbols` are sequential. `rayon` is already a dep (used by `indexer.rs`). On 10k-file repos the scoring pass shows up in hook latency.
+
+**Implementation:** `.par_iter().map(|f| (f, score_file(..))).collect()`. Gated behind a candidate-count threshold so small repos don't pay thread-pool startup.
+
+### 26. `path.to_str().unwrap()` in hook-install path (cli.rs ~1881)
+
+Non-UTF-8 project paths panic the installer. Rare on macOS, possible on Windows.
+
+**Implementation:** switch to `path.to_string_lossy().into_owned()` or surface via `anyhow::Context` with a clear "project path is not valid UTF-8" message.
+
 ## Low priority / future
 
 ### 13. Post-session accuracy feedback loop
