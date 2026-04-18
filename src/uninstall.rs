@@ -6,7 +6,62 @@ use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-fn clean_codex_hooks_json(path: &Path) {
+/// Collects best-effort cleanup failures so `cmd_uninstall` can surface them
+/// as a summary instead of swallowing them silently. Failures are also printed
+/// inline as warnings so the user sees them in context.
+#[derive(Default)]
+pub(crate) struct Warnings {
+    items: Vec<String>,
+}
+
+impl Warnings {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn record(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        eprintln!("  Warning: {msg}");
+        self.items.push(msg);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn print_summary(&self) {
+        if self.is_empty() {
+            return;
+        }
+        println!("\nCleanup completed with {} warning(s):", self.len());
+        for w in &self.items {
+            println!("  - {w}");
+        }
+    }
+}
+
+/// Write a file; on failure, record a warning instead of panicking/swallowing.
+fn write_or_warn(warnings: &mut Warnings, path: &Path, contents: &str) {
+    if let Err(e) = fs::write(path, contents) {
+        warnings.record(format!("could not write {}: {e}", path.display()));
+    }
+}
+
+/// Remove a file; on failure, record a warning. Silently succeeds if the file
+/// is already gone (`NotFound`) so callers don't need to pre-check.
+fn remove_file_or_warn(warnings: &mut Warnings, path: &Path) {
+    if let Err(e) = fs::remove_file(path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        warnings.record(format!("could not remove {}: {e}", path.display()));
+    }
+}
+
+fn clean_codex_hooks_json(path: &Path, warnings: &mut Warnings) {
     if !path.exists() {
         return;
     }
@@ -54,16 +109,21 @@ fn clean_codex_hooks_json(path: &Path) {
             .and_then(|h| h.as_object())
             .is_none_or(|h| h.is_empty());
         if remove_file {
-            let _ = fs::remove_file(path);
+            remove_file_or_warn(warnings, path);
             println!("  Removed {} (was pruner-only)", path.display());
-        } else if let Ok(json) = serde_json::to_string_pretty(&config) {
-            let _ = fs::write(path, json);
-            println!("  Cleaned pruner hook from {}", path.display());
+        } else {
+            match serde_json::to_string_pretty(&config) {
+                Ok(json) => {
+                    write_or_warn(warnings, path, &json);
+                    println!("  Cleaned pruner hook from {}", path.display());
+                }
+                Err(e) => warnings.record(format!("could not serialize {}: {e}", path.display())),
+            }
         }
     }
 }
 
-fn clean_codex_config_toml(path: &Path) {
+fn clean_codex_config_toml(path: &Path, warnings: &mut Warnings) {
     if !path.exists() {
         return;
     }
@@ -87,20 +147,25 @@ fn clean_codex_config_toml(path: &Path) {
 
     if changed {
         if config.as_table().is_some_and(|t| t.is_empty()) {
-            let _ = fs::remove_file(path);
+            remove_file_or_warn(warnings, path);
             println!("  Removed {} (was pruner-only)", path.display());
-        } else if let Ok(toml_str) = toml::to_string_pretty(&config) {
-            let _ = fs::write(path, toml_str);
-            println!("  Cleaned pruner hook flag from {}", path.display());
+        } else {
+            match toml::to_string_pretty(&config) {
+                Ok(toml_str) => {
+                    write_or_warn(warnings, path, &toml_str);
+                    println!("  Cleaned pruner hook flag from {}", path.display());
+                }
+                Err(e) => warnings.record(format!("could not serialize {}: {e}", path.display())),
+            }
         }
     }
 }
 
 /// Remove a file if it exists, printing what was removed.
-fn remove_file(path: &Path) {
+fn remove_file(path: &Path, warnings: &mut Warnings) {
     if path.exists() {
         if let Err(e) = fs::remove_file(path) {
-            eprintln!("  Warning: could not remove {}: {e}", path.display());
+            warnings.record(format!("could not remove {}: {e}", path.display()));
         } else {
             println!("  Removed {}", path.display());
         }
@@ -108,10 +173,10 @@ fn remove_file(path: &Path) {
 }
 
 /// Remove a directory if it exists, printing what was removed.
-fn remove_dir(path: &Path) {
+fn remove_dir(path: &Path, warnings: &mut Warnings) {
     if path.exists() {
         if let Err(e) = fs::remove_dir_all(path) {
-            eprintln!("  Warning: could not remove {}: {e}", path.display());
+            warnings.record(format!("could not remove {}: {e}", path.display()));
         } else {
             println!("  Removed {}", path.display());
         }
@@ -120,7 +185,7 @@ fn remove_dir(path: &Path) {
 
 /// Remove the `## Pruner` section from a markdown file.
 /// Returns true if the section was found and removed.
-fn remove_pruner_section(path: &Path) -> bool {
+fn remove_pruner_section(path: &Path, warnings: &mut Warnings) -> bool {
     if !path.exists() {
         return false;
     }
@@ -149,17 +214,17 @@ fn remove_pruner_section(path: &Path) -> bool {
 
     if result.is_empty() {
         // File had only the pruner section — remove it entirely
-        let _ = fs::remove_file(path);
+        remove_file_or_warn(warnings, path);
         println!("  Removed {} (was pruner-only)", path.display());
     } else {
-        let _ = fs::write(path, format!("{result}\n"));
+        write_or_warn(warnings, path, &format!("{result}\n"));
         println!("  Cleaned pruner section from {}", path.display());
     }
     true
 }
 
 /// Remove the pruner hook entry from a Claude settings.json file.
-fn clean_settings_json(path: &Path) {
+fn clean_settings_json(path: &Path, warnings: &mut Warnings) {
     if !path.exists() {
         return;
     }
@@ -214,17 +279,22 @@ fn clean_settings_json(path: &Path) {
 
     if changed {
         if settings.as_object().is_some_and(|m| m.is_empty()) {
-            let _ = fs::remove_file(path);
+            remove_file_or_warn(warnings, path);
             println!("  Removed {} (was pruner-only)", path.display());
         } else {
-            let _ = fs::write(path, serde_json::to_string_pretty(&settings).unwrap());
-            println!("  Cleaned pruner hook from {}", path.display());
+            match serde_json::to_string_pretty(&settings) {
+                Ok(json) => {
+                    write_or_warn(warnings, path, &json);
+                    println!("  Cleaned pruner hook from {}", path.display());
+                }
+                Err(e) => warnings.record(format!("could not serialize {}: {e}", path.display())),
+            }
         }
     }
 }
 
 /// Remove `.pruner/` line from .gitignore.
-fn clean_gitignore(path: &Path) {
+fn clean_gitignore(path: &Path, warnings: &mut Warnings) {
     if !path.exists() {
         return;
     }
@@ -246,68 +316,68 @@ fn clean_gitignore(path: &Path) {
         let result = filtered.join("\n");
         let result = result.trim_end().to_string();
         if result.is_empty() {
-            let _ = fs::remove_file(path);
+            remove_file_or_warn(warnings, path);
             println!("  Removed {} (was pruner-only)", path.display());
         } else {
-            let _ = fs::write(path, format!("{result}\n"));
+            write_or_warn(warnings, path, &format!("{result}\n"));
             println!("  Cleaned .pruner/ from {}", path.display());
         }
     }
 }
 
 /// Remove global Claude integrations from ~/.claude/
-fn uninstall_claude_global(home: &Path) {
+fn uninstall_claude_global(home: &Path, warnings: &mut Warnings) {
     let claude = home.join(".claude");
-    remove_file(&claude.join("hooks/pruner-context.sh"));
-    remove_dir(&claude.join("skills/pruner"));
-    clean_settings_json(&claude.join("settings.json"));
+    remove_file(&claude.join("hooks/pruner-context.sh"), warnings);
+    remove_dir(&claude.join("skills/pruner"), warnings);
+    clean_settings_json(&claude.join("settings.json"), warnings);
 }
 
 /// Remove global Copilot integrations from ~/.copilot/
-fn uninstall_copilot_global(home: &Path) {
+fn uninstall_copilot_global(home: &Path, warnings: &mut Warnings) {
     let copilot = home.join(".copilot");
-    remove_dir(&copilot.join("skills/pruner"));
-    remove_pruner_section(&copilot.join("copilot-instructions.md"));
+    remove_dir(&copilot.join("skills/pruner"), warnings);
+    remove_pruner_section(&copilot.join("copilot-instructions.md"), warnings);
     // Global copilot hooks
-    remove_file(&copilot.join("hooks/pruner-context.json"));
-    remove_file(&copilot.join("hooks/pruner-context.sh"));
-    remove_file(&copilot.join("hooks/pruner-context.ps1"));
+    remove_file(&copilot.join("hooks/pruner-context.json"), warnings);
+    remove_file(&copilot.join("hooks/pruner-context.sh"), warnings);
+    remove_file(&copilot.join("hooks/pruner-context.ps1"), warnings);
 }
 
 /// Remove global Codex integrations from ~/.codex/
-fn uninstall_codex_global(home: &Path) {
+fn uninstall_codex_global(home: &Path, warnings: &mut Warnings) {
     let codex = home.join(".codex");
-    remove_dir(&codex.join("skills/pruner"));
-    remove_file(&codex.join("hooks/pruner-context.sh"));
-    clean_codex_hooks_json(&codex.join("hooks.json"));
-    clean_codex_config_toml(&codex.join("config.toml"));
+    remove_dir(&codex.join("skills/pruner"), warnings);
+    remove_file(&codex.join("hooks/pruner-context.sh"), warnings);
+    clean_codex_hooks_json(&codex.join("hooks.json"), warnings);
+    clean_codex_config_toml(&codex.join("config.toml"), warnings);
 }
 
 /// Remove per-project Claude integrations
-fn uninstall_claude_project(repo: &Path) {
+fn uninstall_claude_project(repo: &Path, warnings: &mut Warnings) {
     let claude = repo.join(".claude");
-    remove_file(&claude.join("hooks/pruner-context.sh"));
-    remove_dir(&claude.join("skills/pruner"));
-    clean_settings_json(&claude.join("settings.json"));
-    remove_pruner_section(&repo.join("CLAUDE.md"));
+    remove_file(&claude.join("hooks/pruner-context.sh"), warnings);
+    remove_dir(&claude.join("skills/pruner"), warnings);
+    clean_settings_json(&claude.join("settings.json"), warnings);
+    remove_pruner_section(&repo.join("CLAUDE.md"), warnings);
 }
 
 /// Remove per-project Copilot integrations
-fn uninstall_copilot_project(repo: &Path) {
-    remove_dir(&repo.join(".copilot/skills/pruner"));
-    remove_pruner_section(&repo.join(".github/copilot-instructions.md"));
-    remove_file(&repo.join(".github/hooks/pruner-context.json"));
-    remove_file(&repo.join(".github/hooks/pruner-context.sh"));
-    remove_file(&repo.join(".github/hooks/pruner-context.ps1"));
+fn uninstall_copilot_project(repo: &Path, warnings: &mut Warnings) {
+    remove_dir(&repo.join(".copilot/skills/pruner"), warnings);
+    remove_pruner_section(&repo.join(".github/copilot-instructions.md"), warnings);
+    remove_file(&repo.join(".github/hooks/pruner-context.json"), warnings);
+    remove_file(&repo.join(".github/hooks/pruner-context.sh"), warnings);
+    remove_file(&repo.join(".github/hooks/pruner-context.ps1"), warnings);
 }
 
 /// Remove per-project Codex integrations
-fn uninstall_codex_project(repo: &Path) {
-    remove_dir(&repo.join(".codex/skills/pruner"));
-    remove_file(&repo.join(".codex/hooks/pruner-context.sh"));
-    clean_codex_hooks_json(&repo.join(".codex/hooks.json"));
-    clean_codex_config_toml(&repo.join(".codex/config.toml"));
-    remove_pruner_section(&repo.join("AGENTS.md"));
+fn uninstall_codex_project(repo: &Path, warnings: &mut Warnings) {
+    remove_dir(&repo.join(".codex/skills/pruner"), warnings);
+    remove_file(&repo.join(".codex/hooks/pruner-context.sh"), warnings);
+    clean_codex_hooks_json(&repo.join(".codex/hooks.json"), warnings);
+    clean_codex_config_toml(&repo.join(".codex/config.toml"), warnings);
+    remove_pruner_section(&repo.join("AGENTS.md"), warnings);
 }
 
 // ---------------------------------------------------------------------------
@@ -360,32 +430,32 @@ impl fmt::Display for FoundTrace {
 
 impl FoundTrace {
     /// Remove this trace using the appropriate cleanup method.
-    fn remove(&self) {
+    fn remove(&self, warnings: &mut Warnings) {
         match self.kind {
             TraceKind::PrunerDir
             | TraceKind::ClaudeSkillDir
             | TraceKind::CopilotSkillDir
             | TraceKind::CodexSkillDir => {
-                remove_dir(&self.path);
+                remove_dir(&self.path, warnings);
             }
             TraceKind::HookFile => {
-                remove_file(&self.path);
+                remove_file(&self.path, warnings);
             }
             TraceKind::PrunerSection => {
-                remove_pruner_section(&self.path);
+                remove_pruner_section(&self.path, warnings);
             }
             TraceKind::SettingsHook => {
-                clean_settings_json(&self.path);
+                clean_settings_json(&self.path, warnings);
             }
             TraceKind::CodexHookConfig => {
                 if self.path.file_name().is_some_and(|n| n == "hooks.json") {
-                    clean_codex_hooks_json(&self.path);
+                    clean_codex_hooks_json(&self.path, warnings);
                 } else {
-                    clean_codex_config_toml(&self.path);
+                    clean_codex_config_toml(&self.path, warnings);
                 }
             }
             TraceKind::GitignoreEntry => {
-                clean_gitignore(&self.path);
+                clean_gitignore(&self.path, warnings);
             }
         }
     }
@@ -641,17 +711,19 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
+    let mut warnings = Warnings::new();
+
     if let Some(repo) = repo {
         // Per-project uninstall
         println!("Removing pruner from {}...", repo.display());
 
-        uninstall_claude_project(repo);
-        uninstall_copilot_project(repo);
-        uninstall_codex_project(repo);
-        clean_gitignore(&repo.join(".gitignore"));
+        uninstall_claude_project(repo, &mut warnings);
+        uninstall_copilot_project(repo, &mut warnings);
+        uninstall_codex_project(repo, &mut warnings);
+        clean_gitignore(&repo.join(".gitignore"), &mut warnings);
 
         if purge {
-            remove_dir(&repo.join(".pruner"));
+            remove_dir(&repo.join(".pruner"), &mut warnings);
         } else if repo.join(".pruner").exists() {
             println!(
                 "\n  Note: .pruner/ index kept at {}. Use --purge to remove it.",
@@ -659,14 +731,15 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
             );
         }
 
+        warnings.print_summary();
         println!("\nDone. Per-project pruner integration removed.");
     } else {
         // Global uninstall
         println!("Removing global pruner integrations...");
 
-        uninstall_claude_global(&home);
-        uninstall_copilot_global(&home);
-        uninstall_codex_global(&home);
+        uninstall_claude_global(&home, &mut warnings);
+        uninstall_copilot_global(&home, &mut warnings);
+        uninstall_codex_global(&home, &mut warnings);
 
         // Scan for project-level traces
         println!("\nScanning for project-level pruner traces...");
@@ -678,20 +751,20 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
             print_trace_summary(&traces);
             println!("\nRemoving all (--purge)...");
             for trace in &traces {
-                trace.remove();
+                trace.remove(&mut warnings);
             }
         } else {
             print_trace_summary(&traces);
             match prompt_scan_action() {
                 ScanAction::All => {
                     for trace in &traces {
-                        trace.remove();
+                        trace.remove(&mut warnings);
                     }
                 }
                 ScanAction::OneByOne => {
                     for trace in &traces {
                         if prompt_yes_no(&trace.to_string()) {
-                            trace.remove();
+                            trace.remove(&mut warnings);
                         }
                     }
                 }
@@ -708,7 +781,7 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
         #[cfg(unix)]
         {
             if let Err(e) = fs::remove_file(&exe) {
-                eprintln!("  Warning: could not remove binary: {e}");
+                warnings.record(format!("could not remove binary: {e}"));
                 eprintln!("  Remove it manually: rm {}", exe.display());
             } else {
                 println!("  Removed {}", exe.display());
@@ -721,6 +794,7 @@ pub fn cmd_uninstall(repo: Option<&Path>, purge: bool) -> Result<()> {
             println!("  Remove it manually: del \"{}\"", exe.display());
         }
 
+        warnings.print_summary();
         println!("\nDone. Global pruner integrations removed.");
     }
 
@@ -737,6 +811,77 @@ mod tests {
         let path = base.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "").unwrap();
+    }
+
+    // --- Warnings collector ---
+
+    #[test]
+    fn test_warnings_starts_empty() {
+        let w = Warnings::new();
+        assert!(w.is_empty());
+        assert_eq!(w.len(), 0);
+    }
+
+    #[test]
+    fn test_warnings_record_appends() {
+        let mut w = Warnings::new();
+        w.record("first");
+        w.record(String::from("second"));
+        assert_eq!(w.len(), 2);
+        assert!(!w.is_empty());
+        assert_eq!(w.items, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn test_write_or_warn_success_leaves_no_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.txt");
+        let mut w = Warnings::new();
+        write_or_warn(&mut w, &path, "hello");
+        assert!(w.is_empty(), "successful write should not warn");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_write_or_warn_records_when_parent_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // Parent dir `nonexistent/` doesn't exist → write fails.
+        let bad_path = dir.path().join("nonexistent/file.txt");
+        let mut w = Warnings::new();
+        write_or_warn(&mut w, &bad_path, "payload");
+        assert_eq!(w.len(), 1, "failed write should record one warning");
+        assert!(w.items[0].contains("could not write"));
+        assert!(w.items[0].contains("file.txt"));
+    }
+
+    #[test]
+    fn test_remove_file_or_warn_silent_on_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = Warnings::new();
+        // NotFound is not surfaced as a warning — treated as already-gone.
+        remove_file_or_warn(&mut w, &dir.path().join("does-not-exist"));
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_happy_path_produces_no_warnings() {
+        // End-to-end: a well-formed settings.json with a pruner hook cleans
+        // without any warnings recorded.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = serde_json::json!({
+            "hooks": {
+                "UserPromptSubmit": [{
+                    "hooks": [{"command": "pruner-context.sh"}]
+                }]
+            },
+            "other": true
+        });
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+        let mut w = Warnings::new();
+        clean_settings_json(&path, &mut w);
+        assert!(w.is_empty(), "happy path should record no warnings");
     }
 
     #[test]
@@ -932,7 +1077,7 @@ mod tests {
             path: pruner_dir.clone(),
             project: dir.path().join("project"),
         };
-        trace.remove();
+        trace.remove(&mut Warnings::new());
 
         assert!(!pruner_dir.exists(), ".pruner/ should be removed");
     }
@@ -952,7 +1097,7 @@ mod tests {
             path: claude_md.clone(),
             project: dir.path().to_path_buf(),
         };
-        trace.remove();
+        trace.remove(&mut Warnings::new());
 
         let content = fs::read_to_string(&claude_md).unwrap();
         assert!(!content.contains("Pruner"));
@@ -986,7 +1131,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(remove_pruner_section(&path));
+        assert!(remove_pruner_section(&path, &mut Warnings::new()));
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(!content.contains("Pruner"));
@@ -1000,7 +1145,7 @@ mod tests {
         let path = dir.path().join("CLAUDE.md");
         fs::write(&path, "## Pruner\n\nPruner stuff only.\n").unwrap();
 
-        assert!(remove_pruner_section(&path));
+        assert!(remove_pruner_section(&path, &mut Warnings::new()));
         assert!(
             !path.exists(),
             "File should be deleted when only pruner section"
@@ -1013,7 +1158,7 @@ mod tests {
         let path = dir.path().join("CLAUDE.md");
         fs::write(&path, "# My Project\n\nNo pruner here.\n").unwrap();
 
-        assert!(!remove_pruner_section(&path));
+        assert!(!remove_pruner_section(&path, &mut Warnings::new()));
     }
 
     #[test]
@@ -1022,7 +1167,7 @@ mod tests {
         let path = dir.path().join(".gitignore");
         fs::write(&path, "node_modules/\n.pruner/\ntarget/\n").unwrap();
 
-        clean_gitignore(&path);
+        clean_gitignore(&path, &mut Warnings::new());
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(!content.contains(".pruner"));
@@ -1049,7 +1194,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
 
-        clean_settings_json(&path);
+        clean_settings_json(&path, &mut Warnings::new());
 
         let content = fs::read_to_string(&path).unwrap();
         let result: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -1074,7 +1219,7 @@ mod tests {
             path: hook.clone(),
             project: dir.path().to_path_buf(),
         };
-        trace.remove();
+        trace.remove(&mut Warnings::new());
         assert!(!hook.exists(), "hook file should be removed");
     }
 
@@ -1098,7 +1243,7 @@ mod tests {
             path: path.clone(),
             project: dir.path().to_path_buf(),
         };
-        trace.remove();
+        trace.remove(&mut Warnings::new());
         // File should be removed entirely since it only had pruner hooks
         assert!(
             !path.exists(),
@@ -1117,7 +1262,7 @@ mod tests {
             path: path.clone(),
             project: dir.path().to_path_buf(),
         };
-        trace.remove();
+        trace.remove(&mut Warnings::new());
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(!content.contains(".pruner"));
@@ -1136,7 +1281,7 @@ mod tests {
             path: skill_dir.clone(),
             project: dir.path().to_path_buf(),
         };
-        trace.remove();
+        trace.remove(&mut Warnings::new());
         assert!(!skill_dir.exists(), "copilot skill dir should be removed");
     }
 
@@ -1173,14 +1318,17 @@ mod tests {
         let path = dir.path().join("test.txt");
         fs::write(&path, "data").unwrap();
         assert!(path.exists());
-        remove_file(&path);
+        remove_file(&path, &mut Warnings::new());
         assert!(!path.exists());
     }
 
     #[test]
     fn test_remove_file_nonexistent() {
         // Should not panic
-        remove_file(Path::new("/tmp/pruner-nonexistent-file-test"));
+        remove_file(
+            Path::new("/tmp/pruner-nonexistent-file-test"),
+            &mut Warnings::new(),
+        );
     }
 
     #[test]
@@ -1190,14 +1338,17 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("file.txt"), "data").unwrap();
         assert!(sub.exists());
-        remove_dir(&sub);
+        remove_dir(&sub, &mut Warnings::new());
         assert!(!sub.exists());
     }
 
     #[test]
     fn test_remove_dir_nonexistent() {
         // Should not panic
-        remove_dir(Path::new("/tmp/pruner-nonexistent-dir-test"));
+        remove_dir(
+            Path::new("/tmp/pruner-nonexistent-dir-test"),
+            &mut Warnings::new(),
+        );
     }
 
     // --- clean_gitignore edge cases ---
@@ -1207,7 +1358,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".gitignore");
         fs::write(&path, ".pruner/\n").unwrap();
-        clean_gitignore(&path);
+        clean_gitignore(&path, &mut Warnings::new());
         assert!(
             !path.exists(),
             "gitignore should be deleted when pruner-only"
@@ -1219,7 +1370,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".gitignore");
         fs::write(&path, "node_modules/\ntarget/\n").unwrap();
-        clean_gitignore(&path);
+        clean_gitignore(&path, &mut Warnings::new());
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("node_modules/"));
         assert!(content.contains("target/"));
@@ -1228,7 +1379,10 @@ mod tests {
     #[test]
     fn test_clean_gitignore_nonexistent() {
         // Should not panic
-        clean_gitignore(Path::new("/tmp/pruner-nonexistent-gitignore"));
+        clean_gitignore(
+            Path::new("/tmp/pruner-nonexistent-gitignore"),
+            &mut Warnings::new(),
+        );
     }
 
     // --- clean_settings_json edge cases ---
@@ -1247,7 +1401,7 @@ mod tests {
             }
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
-        clean_settings_json(&path);
+        clean_settings_json(&path, &mut Warnings::new());
         assert!(
             !path.exists(),
             "settings.json should be removed when pruner-only"
@@ -1259,7 +1413,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         fs::write(&path, r#"{"other": true}"#).unwrap();
-        clean_settings_json(&path);
+        clean_settings_json(&path, &mut Warnings::new());
         // File should be unchanged
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.contains("other"));
@@ -1268,7 +1422,10 @@ mod tests {
     #[test]
     fn test_clean_settings_json_nonexistent() {
         // Should not panic
-        clean_settings_json(Path::new("/tmp/pruner-nonexistent-settings"));
+        clean_settings_json(
+            Path::new("/tmp/pruner-nonexistent-settings"),
+            &mut Warnings::new(),
+        );
     }
 
     // --- infer_project ---
@@ -1308,7 +1465,7 @@ mod tests {
         create_file(&repo, ".claude/skills/pruner/SKILL.md");
         fs::write(repo.join("CLAUDE.md"), "# Project\n\n## Pruner\n\nStuff.\n").unwrap();
 
-        uninstall_claude_project(&repo);
+        uninstall_claude_project(&repo, &mut Warnings::new());
 
         assert!(!repo.join(".claude/hooks/pruner-context.sh").exists());
         assert!(!repo.join(".claude/skills/pruner").exists());
@@ -1325,7 +1482,7 @@ mod tests {
         create_file(&repo, ".github/hooks/pruner-context.sh");
         create_file(&repo, ".github/hooks/pruner-context.ps1");
 
-        uninstall_copilot_project(&repo);
+        uninstall_copilot_project(&repo, &mut Warnings::new());
 
         assert!(!repo.join(".copilot/skills/pruner").exists());
         assert!(!repo.join(".github/hooks/pruner-context.json").exists());
@@ -1453,7 +1610,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
 
-        clean_settings_json(&path);
+        clean_settings_json(&path, &mut Warnings::new());
 
         let content = fs::read_to_string(&path).unwrap();
         let result: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -1481,7 +1638,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
 
-        clean_codex_hooks_json(&path);
+        clean_codex_hooks_json(&path, &mut Warnings::new());
 
         assert!(
             !path.exists(),
@@ -1511,7 +1668,7 @@ mod tests {
         });
         fs::write(&path, serde_json::to_string_pretty(&hooks).unwrap()).unwrap();
 
-        clean_codex_hooks_json(&path);
+        clean_codex_hooks_json(&path, &mut Warnings::new());
 
         let content = fs::read_to_string(&path).unwrap();
         let result: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -1533,7 +1690,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(&path, "[features]\ncodex_hooks = true\n").unwrap();
 
-        clean_codex_config_toml(&path);
+        clean_codex_config_toml(&path, &mut Warnings::new());
 
         assert!(
             !path.exists(),
@@ -1551,7 +1708,7 @@ mod tests {
         )
         .unwrap();
 
-        clean_codex_config_toml(&path);
+        clean_codex_config_toml(&path, &mut Warnings::new());
 
         let content = fs::read_to_string(&path).unwrap();
         let parsed: toml::Value = content.parse().unwrap();
