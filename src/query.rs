@@ -48,6 +48,11 @@ const FILE_STEM_CONTAINS: i32 = 40;
 const FILE_DIR_CONTAINS: i32 = 5;
 const FILE_MULTI_KEYWORD_BONUS: i32 = 30;
 const FILE_LANGUAGE_BONUS: i32 = 20;
+/// Boost for framework scaffolding filenames (index.*, *.module.*, mod.rs,
+/// __init__.py, etc.) that already have at least one keyword hit on the
+/// filename stem or path. These files are structural glue worth surfacing
+/// over plain siblings when both match the same keyword.
+const FILE_SCAFFOLDING_BOOST: i32 = 25;
 const FILE_TEST_PENALTY: i32 = -5;
 /// Stronger penalty for test files when query is not about testing.
 const FILE_TEST_NON_TEST_QUERY_PENALTY: i32 = -25;
@@ -858,7 +863,43 @@ fn score_file_keywords(path_lower: &str, keywords: &[String], idf: &IdfWeights) 
         score += FILE_MULTI_KEYWORD_BONUS * (filename_hits - 1);
     }
 
+    if filename_hits >= 1 && is_module_scaffolding_file(path_lower) {
+        score += FILE_SCAFFOLDING_BOOST;
+    }
+
     score
+}
+
+/// Is this path a framework-scaffolding file? Covers NestJS/Angular
+/// `*.module.{ts,js}`, JS/TS `index.*`, Rust `mod.rs` / `lib.rs`,
+/// Python `__init__.py`, Java `package-info.java`. Language-agnostic
+/// by filename; the scoring caller already has `path_lower`.
+fn is_module_scaffolding_file(path_lower: &str) -> bool {
+    let file = path_lower.rsplit('/').next().unwrap_or(path_lower);
+    if matches!(
+        file,
+        "mod.rs" | "lib.rs" | "__init__.py" | "package-info.java"
+    ) {
+        return true;
+    }
+    let Some((stem, ext)) = file.rsplit_once('.') else {
+        return false;
+    };
+    if !matches!(
+        ext,
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "rs" | "go"
+    ) {
+        return false;
+    }
+    if stem == "index" {
+        return true;
+    }
+    if let Some((_, right)) = stem.rsplit_once('.')
+        && right == "module"
+    {
+        return true;
+    }
+    false
 }
 
 /// Score file quality: language, directory, minification, test status.
@@ -1574,6 +1615,52 @@ mod tests {
             src_score > doc_score,
             "source ({src_score}) should beat doc ({doc_score})"
         );
+    }
+
+    #[test]
+    fn test_score_file_scaffolding_boost_fires_with_keyword_hit() {
+        // A NestJS-style module file whose stem matches a keyword should get
+        // an extra boost on top of the stem match — it's structural glue and
+        // often worth surfacing even when leaf files outrank it.
+        let file = FileRow {
+            id: 1,
+            path: "packages/core/interceptors/interceptors.module.ts".into(),
+            language: Some("ts".into()),
+            size: 200,
+            line_count: 50,
+            is_test: false,
+        };
+        let plain = FileRow {
+            id: 2,
+            path: "packages/core/interceptors/interceptors-consumer.ts".into(),
+            language: Some("ts".into()),
+            size: 200,
+            line_count: 50,
+            is_test: false,
+        };
+        let boosted = score_file(&file, &["interceptors".to_string()], &default_idf());
+        let unboosted = score_file(&plain, &["interceptors".to_string()], &default_idf());
+        assert!(
+            boosted > unboosted,
+            "scaffolding file ({boosted}) should outrank plain leaf ({unboosted}) on the same stem hit"
+        );
+    }
+
+    #[test]
+    fn test_score_file_scaffolding_boost_requires_keyword_hit() {
+        // A module file with zero keyword hits must NOT be boosted —
+        // otherwise every *.module.ts in the repo surfaces for every query.
+        let file = FileRow {
+            id: 1,
+            path: "integration/hello-world/src/app.module.ts".into(),
+            language: Some("ts".into()),
+            size: 100,
+            line_count: 20,
+            is_test: false,
+        };
+        let score = score_file(&file, &["websocket".to_string()], &default_idf());
+        // No "websocket" match anywhere in path; boost must not apply.
+        assert_eq!(score, FILE_LANGUAGE_BONUS);
     }
 
     #[test]
