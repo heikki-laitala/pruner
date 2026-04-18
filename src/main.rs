@@ -2,6 +2,7 @@ mod budget;
 mod cli;
 mod context;
 mod db;
+mod import_resolver;
 mod indexer;
 mod languages;
 mod parser;
