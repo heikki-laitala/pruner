@@ -503,6 +503,18 @@ impl IndexDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Return every symbol in the index. Used by the fuzzy rescue pass when
+    /// strict LIKE retrieval returns nothing for a keyword, so typo'd prompts
+    /// can still surface edit-distance-1 matches.
+    pub fn all_symbols(&self) -> Result<Vec<SymbolRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.file_id, s.name, s.kind, s.line_start, s.line_end, s.signature, f.path
+             FROM symbols s JOIN files f ON s.file_id = f.id",
+        )?;
+        let rows = stmt.query_map([], SymbolRow::from_row)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Get file by ID.
     pub fn get_file_by_path_id(&self, id: i64) -> Result<Option<FileRow>> {
         let mut stmt = self.conn.prepare(

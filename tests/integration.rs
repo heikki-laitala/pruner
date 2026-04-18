@@ -1597,7 +1597,11 @@ mod go_service {
             .args(["query", &path, "HandleLogin authentication"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Matching symbols: 4"));
+            // Three symbols match via the user's literal keywords (HandleLogin,
+            // LoginRequest, TestHandleLogin). Synonym-only matches like
+            // AuthHandler (via "auth"→"authentication") are downweighted and
+            // fall below the dynamic cutoff — that's the fix, not a regression.
+            .stdout(predicate::str::contains("Matching symbols: 3"));
     }
 
     #[test]
