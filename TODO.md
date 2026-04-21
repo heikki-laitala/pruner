@@ -241,12 +241,6 @@ Iterates every file, splits each path on `/`, checks each component against a sc
 
 **Implementation:** `.par_iter().map(|f| (f, score_file(..))).collect()`. Gated behind a candidate-count threshold so small repos don't pay thread-pool startup.
 
-### 26. `path.to_str().unwrap()` in hook-install path (cli.rs ~1881)
-
-Non-UTF-8 project paths panic the installer. Rare on macOS, possible on Windows.
-
-**Implementation:** switch to `path.to_string_lossy().into_owned()` or surface via `anyhow::Context` with a clear "project path is not valid UTF-8" message.
-
 ## Low priority / future
 
 ### 13. Post-session accuracy feedback loop
