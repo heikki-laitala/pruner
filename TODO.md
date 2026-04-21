@@ -155,23 +155,6 @@ Claude Code uses Anthropic's prompt cache (up to 1-hour TTL for eligible users, 
 
 Code-level improvements surfaced from a 2026-04-19 audit. Unlike the product items above (which affect what pruner suggests), these affect how the codebase evolves: refactor opportunities, dev-loop velocity, and a couple of latent bugs.
 
-### 19. Split `parser.rs` (3308 lines) via a `LanguageAdapter` trait
-
-Each of `extract_python_node`, `extract_js_ts_node`, `extract_rust_node`, `extract_go_node`, `extract_java_node`, `extract_csharp_node`, `extract_c_node`, `extract_cpp_node` reimplements the same skeleton: cursor walk → dispatch by node kind → append to `ParseResult`. The divergences (e.g. whether `parent_index` is threaded correctly) are hard to spot in one 3.3K-line file.
-
-**Why this matters:**
-
-- Adding language #10 today means grepping for patterns and copy-pasting another extractor
-- Subtle bugs hide in the duplication (a missing `parent_index` assignment in one language goes unnoticed)
-- Related pieces (imports/calls/signatures for one language) are scattered hundreds of lines apart
-
-**Implementation:**
-
-- `parser/mod.rs` with `trait LanguageAdapter { fn extract_symbols(..); fn extract_imports(..); fn extract_calls(..); fn build_signature(..) }`
-- One file per language: `parser/python.rs`, `parser/javascript.rs`, etc.
-- `parse_source` becomes a dispatch to the adapter for the detected language
-- Keep `node_text` and other shared helpers in `parser/common.rs`
-
 ### 20. Split `query.rs` (2830 lines) and centralize scoring weights
 
 Natural seams exist at: keyword extraction/stemming/fuzzy (~lines 776–889), symbol/file scoring (`score_symbol`/`score_file*`, ~891–1144), trace paths (`trace_paths`/`trace_execution_path_cte`, ~734–774), subsystems (`infer_subsystems`, 156 lines at 1181). Scoring constants (`EXACT_MATCH=100`, `FILE_TEST_PENALTY=-25`, fuzzy/substring/prefix weights, ~16 total) are scattered magic numbers.
@@ -319,6 +302,7 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] TS/JS parser: JSX components as call edges, dynamic `import()` as imports, re-export tracking (`export { X } from './module'`). Barrel file full resolution and React Compiler detection deferred
 - [x] Uninstall: surface cleanup errors instead of swallowing them. `let _ = fs::…` replaced with warning-collecting helpers; "Cleanup completed with warnings:" block printed when non-empty, best-effort semantics preserved
 - [x] Installer: non-UTF-8 hook paths return an `anyhow` error with clear message instead of panicking via `to_str().unwrap()`
+- [x] Split `parser.rs` (3308 lines) into per-language submodules under `src/parser/` with a shared `common` module (`node_text`, `normalize_type_name`). C++ reuses C's call/signature/type/typedef helpers via `pub(super)`. Rejected the `LanguageAdapter` trait direction — each language does one unified tree walk, so splitting into `extract_symbols`/`extract_imports`/`extract_calls` would triple traversal cost without buying anything
 
 ## Explored but rejected
 
