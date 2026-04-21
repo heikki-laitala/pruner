@@ -587,12 +587,13 @@ fn cmd_init(repo: &Path, opts: InitOptions) -> Result<()> {
             } else {
                 serde_json::json!({})
             };
+            let hook_command = path_to_hook_command(&hook_path)?;
             settings["hooks"] = serde_json::json!({
                 "UserPromptSubmit": [{
                     "matcher": "",
                     "hooks": [{
                         "type": "command",
-                        "command": path_to_hook_command(&hook_path),
+                        "command": hook_command,
                         "timeout": 60
                     }]
                 }]
@@ -729,7 +730,7 @@ fn cmd_init(repo: &Path, opts: InitOptions) -> Result<()> {
             println!("Installed Codex hook -> {}", hook_path.display());
 
             let hooks_path = codex_base.join("hooks.json");
-            let hook_command = codex_hook_command(&hook_path, codex_global);
+            let hook_command = codex_hook_command(&hook_path, codex_global)?;
             upsert_codex_hook(&hooks_path, &hook_command)?;
             println!("Updated Codex hooks -> {}", hooks_path.display());
 
@@ -1877,15 +1878,21 @@ fn cmd_estimate(
 /// On Windows, `PathBuf::to_str` returns backslash-separated paths. Bash (used
 /// by Claude Code to execute hooks) treats backslashes as escape sequences, so
 /// `C:\Users\foo` becomes `C:Usersfoo`. Forward slashes work on all platforms.
-fn path_to_hook_command(path: &std::path::Path) -> String {
-    path.to_str().unwrap().replace('\\', "/")
+fn path_to_hook_command(path: &Path) -> Result<String> {
+    let s = path.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "hook path is not valid UTF-8: {} — reinstall from a path without non-UTF-8 bytes",
+            path.display()
+        )
+    })?;
+    Ok(s.replace('\\', "/"))
 }
 
-fn codex_hook_command(path: &std::path::Path, global: bool) -> String {
+fn codex_hook_command(path: &Path, global: bool) -> Result<String> {
     if global {
-        format!("bash \"{}\"", path_to_hook_command(path))
+        Ok(format!("bash \"{}\"", path_to_hook_command(path)?))
     } else {
-        "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pruner-context.sh\"".to_string()
+        Ok("bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pruner-context.sh\"".to_string())
     }
 }
 
@@ -1985,7 +1992,7 @@ mod tests {
         // so that bash (used by Claude Code to run hooks) does not interpret them as
         // escape sequences (which would turn C:\Users\foo into C:Usersfoo).
         let hook_path = Path::new(r"C:\Users\testuser\.claude\hooks\pruner-context.sh");
-        let command = path_to_hook_command(hook_path);
+        let command = path_to_hook_command(hook_path).unwrap();
         assert!(
             !command.contains('\\'),
             "hook command path must use forward slashes for bash compatibility, got: {command}"
@@ -1993,10 +2000,25 @@ mod tests {
         assert_eq!(command, "C:/Users/testuser/.claude/hooks/pruner-context.sh");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_hook_command_non_utf8_path_returns_error() {
+        // Non-UTF-8 paths are rare but possible (user home with invalid bytes).
+        // The installer must surface a clear error instead of panicking.
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let bad = Path::new(OsStr::from_bytes(b"/tmp/\xff/hooks/pruner.sh"));
+        let err = path_to_hook_command(bad).unwrap_err();
+        assert!(
+            err.to_string().contains("UTF-8"),
+            "error message must mention UTF-8, got: {err}"
+        );
+    }
+
     #[test]
     fn test_codex_global_hook_command_uses_absolute_path() {
         let hook_path = Path::new(r"C:\Users\testuser\.codex\hooks\pruner-context.sh");
-        let command = codex_hook_command(hook_path, true);
+        let command = codex_hook_command(hook_path, true).unwrap();
         assert_eq!(
             command,
             "bash \"C:/Users/testuser/.codex/hooks/pruner-context.sh\""
@@ -2006,7 +2028,7 @@ mod tests {
     #[test]
     fn test_codex_project_hook_command_uses_git_root() {
         let hook_path = Path::new("/tmp/repo/.codex/hooks/pruner-context.sh");
-        let command = codex_hook_command(hook_path, false);
+        let command = codex_hook_command(hook_path, false).unwrap();
         assert_eq!(
             command,
             "bash \"$(git rev-parse --show-toplevel)/.codex/hooks/pruner-context.sh\""
