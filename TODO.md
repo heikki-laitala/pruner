@@ -204,16 +204,6 @@ Natural seams exist at: keyword extraction/stemming/fuzzy (~lines 776–889), sy
 - `integrations/claude_code.rs`, `integrations/copilot.rs`, `integrations/codex.rs`
 - `cmd_init`/`cmd_status`/uninstall command iterate over `&[Box<dyn Integration>]`
 
-### 22. Surface cleanup errors in `uninstall.rs`
-
-13 `let _ = fs::…` swallows plus 109 `unwrap`s. The user sees a success message even when cleanup partially fails (e.g. permissions error, missing config file, JSON parse failure on a user-edited settings.json).
-
-**Implementation:**
-
-- Collect into `Vec<UninstallWarning { path, reason }>` instead of discarding
-- Print a "Cleanup completed with warnings:" block at end of command when non-empty
-- Keep best-effort semantics (don't abort on first error), just report
-
 ### 23. Offline query replay subcommand (unblock scoring iteration)
 
 TODO #9 already flags evaluation as the bottleneck for iterating on scoring. The posthoc script exists but runs against saved Claude sessions — it doesn't let you compare "files pruner would suggest at HEAD vs. branch" directly.
@@ -327,6 +317,8 @@ Add optional embedding-based search for queries that don't match symbol/file nam
 - [x] Keyword stemming + bidirectional prefix matching (`rust-stemmers` Snowball English). Stem-based candidate gathering and scoring fallback. No posthoc recall change yet — narrow_fix bottleneck is keyword quality ("handle" drowning out "reconnection"), not stemming
 - [x] Keyword IDF weighting: `idf = min(file_idf, sym_idf)` with stem-aware hit counts. Rare keywords contribute more to scoring. Posthoc: openclaw recall 40% → 43%, implement 79% → 83%, narrow_fix 0% → 40%
 - [x] TS/JS parser: JSX components as call edges, dynamic `import()` as imports, re-export tracking (`export { X } from './module'`). Barrel file full resolution and React Compiler detection deferred
+- [x] Uninstall: surface cleanup errors instead of swallowing them. `let _ = fs::…` replaced with warning-collecting helpers; "Cleanup completed with warnings:" block printed when non-empty, best-effort semantics preserved
+- [x] Installer: non-UTF-8 hook paths return an `anyhow` error with clear message instead of panicking via `to_str().unwrap()`
 
 ## Explored but rejected
 
