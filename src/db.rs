@@ -465,6 +465,26 @@ impl IndexDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Find edges originating from a file.
+    pub fn edges_from_file(&self, file_id: i64, kind: &str) -> Result<Vec<EdgeRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, kind, source_file_id, source_symbol_id, target_file_id, target_symbol_id, target_name
+             FROM edges WHERE source_file_id = ?1 AND kind = ?2",
+        )?;
+        let rows = stmt.query_map(params![file_id, kind], |row| {
+            Ok(EdgeRow {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                source_file_id: row.get(2)?,
+                source_symbol_id: row.get(3)?,
+                target_file_id: row.get(4)?,
+                target_symbol_id: row.get(5)?,
+                target_name: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Get calls made by a symbol.
     pub fn calls_by_symbol(&self, symbol_id: i64) -> Result<Vec<CallRow>> {
         let mut stmt = self.conn.prepare(
@@ -531,6 +551,30 @@ impl IndexDb {
         )?;
         let mut rows = stmt.query_map(params![path], FileRow::from_row)?;
         Ok(rows.next().transpose()?)
+    }
+
+    /// Get files whose direct parent directory matches `dir`. `dir` may be
+    /// empty for repo-root files. Does not recurse into subdirectories.
+    pub fn files_in_directory(&self, dir: &str) -> Result<Vec<FileRow>> {
+        let prefix = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{dir}/")
+        };
+        let like = format!("{prefix}%");
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, language, size, line_count, is_test FROM files WHERE path LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![like], FileRow::from_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let f = row?;
+            let remainder = &f.path[prefix.len()..];
+            if !remainder.contains('/') {
+                out.push(f);
+            }
+        }
+        Ok(out)
     }
 
     /// Get imports for a file.

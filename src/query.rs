@@ -244,7 +244,7 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
     }
 
     let symbol_file_counts = count_symbols_per_file(&matching_symbols);
-    let matching_files = rank_and_filter_files(
+    let mut matching_files = rank_and_filter_files(
         &matching_files,
         &keywords,
         &idf,
@@ -252,6 +252,8 @@ pub fn analyze_query(ask: &str, db: &IndexDb) -> Result<QueryResult> {
         query_about_testing,
         &synonym_set,
     );
+    expand_via_import_edges(&mut matching_files, db)?;
+    expand_via_module_siblings(&mut matching_files, db)?;
     let mut related_tests = related_tests;
     related_tests.truncate(MAX_RESULT_TESTS);
 
@@ -719,6 +721,154 @@ fn rank_and_filter_files(
         .take(MAX_RESULT_FILES)
         .map(|(f, _)| f.clone())
         .collect()
+}
+
+// Post-ranking expansion: dependents (files that import top results) are
+// appended without re-scoring. This catches structural parents (e.g. NestJS
+// .module.ts files, framework registries) that don't share keywords with the
+// query but host the matched file.
+const IMPORT_EXPANSION_SEED_COUNT: usize = 10;
+const IMPORT_EXPANSION_MAX_ADDITIONS: usize = 5;
+const IMPORT_EXPANSION_HUB_CAP: usize = 20;
+const MODULE_SIBLING_MAX_ADDITIONS: usize = 5;
+
+/// Append files that import any top-ranked file. Skips utility hubs (files
+/// with >HUB_CAP importers) to avoid whole-repo pull-in.
+fn expand_via_import_edges(matching_files: &mut Vec<FileRow>, db: &IndexDb) -> Result<()> {
+    let mut existing: HashSet<i64> = matching_files.iter().map(|f| f.id).collect();
+    let seeds: Vec<i64> = matching_files
+        .iter()
+        .take(IMPORT_EXPANSION_SEED_COUNT)
+        .map(|f| f.id)
+        .collect();
+
+    // Dependent direction: who imports A?
+    let mut added_dep = 0;
+    for seed_id in &seeds {
+        if added_dep >= IMPORT_EXPANSION_MAX_ADDITIONS {
+            break;
+        }
+        let importers = db.edges_to_file(*seed_id, "imports")?;
+        if importers.len() > IMPORT_EXPANSION_HUB_CAP {
+            continue;
+        }
+        for edge in importers {
+            if added_dep >= IMPORT_EXPANSION_MAX_ADDITIONS {
+                break;
+            }
+            let Some(source_id) = edge.source_file_id else {
+                continue;
+            };
+            if !existing.insert(source_id) {
+                continue;
+            }
+            if let Some(file) = db.get_file_by_path_id(source_id)? {
+                matching_files.push(file);
+                added_dep += 1;
+            }
+        }
+    }
+
+    // Forward direction: what does A import? Independent budget so forward
+    // expansion isn't starved when dependents already filled the dep budget.
+    let mut added_fwd = 0;
+    for seed_id in &seeds {
+        if added_fwd >= IMPORT_EXPANSION_MAX_ADDITIONS {
+            break;
+        }
+        let dependencies = db.edges_from_file(*seed_id, "imports")?;
+        if dependencies.len() > IMPORT_EXPANSION_HUB_CAP {
+            continue;
+        }
+        for edge in dependencies {
+            if added_fwd >= IMPORT_EXPANSION_MAX_ADDITIONS {
+                break;
+            }
+            let Some(target_id) = edge.target_file_id else {
+                continue;
+            };
+            if !existing.insert(target_id) {
+                continue;
+            }
+            if let Some(file) = db.get_file_by_path_id(target_id)? {
+                matching_files.push(file);
+                added_fwd += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_module_scaffolding_file(path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    if matches!(
+        file,
+        "mod.rs" | "lib.rs" | "__init__.py" | "package-info.java"
+    ) {
+        return true;
+    }
+    let stem_and_ext = file.rsplit_once('.');
+    if let Some((stem, ext)) = stem_and_ext {
+        let ext_ok = matches!(
+            ext,
+            "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "rs" | "go"
+        );
+        if !ext_ok {
+            return false;
+        }
+        if stem == "index" {
+            return true;
+        }
+        if let Some(left) = stem.rsplit_once('.').map(|(_, right)| right)
+            && left == "module"
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn directory_of(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some((dir, _)) => dir,
+        None => "",
+    }
+}
+
+/// Append files in the same directory as top-ranked results that look like
+/// module scaffolding (index.*, *.module.*, mod.rs, __init__.py, etc.).
+/// Language-agnostic and independent of the import graph — catches misses
+/// where the structural parent exists but isn't reachable via imports alone.
+fn expand_via_module_siblings(matching_files: &mut Vec<FileRow>, db: &IndexDb) -> Result<()> {
+    let mut existing: HashSet<i64> = matching_files.iter().map(|f| f.id).collect();
+    let mut seen_dirs: HashSet<String> = HashSet::new();
+    let seed_dirs: Vec<String> = matching_files
+        .iter()
+        .take(IMPORT_EXPANSION_SEED_COUNT)
+        .map(|f| directory_of(&f.path).to_string())
+        .filter(|d| seen_dirs.insert(d.clone()))
+        .collect();
+    let mut added = 0;
+
+    for dir in seed_dirs {
+        if added >= MODULE_SIBLING_MAX_ADDITIONS {
+            break;
+        }
+        for file in db.files_in_directory(&dir)? {
+            if added >= MODULE_SIBLING_MAX_ADDITIONS {
+                break;
+            }
+            if !is_module_scaffolding_file(&file.path) {
+                continue;
+            }
+            if !existing.insert(file.id) {
+                continue;
+            }
+            matching_files.push(file);
+            added += 1;
+        }
+    }
+    Ok(())
 }
 
 /// The higher of `min_score` or `SCORE_CUTOFF_RATIO` × the top result's score.
@@ -2209,6 +2359,275 @@ mod tests {
         let path = &result.execution_paths[0];
         assert!(path.iter().any(|s| s.name == "handle_request"));
         assert!(path.iter().any(|s| s.name == "validate"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_analyze_query_expands_via_import_edges() -> anyhow::Result<()> {
+        // Scenario: computation.ts has the query-matching symbol.
+        // registry.ts imports computation.ts but nothing in its path or its
+        // own symbols matches the query — the ONLY way it can surface is via
+        // import-edge expansion from the matched computation.ts.
+        let db = IndexDb::open_memory()?;
+        let service =
+            db.insert_file("src/billing/computation.ts", Some("ts"), 100, 20, false, 0)?;
+        let module = db.insert_file("src/billing/registry.ts", Some("ts"), 50, 10, false, 0)?;
+        db.insert_symbol(service, "calculateInvoice", "function", 1, 10, None, None)?;
+        db.insert_symbol(module, "RegistryThing", "class", 1, 5, None, None)?;
+        // Pad the repo so filter_low_specificity_keywords doesn't flag
+        // unique matches as 100%-frequency stop-words.
+        for i in 0..50 {
+            let fid = db.insert_file(
+                &format!("src/unrelated/f{i}.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+            db.insert_symbol(fid, &format!("helper_{i}"), "function", 1, 2, None, None)?;
+        }
+        // registry.ts imports computation.ts
+        db.insert_edge("imports", Some(module), None, Some(service), None, None)?;
+
+        let result = analyze_query("calculateInvoice", &db)?;
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/billing/computation.ts"),
+            "computation.ts should be found by keyword"
+        );
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/billing/registry.ts"),
+            "registry.ts should be added via import-edge expansion"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_import_edge_expansion_skips_utility_hubs() -> anyhow::Result<()> {
+        // A file with >20 importers is a utility hub (e.g. logger, types).
+        // Expanding from it would pull in a large fraction of the repo, so
+        // the expansion must skip it entirely.
+        let db = IndexDb::open_memory()?;
+        let util = db.insert_file("src/logger.ts", Some("ts"), 100, 20, false, 0)?;
+        db.insert_symbol(util, "logEverything", "function", 1, 10, None, None)?;
+        // Pad so the unique symbol isn't flagged as a 100%-frequency stop-word.
+        for i in 0..50 {
+            let fid = db.insert_file(&format!("src/other/f{i}.ts"), Some("ts"), 10, 1, false, 0)?;
+            db.insert_symbol(fid, &format!("helper_{i}"), "function", 1, 2, None, None)?;
+        }
+        for i in 0..25 {
+            let importer = db.insert_file(
+                &format!("src/importers/importer{i}.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+            db.insert_edge("imports", Some(importer), None, Some(util), None, None)?;
+        }
+
+        let result = analyze_query("logEverything", &db)?;
+        // Hub has 25 importers (>20 cap) — expansion must drop all of them.
+        let importer_count = result
+            .matching_files
+            .iter()
+            .filter(|f| f.path.contains("src/importers/"))
+            .count();
+        assert_eq!(
+            importer_count, 0,
+            "utility-hub cap should prevent pulling in importers"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_via_import_edges_forward_direction() -> anyhow::Result<()> {
+        // Scenario: app.module.ts has the query-matching symbol. It imports a
+        // helper file whose path and symbols share nothing with the query.
+        // The only way the helper surfaces is forward-direction expansion
+        // (from ranked file A, add files A imports).
+        let db = IndexDb::open_memory()?;
+        let module = db.insert_file("src/billing/app.module.ts", Some("ts"), 100, 20, false, 0)?;
+        let helper = db.insert_file("src/shared/tracker.ts", Some("ts"), 50, 10, false, 0)?;
+        db.insert_symbol(module, "BillingAppModule", "class", 1, 10, None, None)?;
+        db.insert_symbol(helper, "Tracker", "class", 1, 5, None, None)?;
+        // Padding so the unique symbol isn't flagged as a stop-word.
+        for i in 0..50 {
+            let fid = db.insert_file(
+                &format!("src/unrelated/f{i}.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+            db.insert_symbol(fid, &format!("helper_{i}"), "function", 1, 2, None, None)?;
+        }
+        // app.module.ts imports tracker.ts
+        db.insert_edge("imports", Some(module), None, Some(helper), None, None)?;
+
+        let result = analyze_query("BillingAppModule", &db)?;
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/billing/app.module.ts"),
+            "module should be found by keyword"
+        );
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/shared/tracker.ts"),
+            "tracker.ts should be added via forward import-edge expansion"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_forward_expansion_skips_import_hubs() -> anyhow::Result<()> {
+        // A file importing many things (e.g. a barrel re-export) would pull
+        // in a large fraction of the repo via forward expansion. Skip it.
+        let db = IndexDb::open_memory()?;
+        let barrel = db.insert_file("src/barrel.ts", Some("ts"), 100, 20, false, 0)?;
+        db.insert_symbol(barrel, "barrelExportAll", "function", 1, 10, None, None)?;
+        for i in 0..50 {
+            let fid = db.insert_file(&format!("src/other/f{i}.ts"), Some("ts"), 10, 1, false, 0)?;
+            db.insert_symbol(fid, &format!("helper_{i}"), "function", 1, 2, None, None)?;
+        }
+        for i in 0..25 {
+            let target = db.insert_file(
+                &format!("src/leaves/leaf{i}.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+            db.insert_edge("imports", Some(barrel), None, Some(target), None, None)?;
+        }
+
+        let result = analyze_query("barrelExportAll", &db)?;
+        let leaf_count = result
+            .matching_files
+            .iter()
+            .filter(|f| f.path.contains("src/leaves/"))
+            .count();
+        assert_eq!(
+            leaf_count, 0,
+            "forward-expansion hub cap should prevent pulling in leaves"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_expand_via_module_siblings() -> anyhow::Result<()> {
+        // A ranked file in src/billing/ should surface module-scaffolding
+        // siblings (app.module.ts, index.ts) even without import edges.
+        let db = IndexDb::open_memory()?;
+        let svc = db.insert_file(
+            "src/billing/invoice.service.ts",
+            Some("ts"),
+            100,
+            20,
+            false,
+            0,
+        )?;
+        db.insert_file("src/billing/app.module.ts", Some("ts"), 50, 10, false, 0)?;
+        db.insert_file("src/billing/index.ts", Some("ts"), 20, 5, false, 0)?;
+        // An unrelated non-module sibling in the same dir — should NOT be added.
+        db.insert_file("src/billing/utility.ts", Some("ts"), 30, 5, false, 0)?;
+        db.insert_symbol(svc, "InvoiceService", "class", 1, 10, None, None)?;
+        for i in 0..50 {
+            let fid = db.insert_file(
+                &format!("src/unrelated/f{i}.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+            db.insert_symbol(fid, &format!("helper_{i}"), "function", 1, 2, None, None)?;
+        }
+
+        let result = analyze_query("InvoiceService", &db)?;
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/billing/app.module.ts"),
+            "module sibling should be added"
+        );
+        assert!(
+            result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/billing/index.ts"),
+            "index sibling should be added"
+        );
+        assert!(
+            !result
+                .matching_files
+                .iter()
+                .any(|f| f.path == "src/billing/utility.ts"),
+            "non-module sibling should not be added"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_module_sibling_expansion_caps_additions() -> anyhow::Result<()> {
+        // If a directory contains many module-like files, cap how many get
+        // added so expansion never balloons.
+        let db = IndexDb::open_memory()?;
+        let svc = db.insert_file(
+            "src/sprawling/core.service.ts",
+            Some("ts"),
+            100,
+            20,
+            false,
+            0,
+        )?;
+        db.insert_symbol(svc, "CoreService", "class", 1, 10, None, None)?;
+        for i in 0..20 {
+            db.insert_file(
+                &format!("src/sprawling/sub{i}.module.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+        }
+        for i in 0..50 {
+            let fid = db.insert_file(
+                &format!("src/unrelated/f{i}.ts"),
+                Some("ts"),
+                10,
+                1,
+                false,
+                0,
+            )?;
+            db.insert_symbol(fid, &format!("helper_{i}"), "function", 1, 2, None, None)?;
+        }
+
+        let result = analyze_query("CoreService", &db)?;
+        let sibling_count = result
+            .matching_files
+            .iter()
+            .filter(|f| f.path.starts_with("src/sprawling/sub"))
+            .count();
+        assert!(
+            sibling_count > 0 && sibling_count <= 5,
+            "expected bounded sibling expansion, got {sibling_count}"
+        );
         Ok(())
     }
 
