@@ -95,9 +95,23 @@ Pruner suggests ~63 files on average but Claude only uses ~4-11. 6% precision me
 
 **Evidence:** openclaw posthoc shows mean 63.2 files suggested, 3.9 hits, 6.8 misses. The model is ignoring most of what pruner suggests.
 
-**Implementation:** Lower MAX_RESULT_FILES or make dynamic cutoff more aggressive. IDF weighting (#1 above) may naturally help by creating larger score gaps between relevant and irrelevant files.
+**Validation for every change below:** `python3 tests/posthoc_analysis.py` on a saved session. Target: precision rises from 6% toward 15-20%+ without recall dropping below ~70%. Apply in order — cutoff is the biggest lever, other knobs reduce what reaches the cutoff.
 
-**Validation:** Posthoc precision should rise from 6% toward 15-20%+ without recall dropping.
+**Findings from precision audit (2026-04-23):**
+
+1. **Tighten the cutoff (biggest single lever).** `src/query.rs:22` & `:714–721` — `MAX_RESULT_FILES=25`, `SCORE_CUTOFF_RATIO=0.25`, `MIN_FILE_SCORE=10`. Try `15 / 0.10 / 20`. A top score of 100 currently admits files scoring 25+, which is where most of the noise lives. Expected impact: ~63 → ~20–25 files without losing high-confidence hits. Lowest-risk change because the cutoff is designed to reject noise.
+
+2. **Gate or downweight fuzzy rescue.** `src/query.rs:891–938`. `fuzzy_rescue_candidates()` (added in commit e2c7672, downweighted in 49994f1) runs on every query, not just typo queries. On normal queries like "implement routing" it inflates scores for accidental 1-edit matches. Either only fire when strict LIKE returned zero hits for a keyword, or drop `FUZZY_MATCH` from 5 → 2–3 so fuzzy-only files can't clear the cutoff. Validate narrow_fix task recall doesn't regress (typo queries are where fuzzy earns its keep).
+
+3. **Weaker synonyms.** `src/synonyms.rs:17` — `SYNONYM_IDF_FACTOR=0.5` still lets synonym-only files tie originals once multi-keyword bonuses fire. Lower to 0.25, and add a post-ranking filter before the `.take(MAX_RESULT_FILES)` at query.rs:719 that drops files whose score came entirely from synonym expansion. Commit 49994f1 noted a synthetic "AuthHandler" surfaced purely via "auth" synonym — this is that class of error.
+
+4. **Median-specificity gate.** `src/query.rs:31–33` & `:335–402` (`filter_low_specificity_keywords`). `DYNAMIC_STOP_THRESHOLD=0.30` is lenient. Try 0.20, and add: "if median specificity of retained keywords > 0.15, return empty". Kills vague queries like "update service" where every keyword hits a large fraction of the repo. Only affects queries that are already low-confidence.
+
+5. **Shrink multi-keyword bonus.** `src/query.rs:56` — `FILE_MULTI_KEYWORD_BONUS=30` fires on any file matching 2+ keywords. Drop to 10–15 and verify the synonym-exclusion gate added in 49994f1 is actually applied in the bonus calc around line 1025 (the gate exists upstream at :980 but should be traced through the bonus path).
+
+6. **Move fuzzy rescue off the hot path.** `src/query.rs:891–938`. Latency cleanup rather than precision, but clarifies the model: fuzzy should only run when strict matching found nothing for a keyword. Benchmark on openclaw (9.8K files) should show ~5–10% latency drop.
+
+**Suggested order:** apply #1 alone first, run posthoc, then #4 → #3 → #2. Polish #5 and #6 last. Stop if recall drops under 70%.
 
 ### Call graph depth for missed routing files
 
