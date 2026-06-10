@@ -14,6 +14,36 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
+/// Resolve the worker-thread count for parallel parsing from an env override and
+/// the available core count. Defaults to ~half the cores so indexing (which runs
+/// synchronously from the interactive prompt hook) leaves CPU headroom for the
+/// editor/agent instead of saturating every core. Always at least 1.
+fn resolve_thread_count(env_val: Option<&str>, cores: usize) -> usize {
+    if let Some(n) = env_val
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+    {
+        return n;
+    }
+    (cores / 2).max(1)
+}
+
+/// Worker-thread count for parsing. Override with `PRUNER_INDEX_THREADS`.
+fn index_thread_count() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    resolve_thread_count(std::env::var("PRUNER_INDEX_THREADS").ok().as_deref(), cores)
+}
+
+/// Build a rayon thread pool with bounded parallelism for the parse phase.
+fn parse_pool() -> Result<rayon::ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(index_thread_count())
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build parse thread pool: {e}"))
+}
+
 /// Normalize a path string to use forward slashes (for cross-platform DB consistency).
 /// Only replaces backslashes on Windows where they are path separators.
 /// On Unix, backslash is a valid filename character and must be preserved.
@@ -223,44 +253,48 @@ fn index_incremental_inner(
         .collect();
 
     let skipped_count = AtomicUsize::new(0);
-    let parsed_files: Vec<ParsedFile> = to_parse
-        .par_iter()
-        .filter_map(|path| {
-            let rel_path = normalize_path(
-                &path
-                    .strip_prefix(repo_path)
-                    .unwrap_or(path)
-                    .to_string_lossy(),
-            );
-            let language = languages::detect_language(path);
-            let is_test = languages::is_test_file(path);
-            let mtime = file_mtime(path);
+    let pool = parse_pool()?;
+    let parsed_files: Vec<ParsedFile> = pool.install(|| {
+        to_parse
+            .par_iter()
+            .filter_map(|path| {
+                let rel_path = normalize_path(
+                    &path
+                        .strip_prefix(repo_path)
+                        .unwrap_or(path)
+                        .to_string_lossy(),
+                );
+                let language = languages::detect_language(path);
+                let is_test = languages::is_test_file(path);
+                let mtime = file_mtime(path);
 
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => {
-                    skipped_count.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
-            };
+                let content = match fs::read_to_string(path) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        skipped_count.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                };
 
-            let line_count = content.lines().count() as i64;
-            let size = content.len() as i64;
-            let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
-            let parse_result = language.and_then(|lang| parser::parse_source(&content, lang).ok());
+                let line_count = content.lines().count() as i64;
+                let size = content.len() as i64;
+                let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
+                let parse_result =
+                    language.and_then(|lang| parser::parse_source(&content, lang).ok());
 
-            Some(ParsedFile {
-                rel_path,
-                lang_str,
-                size,
-                line_count,
-                is_test,
-                mtime,
-                language,
-                parse_result,
+                Some(ParsedFile {
+                    rel_path,
+                    lang_str,
+                    size,
+                    line_count,
+                    is_test,
+                    mtime,
+                    language,
+                    parse_result,
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
 
     stats.skipped = skipped_count.load(Ordering::Relaxed);
 
@@ -484,45 +518,49 @@ fn index_files(
 
     // Phase 2: Read + parse files in parallel
     let skipped_count = AtomicUsize::new(0);
-    let parsed_files: Vec<ParsedFile> = to_parse
-        .par_iter()
-        .filter_map(|path| {
-            let rel_path = normalize_path(
-                &path
-                    .strip_prefix(repo_path)
-                    .unwrap_or(path)
-                    .to_string_lossy(),
-            );
-            let language = languages::detect_language(path);
-            let is_test = languages::is_test_file(path);
-            let mtime = file_mtime(path);
+    let pool = parse_pool()?;
+    let parsed_files: Vec<ParsedFile> = pool.install(|| {
+        to_parse
+            .par_iter()
+            .filter_map(|path| {
+                let rel_path = normalize_path(
+                    &path
+                        .strip_prefix(repo_path)
+                        .unwrap_or(path)
+                        .to_string_lossy(),
+                );
+                let language = languages::detect_language(path);
+                let is_test = languages::is_test_file(path);
+                let mtime = file_mtime(path);
 
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => {
-                    skipped_count.fetch_add(1, Ordering::Relaxed);
-                    return None;
-                }
-            };
+                let content = match fs::read_to_string(path) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        skipped_count.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    }
+                };
 
-            let line_count = content.lines().count() as i64;
-            let size = content.len() as i64;
-            let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
+                let line_count = content.lines().count() as i64;
+                let size = content.len() as i64;
+                let lang_str = language.map(|l| format!("{l:?}").to_lowercase());
 
-            let parse_result = language.and_then(|lang| parser::parse_source(&content, lang).ok());
+                let parse_result =
+                    language.and_then(|lang| parser::parse_source(&content, lang).ok());
 
-            Some(ParsedFile {
-                rel_path,
-                lang_str,
-                size,
-                line_count,
-                is_test,
-                mtime,
-                language,
-                parse_result,
+                Some(ParsedFile {
+                    rel_path,
+                    lang_str,
+                    size,
+                    line_count,
+                    is_test,
+                    mtime,
+                    language,
+                    parse_result,
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
 
     stats.skipped += skipped_count.load(Ordering::Relaxed);
 
@@ -932,6 +970,23 @@ mod tests {
         assert_eq!(stats.parsed, 0); // no tree-sitter support
         assert_eq!(stats.symbols, 0);
         Ok(())
+    }
+
+    #[test]
+    fn test_resolve_thread_count_default_half() {
+        assert_eq!(resolve_thread_count(None, 8), 4);
+        assert_eq!(resolve_thread_count(None, 2), 1);
+        assert_eq!(resolve_thread_count(None, 1), 1);
+        assert_eq!(resolve_thread_count(None, 0), 1); // never zero
+    }
+
+    #[test]
+    fn test_resolve_thread_count_env_override() {
+        assert_eq!(resolve_thread_count(Some("2"), 8), 2);
+        assert_eq!(resolve_thread_count(Some("16"), 4), 16);
+        assert_eq!(resolve_thread_count(Some("0"), 8), 4); // invalid -> default
+        assert_eq!(resolve_thread_count(Some("abc"), 8), 4); // unparseable -> default
+        assert_eq!(resolve_thread_count(Some(""), 8), 4); // empty -> default
     }
 
     #[test]
